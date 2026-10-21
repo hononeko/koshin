@@ -1,0 +1,74 @@
+[versions]
+kotlin = "2.3.21"
+jvm = "25"
+ktor = "3.6.0"
+coroutines = "1.11.0"
+serialization = "1.11.0"
+nats = "2.26.4"
+lettuce = "6.9.0.RELEASE"
+jwt-auth0 = "4.6.2"
+jwt-nimbus = "10.10"
+logback = "1.6.5"
+junit = "5.14.4"
+junit-platform = "1.14.4"
+mockk = "1.14.11"
+testcontainers = "1.21.4"
+kover = "0.9.11"
+detekt = "2.0.0-alpha.6"
+
+[libraries]
+# Coroutines & Serialization
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
+
+# Ktor Server (Netty engine, content negotiation, testing)
+ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
+ktor-server-netty = { module = "io.ktor:ktor-server-netty", version.ref = "ktor" }
+ktor-server-content-negotiation = { module = "io.ktor:ktor-server-content-negotiation", version.ref = "ktor" }
+ktor-server-test-host = { module = "io.ktor:ktor-server-test-host", version.ref = "ktor" }
+
+# Ktor Client (with HttpRequestRetry support)
+ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
+ktor-client-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
+ktor-client-content-negotiation = { module = "io.ktor:ktor-client-content-negotiation", version.ref = "ktor" }
+ktor-client-mock = { module = "io.ktor:ktor-client-mock", version.ref = "ktor" }
+
+# Ktor Serialization
+ktor-serialization-kotlinx-json = { module = "io.ktor:ktor-serialization-kotlinx-json", version.ref = "ktor" }
+
+# NATS JetStream
+nats-jnats = { module = "io.nats:jnats", version.ref = "nats" }
+
+# Valkey / Redis Lettuce Client
+lettuce-core = { module = "io.lettuce:lettuce-core", version.ref = "lettuce" }
+
+# GitHub App Authentication & JWT
+auth0-jwt = { module = "com.auth0:java-jwt", version.ref = "jwt-auth0" }
+nimbus-jose-jwt = { module = "com.nimbusds:nimbus-jose-jwt", version.ref = "jwt-nimbus" }
+
+# Logging
+logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
+
+# Testing
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junit-platform" }
+mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
+testcontainers-core = { module = "org.testcontainers:testcontainers", version.ref = "testcontainers" }
+testcontainers-junit = { module = "org.testcontainers:junit-jupiter", version.ref = "testcontainers" }
+
+# Detekt Plugins
+detekt-rules-ktlint-wrapper = { module = "dev.detekt:detekt-rules-ktlint-wrapper", version.ref = "detekt" }
+
+[bundles]
+test-common = [
+    "junit-jupiter",
+    "mockk",
+    "kotlinx-coroutines-test"
+]
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+kover = { id = "org.jetbrains.kotlinx.kover", version.ref = "kover" }
+detekt = { id = "dev.detekt", version.ref = "detekt" }
