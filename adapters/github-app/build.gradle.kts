@@ -1,7 +1,6 @@
 dependencies {
     implementation(project(":core"))
     implementation(libs.auth0.jwt)
-    implementation(libs.nimbus.jose.jwt)
     implementation(libs.ktor.client.core)
     implementation(libs.ktor.client.cio)
     implementation(libs.ktor.client.content.negotiation)

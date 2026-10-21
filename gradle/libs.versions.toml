@@ -6,8 +6,7 @@ coroutines = "1.11.0"
 serialization = "1.11.0"
 nats = "2.26.4"
 lettuce = "6.9.0.RELEASE"
-jwt-auth0 = "4.6.2"
-jwt-nimbus = "10.10"
+jwt = "4.6.2"
 logback = "1.6.5"
 junit = "5.14.4"
 junit-platform = "1.14.4"
@@ -44,8 +43,7 @@ nats-jnats = { module = "io.nats:jnats", version.ref = "nats" }
 lettuce-core = { module = "io.lettuce:lettuce-core", version.ref = "lettuce" }
 
 # GitHub App Authentication & JWT
-auth0-jwt = { module = "com.auth0:java-jwt", version.ref = "jwt-auth0" }
-nimbus-jose-jwt = { module = "com.nimbusds:nimbus-jose-jwt", version.ref = "jwt-nimbus" }
+auth0-jwt = { module = "com.auth0:java-jwt", version.ref = "jwt" }
 
 # Logging
 logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
