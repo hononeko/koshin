@@ -1,0 +1,11 @@
+config:
+  validation: true
+  warningsAsErrors: false
+
+ktlint:
+  active: true
+  code_style: 'intellij_idea'
+
+naming:
+  FunctionNaming:
+    ignoreAnnotated: ['Test']
