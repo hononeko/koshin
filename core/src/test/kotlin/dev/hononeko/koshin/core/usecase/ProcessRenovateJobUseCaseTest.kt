@@ -67,6 +67,7 @@ class ProcessRenovateJobUseCaseTest {
     )
 
     private var uuidCounter = 0
+    private var testClockMs = 1_000_000L
     private val useCase = ProcessRenovateJobUseCase(
         queueConsumer = queueConsumer,
         queuePublisher = queuePublisher,
@@ -78,6 +79,7 @@ class ProcessRenovateJobUseCaseTest {
         workspaceCleaner = workspaceCleaner,
         config = testConfig,
         uuidGenerator = { "uuid-${++uuidCounter}" },
+        clock = { testClockMs },
     )
 
     private val testRepo = RepoRef(Platform.GITHUB, "hononeko/koshin")
@@ -93,6 +95,7 @@ class ProcessRenovateJobUseCaseTest {
     @BeforeEach
     fun setup() {
         uuidCounter = 0
+        testClockMs = 1_000_000L
         every { delivery.event } returns testEvent
         every { delivery.deliveryAttempt } returns 1
         coEvery { delivery.ack() } returns Unit
@@ -177,7 +180,7 @@ class ProcessRenovateJobUseCaseTest {
     fun `acquireOrMarkDirty exception nacks delivery with backoff and releases run slot`() = runTest {
         coEvery {
             coordinationPort.acquireOrMarkDirty(any(), any(), any(), any())
-        } throws RuntimeException("Valkey connection timeout")
+        } throws IllegalStateException("Valkey connection timeout")
 
         useCase.processDelivery(delivery, "token-1")
 
@@ -226,12 +229,12 @@ class ProcessRenovateJobUseCaseTest {
             cachePort.restore(testRepo)
             credentialsPort.credentialsFor(testRepo)
             cliExecutor.execute(testRepo, testCreds, testConfig.cliTimeout)
-            coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1")
             cachePort.persist(testRepo)
+            coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1")
             throttlePort.resetBackoff(testRepo.platform)
             delivery.ack()
-            workspaceCleaner.cleanup(testRepo)
             throttlePort.releaseRunSlot(testRepo.platform, "token-1")
+            workspaceCleaner.cleanup(testRepo)
         }
         coVerify(exactly = 0) { queuePublisher.publish(any()) }
     }
@@ -244,19 +247,28 @@ class ProcessRenovateJobUseCaseTest {
 
         useCase.processDelivery(delivery, "token-1")
 
-        coVerify(exactly = 1) { queuePublisher.publish(any()) }
+        coVerifyOrder {
+            cachePort.restore(testRepo)
+            credentialsPort.credentialsFor(testRepo)
+            cliExecutor.execute(testRepo, testCreds, testConfig.cliTimeout)
+            cachePort.persist(testRepo)
+            coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1")
+            queuePublisher.publish(any())
+            throttlePort.resetBackoff(testRepo.platform)
+            delivery.ack()
+            throttlePort.releaseRunSlot(testRepo.platform, "token-1")
+            workspaceCleaner.cleanup(testRepo)
+        }
         val followUp = publishedSlot.captured
         assertEquals(testRepo, followUp.repo)
         assertEquals(TriggerReason.DIRTY_FOLLOWUP, followUp.triggerReason)
         assertEquals(0, followUp.rateLimitAttempt)
         assertNotEquals(testEvent.deliveryId, followUp.deliveryId)
-        coVerify(exactly = 1) { cachePort.persist(testRepo) }
-        coVerify(exactly = 1) { delivery.ack() }
-        coVerify(exactly = 1) { throttlePort.resetBackoff(testRepo.platform) }
     }
 
     @Test
-    fun `successful CLI execution with NOT_OWNER release NAKs immediately without persisting cache`() = runTest {
+    fun `failed CLI execution with NOT_OWNER release NAKs with ZERO delay without persisting cache`() = runTest {
+        coEvery { cliExecutor.execute(any(), any(), any()) } returns JobExecutionResult.Failed(1)
         coEvery { coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1") } returns ReleaseResult.NOT_OWNER
 
         useCase.processDelivery(delivery, "token-1")
@@ -265,6 +277,19 @@ class ProcessRenovateJobUseCaseTest {
         coVerify(exactly = 0) { cachePort.persist(any()) }
         coVerify(exactly = 0) { delivery.ack() }
         coVerify(exactly = 0) { throttlePort.resetBackoff(any()) }
+    }
+
+    @Test
+    fun `successful CLI execution with NOT_OWNER release persists cache before release and NAKs`() = runTest {
+        coEvery { coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1") } returns ReleaseResult.NOT_OWNER
+
+        useCase.processDelivery(delivery, "token-1")
+
+        coVerifyOrder {
+            cachePort.persist(testRepo)
+            coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1")
+            delivery.nack(Duration.ZERO)
+        }
         coVerify(exactly = 1) { workspaceCleaner.cleanup(testRepo) }
     }
 
@@ -377,6 +402,7 @@ class ProcessRenovateJobUseCaseTest {
         advanceTimeBy(testConfig.heartbeatInterval + 10.milliseconds)
         job.join()
 
+        coVerify(exactly = 1) { coordinationPort.releaseLock(testRepo, "token-1") }
         coVerify(exactly = 1) { delivery.nack(Duration.ZERO) }
         coVerify(exactly = 0) { delivery.ack() }
         coVerify(exactly = 0) { cachePort.persist(any()) }
@@ -385,7 +411,66 @@ class ProcessRenovateJobUseCaseTest {
     }
 
     @Test
-    fun `heartbeat exception cancels CLI and NAKs with ZERO delay`() = runTest {
+    fun `extendRunSlot returning false cancels CLI and releases lock`() = runTest {
+        val cliStarted = CompletableDeferred<Unit>()
+        val cliShouldFinish = CompletableDeferred<Unit>()
+
+        coEvery { cliExecutor.execute(any(), any(), any()) } coAnswers {
+            cliStarted.complete(Unit)
+            cliShouldFinish.await()
+            JobExecutionResult.Success
+        }
+        coEvery { throttlePort.extendRunSlot(testRepo.platform, "token-1", any()) } returns false
+
+        val job = launch {
+            useCase.processDelivery(delivery, "token-1")
+        }
+
+        cliStarted.await()
+        advanceTimeBy(testConfig.heartbeatInterval + 10.milliseconds)
+        job.join()
+
+        coVerify(exactly = 1) { coordinationPort.releaseLock(testRepo, "token-1") }
+        coVerify(exactly = 1) { delivery.nack(Duration.ZERO) }
+        coVerify(exactly = 1) { throttlePort.releaseRunSlot(testRepo.platform, "token-1") }
+    }
+
+    @Test
+    fun `transient heartbeat error within tolerance window does not cancel CLI run`() = runTest {
+        val cliStarted = CompletableDeferred<Unit>()
+        val cliShouldFinish = CompletableDeferred<Unit>()
+
+        coEvery { cliExecutor.execute(any(), any(), any()) } coAnswers {
+            cliStarted.complete(Unit)
+            cliShouldFinish.await()
+            JobExecutionResult.Success
+        }
+        var callCount = 0
+        coEvery { coordinationPort.extendLock(testRepo, "token-1", any()) } answers {
+            callCount++
+            if (callCount == 1) {
+                error("Temporary network blip")
+            } else {
+                true
+            }
+        }
+
+        val job = launch {
+            useCase.processDelivery(delivery, "token-1")
+        }
+
+        cliStarted.await()
+        advanceTimeBy(testConfig.heartbeatInterval + 10.milliseconds)
+        advanceTimeBy(testConfig.heartbeatInterval)
+        cliShouldFinish.complete(Unit)
+        job.join()
+
+        coVerify(exactly = 1) { delivery.ack() }
+        coVerify(exactly = 0) { delivery.nack(any()) }
+    }
+
+    @Test
+    fun `heartbeat transient errors exceeding tolerance window cancel CLI and NAK with ZERO delay`() = runTest {
         val cliStarted = CompletableDeferred<Unit>()
         val cliShouldFinish = CompletableDeferred<Unit>()
 
@@ -396,16 +481,18 @@ class ProcessRenovateJobUseCaseTest {
         }
         coEvery {
             coordinationPort.extendLock(testRepo, "token-1", any())
-        } throws RuntimeException("Lock extension network failure")
+        } throws IllegalStateException("Lock extension network failure")
 
         val job = launch {
             useCase.processDelivery(delivery, "token-1")
         }
 
         cliStarted.await()
+        testClockMs += (testConfig.lockTtl - testConfig.heartbeatInterval).inWholeMilliseconds + 1000L
         advanceTimeBy(testConfig.heartbeatInterval + 10.milliseconds)
         job.join()
 
+        coVerify(exactly = 1) { coordinationPort.releaseLock(testRepo, "token-1") }
         coVerify(exactly = 1) { delivery.nack(Duration.ZERO) }
     }
 
@@ -438,7 +525,7 @@ class ProcessRenovateJobUseCaseTest {
     @Test
     fun `infra error during execution releases lock and NAKs with computed backoff`() = runTest {
         every { delivery.deliveryAttempt } returns 3
-        coEvery { credentialsPort.credentialsFor(testRepo) } throws RuntimeException("GitHub App API 500 error")
+        coEvery { credentialsPort.credentialsFor(testRepo) } throws IllegalStateException("GitHub App API 500 error")
 
         useCase.processDelivery(delivery, "token-1")
 
@@ -519,5 +606,48 @@ class ProcessRenovateJobUseCaseTest {
 
         assertFalse(result)
         coVerify(exactly = 1) { throttlePort.tryAcquireRunSlot(Platform.GITHUB, any(), any()) }
+    }
+
+    @Test
+    fun `cancellation during fetch releases run slot and rethrows CancellationException`() = runTest {
+        coEvery { queueConsumer.fetchNext(Platform.GITHUB, any()) } throws CancellationException("Worker shutdown")
+
+        var thrown: Throwable? = null
+        try {
+            useCase.processNext(listOf(Platform.GITHUB))
+        } catch (e: Throwable) {
+            thrown = e
+        }
+
+        assertTrue(thrown is CancellationException)
+        coVerify(exactly = 1) { throttlePort.releaseRunSlot(Platform.GITHUB, any()) }
+    }
+
+    @Test
+    fun `cancellation during acquire releases run slot, NAKs with 0, and rethrows CancellationException`() = runTest {
+        coEvery {
+            coordinationPort.acquireOrMarkDirty(any(), any(), any(), any())
+        } throws CancellationException("Worker shutdown")
+
+        var thrown: Throwable? = null
+        try {
+            useCase.processDelivery(delivery, "token-1")
+        } catch (e: Throwable) {
+            thrown = e
+        }
+
+        assertTrue(thrown is CancellationException)
+        coVerify(exactly = 1) { delivery.nack(Duration.ZERO) }
+        coVerify(exactly = 1) { throttlePort.releaseRunSlot(testRepo.platform, "token-1") }
+    }
+
+    @Test
+    fun `workspace cleaner throwing exception does not prevent run slot release`() = runTest {
+        coEvery { workspaceCleaner.cleanup(testRepo) } throws IllegalStateException("Disk IO error")
+
+        useCase.processDelivery(delivery, "token-1")
+
+        coVerify(exactly = 1) { throttlePort.releaseRunSlot(testRepo.platform, "token-1") }
+        coVerify(exactly = 1) { delivery.ack() }
     }
 }

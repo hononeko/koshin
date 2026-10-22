@@ -18,12 +18,13 @@ import dev.hononeko.koshin.core.ports.RepoCoordinationPort
 import dev.hononeko.koshin.core.ports.WorkspaceCleanerPort
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.UUID
-import kotlin.coroutines.coroutineContext
 import kotlin.time.Duration
 
 class ProcessRenovateJobUseCase(
@@ -37,6 +38,7 @@ class ProcessRenovateJobUseCase(
     private val workspaceCleaner: WorkspaceCleanerPort,
     private val config: WorkerConfig = WorkerConfig(),
     private val uuidGenerator: () -> String = { UUID.randomUUID().toString() },
+    private val clock: () -> Long = { System.currentTimeMillis() },
 ) {
 
     suspend fun processNext(platforms: Collection<Platform> = Platform.entries): Boolean {
@@ -58,6 +60,11 @@ class ProcessRenovateJobUseCase(
 
         val delivery = try {
             queueConsumer.fetchNext(platform, config.fetchTimeout)
+        } catch (e: CancellationException) {
+            withContext(NonCancellable) {
+                throttlePort.releaseRunSlot(platform, lockToken)
+            }
+            throw e
         } catch (@Suppress("TooGenericExceptionCaught") e: Exception) {
             throttlePort.releaseRunSlot(platform, lockToken)
             throw e
@@ -83,6 +90,12 @@ class ProcessRenovateJobUseCase(
                 lockTtl = config.lockTtl,
                 dirtyTtl = config.dirtyTtl,
             )
+        } catch (e: CancellationException) {
+            withContext(NonCancellable) {
+                runCatching { delivery.nack(Duration.ZERO) }
+                runCatching { throttlePort.releaseRunSlot(repo.platform, lockToken) }
+            }
+            throw e
         } catch (@Suppress("TooGenericExceptionCaught", "SwallowedException") e: Exception) {
             try {
                 delivery.nack(computeBackoffDelay(delivery.deliveryAttempt))
@@ -108,48 +121,58 @@ class ProcessRenovateJobUseCase(
                 delivery.nack(config.lockCollisionRetryDelay)
             }
         } finally {
-            throttlePort.releaseRunSlot(repo.platform, lockToken)
+            withContext(NonCancellable) {
+                throttlePort.releaseRunSlot(repo.platform, lockToken)
+            }
         }
     }
 
     private suspend fun executeAcquiredJob(delivery: JobDelivery, lockToken: String) {
         val event = delivery.event
         val repo = event.repo
+        var heartbeatJob: Job? = null
 
-        coroutineScope {
-            var lostLock = false
-            var executionJob: Job = Job()
-
-            val heartbeatJob = launch {
-                runHeartbeatLoop(delivery, repo, lockToken) {
-                    lostLock = true
-                    executionJob.cancel(LostLockException(repo))
+        try {
+            coroutineScope {
+                val executionScope = this
+                val hb = launch {
+                    runHeartbeatLoop(delivery, repo, lockToken) {
+                        executionScope.cancel(LostLockException(repo))
+                    }
                 }
+                heartbeatJob = hb
+
+                runExecution(delivery, lockToken, hb)
             }
-
-            try {
-                coroutineScope {
-                    executionJob = coroutineContext.job
-                    runExecution(delivery, lockToken) { lostLock = true }
-                }
-            } catch (@Suppress("SwallowedException") e: LostLockException) {
-                delivery.nack(Duration.ZERO)
-            } catch (e: CancellationException) {
+        } catch (@Suppress("SwallowedException") e: LostLockException) {
+            withContext(NonCancellable) {
                 runCatching { coordinationPort.releaseLock(repo, lockToken) }
                 delivery.nack(Duration.ZERO)
-                throw e
-            } catch (@Suppress("TooGenericExceptionCaught", "SwallowedException") e: Exception) {
+            }
+        } catch (e: CancellationException) {
+            withContext(NonCancellable) {
+                runCatching { coordinationPort.releaseLock(repo, lockToken) }
+                delivery.nack(Duration.ZERO)
+            }
+            throw e
+        } catch (@Suppress("TooGenericExceptionCaught", "SwallowedException") e: Exception) {
+            withContext(NonCancellable) {
                 runCatching { coordinationPort.releaseLock(repo, lockToken) }
                 delivery.nack(computeBackoffDelay(delivery.deliveryAttempt))
-            } finally {
-                heartbeatJob.cancel()
-                workspaceCleaner.cleanup(repo)
-                throttlePort.releaseRunSlot(repo.platform, lockToken)
+            }
+        } finally {
+            withContext(NonCancellable) {
+                heartbeatJob?.cancel()
+                try {
+                    throttlePort.releaseRunSlot(repo.platform, lockToken)
+                } finally {
+                    runCatching { workspaceCleaner.cleanup(repo) }
+                }
             }
         }
     }
 
-    private suspend fun runExecution(delivery: JobDelivery, lockToken: String, onLostLock: () -> Unit) {
+    private suspend fun runExecution(delivery: JobDelivery, lockToken: String, heartbeatJob: Job) {
         val event = delivery.event
         val repo = event.repo
 
@@ -162,11 +185,11 @@ class ProcessRenovateJobUseCase(
             is JobExecutionResult.Failed,
             is JobExecutionResult.TimedOut,
             -> {
-                handleTerminalResult(delivery, lockToken, result, onLostLock)
+                handleTerminalResult(delivery, lockToken, result, heartbeatJob)
             }
 
             is JobExecutionResult.RateLimited -> {
-                handleRateLimited(delivery, lockToken, result, onLostLock)
+                handleRateLimited(delivery, lockToken, result, heartbeatJob)
             }
         }
     }
@@ -177,41 +200,71 @@ class ProcessRenovateJobUseCase(
         lockToken: String,
         onLostLock: () -> Unit,
     ) {
+        var lastSuccessfulRenewal = clock()
+        val toleranceWindowMs = (config.lockTtl - config.heartbeatInterval).inWholeMilliseconds
+
         while (true) {
             delay(config.heartbeatInterval)
-            val keepGoing = performHeartbeatStep(delivery, repo, lockToken)
-            if (!keepGoing) {
-                onLostLock()
-                return
+            when (performHeartbeatStep(delivery, repo, lockToken)) {
+                HeartbeatStepResult.SUCCESS -> {
+                    lastSuccessfulRenewal = clock()
+                }
+
+                HeartbeatStepResult.LOST -> {
+                    onLostLock()
+                    return
+                }
+
+                HeartbeatStepResult.TRANSIENT_ERROR -> {
+                    val elapsed = clock() - lastSuccessfulRenewal
+                    if (elapsed >= toleranceWindowMs) {
+                        onLostLock()
+                        return
+                    }
+                }
             }
         }
     }
 
-    private suspend fun performHeartbeatStep(delivery: JobDelivery, repo: RepoRef, lockToken: String): Boolean = try {
+    private suspend fun performHeartbeatStep(
+        delivery: JobDelivery,
+        repo: RepoRef,
+        lockToken: String,
+    ): HeartbeatStepResult = try {
         delivery.heartbeat()
         val lockExtended = coordinationPort.extendLock(repo, lockToken, config.lockTtl)
-        throttlePort.extendRunSlot(repo.platform, lockToken, config.lockTtl)
-        lockExtended
+        if (!lockExtended) {
+            HeartbeatStepResult.LOST
+        } else {
+            val slotExtended = throttlePort.extendRunSlot(repo.platform, lockToken, config.lockTtl)
+            if (!slotExtended) HeartbeatStepResult.LOST else HeartbeatStepResult.SUCCESS
+        }
     } catch (e: CancellationException) {
         throw e
     } catch (@Suppress("TooGenericExceptionCaught", "SwallowedException") e: Exception) {
-        false
+        HeartbeatStepResult.TRANSIENT_ERROR
     }
 
     private suspend fun handleTerminalResult(
         delivery: JobDelivery,
         lockToken: String,
         result: JobExecutionResult,
-        onLostLock: () -> Unit,
+        heartbeatJob: Job,
     ) {
         val repo = delivery.event.repo
+
+        if (result is JobExecutionResult.Success) {
+            cachePort.persist(repo)
+        }
+
+        heartbeatJob.cancel()
+
         val release = coordinationPort.releaseLockAndTakeDirty(repo, lockToken)
 
         when (release) {
             ReleaseResult.DIRTY -> {
                 publishDirtyFollowUp(repo)
                 if (result is JobExecutionResult.Success) {
-                    cachePort.persist(repo)
                     throttlePort.resetBackoff(repo.platform)
                 }
                 delivery.ack()
@@ -219,14 +272,12 @@ class ProcessRenovateJobUseCase(
 
             ReleaseResult.CLEAN -> {
                 if (result is JobExecutionResult.Success) {
-                    cachePort.persist(repo)
                     throttlePort.resetBackoff(repo.platform)
                 }
                 delivery.ack()
             }
 
             ReleaseResult.NOT_OWNER -> {
-                onLostLock()
                 delivery.nack(Duration.ZERO)
             }
         }
@@ -247,14 +298,15 @@ class ProcessRenovateJobUseCase(
         delivery: JobDelivery,
         lockToken: String,
         result: JobExecutionResult.RateLimited,
-        onLostLock: () -> Unit,
+        heartbeatJob: Job,
     ) {
         val event = delivery.event
         val repo = event.repo
-        val released = coordinationPort.releaseLock(repo, lockToken)
 
+        heartbeatJob.cancel()
+
+        val released = coordinationPort.releaseLock(repo, lockToken)
         if (!released) {
-            onLostLock()
             delivery.nack(Duration.ZERO)
             return
         }
@@ -279,5 +331,11 @@ class ProcessRenovateJobUseCase(
         val factor = 1 shl (deliveryAttempt - 1).coerceIn(0, 6)
         val computed = config.infraErrorBackoffBase * factor
         return computed.coerceAtMost(config.infraErrorBackoffMax)
+    }
+
+    private enum class HeartbeatStepResult {
+        SUCCESS,
+        LOST,
+        TRANSIENT_ERROR,
     }
 }

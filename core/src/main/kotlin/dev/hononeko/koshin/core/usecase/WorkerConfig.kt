@@ -17,10 +17,25 @@ data class WorkerConfig(
     val infraErrorBackoffMax: Duration = 30.seconds,
 ) {
     init {
-        validate()
-    }
+        require(natsAckWait > Duration.ZERO) { "natsAckWait must be positive: $natsAckWait" }
+        require(lockTtl > Duration.ZERO) { "lockTtl must be positive: $lockTtl" }
+        require(dirtyTtl > Duration.ZERO) { "dirtyTtl must be positive: $dirtyTtl" }
+        require(cliTimeout > Duration.ZERO) { "cliTimeout must be positive: $cliTimeout" }
+        require(heartbeatInterval > Duration.ZERO) { "heartbeatInterval must be positive: $heartbeatInterval" }
+        require(lockCollisionRetryDelay > Duration.ZERO) {
+            "lockCollisionRetryDelay must be positive: $lockCollisionRetryDelay"
+        }
+        require(fetchTimeout > Duration.ZERO) { "fetchTimeout must be positive: $fetchTimeout" }
+        require(infraErrorBackoffBase > Duration.ZERO) {
+            "infraErrorBackoffBase must be positive: $infraErrorBackoffBase"
+        }
+        require(infraErrorBackoffMax >= infraErrorBackoffBase) {
+            "infraErrorBackoffMax ($infraErrorBackoffMax) must be >= infraErrorBackoffBase ($infraErrorBackoffBase)"
+        }
+        require(maxRateLimitRequeues >= 0) {
+            "MAX_RATE_LIMIT_REQUEUES ($maxRateLimitRequeues) must be >= 0"
+        }
 
-    fun validate() {
         val ackSecs = natsAckWait.inWholeSeconds
         val lockSecs = lockTtl.inWholeSeconds
         require(natsAckWait > lockTtl) {
@@ -36,14 +51,8 @@ data class WorkerConfig(
         require(heartbeatInterval < lockTtl / 2) {
             "HEARTBEAT_INTERVAL_SECONDS ($hbSecs) must be < LOCK_TTL_SECONDS / 2 ($halfLockSecs)"
         }
-        require(maxRateLimitRequeues >= 0) {
-            "MAX_RATE_LIMIT_REQUEUES ($maxRateLimitRequeues) must be >= 0"
-        }
-    }
-
-    companion object {
-        fun validate(config: WorkerConfig) {
-            config.validate()
+        require(fetchTimeout < lockTtl) {
+            "fetchTimeout (${fetchTimeout.inWholeSeconds}s) must be < lockTtl (${lockSecs}s)"
         }
     }
 }

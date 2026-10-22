@@ -3,6 +3,7 @@ package dev.hononeko.koshin.core.usecase
 import org.junit.jupiter.api.Assertions.assertDoesNotThrow
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
@@ -11,7 +12,46 @@ class WorkerConfigTest {
     @Test
     fun `default config is valid`() {
         assertDoesNotThrow {
-            WorkerConfig().validate()
+            WorkerConfig()
+        }
+    }
+
+    @Test
+    fun `durations must be strictly positive`() {
+        assertThrows(IllegalArgumentException::class.java) { WorkerConfig(natsAckWait = Duration.ZERO) }
+        assertThrows(IllegalArgumentException::class.java) { WorkerConfig(natsAckWait = (-1).seconds) }
+        assertThrows(IllegalArgumentException::class.java) { WorkerConfig(lockTtl = Duration.ZERO) }
+        assertThrows(IllegalArgumentException::class.java) { WorkerConfig(dirtyTtl = Duration.ZERO) }
+        assertThrows(IllegalArgumentException::class.java) { WorkerConfig(cliTimeout = Duration.ZERO) }
+        assertThrows(IllegalArgumentException::class.java) { WorkerConfig(heartbeatInterval = Duration.ZERO) }
+        assertThrows(IllegalArgumentException::class.java) { WorkerConfig(lockCollisionRetryDelay = Duration.ZERO) }
+        assertThrows(IllegalArgumentException::class.java) { WorkerConfig(fetchTimeout = Duration.ZERO) }
+        assertThrows(IllegalArgumentException::class.java) { WorkerConfig(infraErrorBackoffBase = Duration.ZERO) }
+        assertThrows(IllegalArgumentException::class.java) {
+            WorkerConfig(
+                infraErrorBackoffBase = 10.seconds,
+                infraErrorBackoffMax = 5.seconds,
+            )
+        }
+    }
+
+    @Test
+    fun `fetchTimeout must be strictly less than lockTtl`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            WorkerConfig(
+                lockTtl = 5.seconds,
+                fetchTimeout = 5.seconds,
+                heartbeatInterval = 1.seconds,
+                natsAckWait = 10.seconds,
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            WorkerConfig(
+                lockTtl = 5.seconds,
+                fetchTimeout = 6.seconds,
+                heartbeatInterval = 1.seconds,
+                natsAckWait = 10.seconds,
+            )
         }
     }
 

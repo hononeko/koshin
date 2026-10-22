@@ -15,9 +15,31 @@ class DomainModelTest {
         val repo = RepoRef(Platform.GITHUB, "hononeko/koshin")
         assertEquals("github:hononeko/koshin", repo.toString())
 
-        assertThrows(IllegalArgumentException::class.java) {
-            RepoRef(Platform.GITHUB, "   ")
-        }
+        // Valid repository names including dots
+        assertEquals("hononeko/foo..bar", RepoRef(Platform.GITHUB, "hononeko/foo..bar").repository)
+        val gitlabRepo = RepoRef(Platform.GITLAB, "gitlab-group/subgroup/project")
+        assertEquals("gitlab-group/subgroup/project", gitlabRepo.repository)
+
+        // Blank or whitespace
+        assertThrows(IllegalArgumentException::class.java) { RepoRef(Platform.GITHUB, "   ") }
+        assertThrows(IllegalArgumentException::class.java) { RepoRef(Platform.GITHUB, "owner/ repo") }
+        assertThrows(IllegalArgumentException::class.java) { RepoRef(Platform.GITHUB, "owner/\trepo") }
+        assertThrows(IllegalArgumentException::class.java) { RepoRef(Platform.GITHUB, "owner/\nrepo") }
+
+        // Slashes
+        assertThrows(IllegalArgumentException::class.java) { RepoRef(Platform.GITHUB, "/owner/repo") }
+        assertThrows(IllegalArgumentException::class.java) { RepoRef(Platform.GITHUB, "owner/repo/") }
+        assertThrows(IllegalArgumentException::class.java) { RepoRef(Platform.GITHUB, "owner//repo") }
+
+        // Path traversal / dot segments
+        assertThrows(IllegalArgumentException::class.java) { RepoRef(Platform.GITHUB, "../repo") }
+        assertThrows(IllegalArgumentException::class.java) { RepoRef(Platform.GITHUB, "owner/..") }
+        assertThrows(IllegalArgumentException::class.java) { RepoRef(Platform.GITHUB, "owner/.") }
+
+        // Platform segment constraints
+        assertThrows(IllegalArgumentException::class.java) { RepoRef(Platform.GITHUB, "single-segment") }
+        assertThrows(IllegalArgumentException::class.java) { RepoRef(Platform.GITHUB, "owner/repo/extra") }
+        assertThrows(IllegalArgumentException::class.java) { RepoRef(Platform.GITLAB, "single-segment") }
     }
 
     @Test
