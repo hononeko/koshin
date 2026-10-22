@@ -1,0 +1,131 @@
+name: PR Validation
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      snapshot: >-
+        ${{ github.event.pull_request.head.repo.full_name == github.repository
+        && contains(github.event.pull_request.labels.*.name, 'snapshot') }}
+      tag: ${{ steps.version.outputs.snapshot-tag }}
+      version: ${{ steps.version.outputs.snapshot-version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Version
+        id: version
+        uses: hononeko/actions/version@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
+        with:
+          pr-number: ${{ github.event.pull_request.number }}
+
+  build:
+    name: Build & Code Verification
+    uses: ./.github/workflows/validate.yml
+    with:
+      ref: ${{ github.event.pull_request.head.sha }}
+    permissions:
+      contents: read
+      security-events: write
+
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Gradle & JDK
+        uses: hononeko/actions/gradle-setup@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
+
+      - name: Run Integration Tests
+        id: integration-tests
+        run: ./gradlew integrationTest --no-daemon
+
+      - name: Generate Job Summary
+        if: always()
+        run: |
+          echo "### Integration Test Summary" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.integration-tests.outcome }}" = "success" ]; then
+            echo "Integration tests completed successfully." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Integration tests failed." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  manifests:
+    name: Validate Manifests & Workflows
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Lint GitHub Actions workflows
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
+
+      - name: Validate Kubernetes manifests
+        run: |
+          if [ -d k8s/overlays/minimal ]; then
+            echo "Validating k8s/overlays/minimal..."
+            kubectl kustomize k8s/overlays/minimal | docker run --rm -i ghcr.io/yannh/kubeconform:v0.8.0@sha256:faffaf43f95aa6425306e1ab8d6fcad72acb9049158f38e574c085ea1ec0f64e -summary -ignore-missing-schemas -strict
+          fi
+          if [ -d k8s/overlays/ha ]; then
+            echo "Validating k8s/overlays/ha..."
+            kubectl kustomize k8s/overlays/ha | docker run --rm -i ghcr.io/yannh/kubeconform:v0.8.0@sha256:faffaf43f95aa6425306e1ab8d6fcad72acb9049158f38e574c085ea1ec0f64e -summary -ignore-missing-schemas -strict
+          fi
+          if [ -d charts ]; then
+            echo "Validating Helm charts..."
+            helm lint charts/*
+          elif [ -f Chart.yaml ]; then
+            echo "Validating Helm chart..."
+            helm lint .
+          fi
+
+  image:
+    name: Image Build & Smoke Test
+    needs: [plan, build, integration]
+    uses: ./.github/workflows/image.yml
+    with:
+      push: ${{ needs.plan.outputs.snapshot == 'true' }}
+      ref: ${{ github.event.pull_request.head.sha }}
+      version: ${{ needs.plan.outputs.version }}
+    permissions:
+      contents: read
+      packages: write
+
+  snapshot:
+    name: "Snapshot: Publish"
+    needs: [plan, image]
+    if: needs.plan.outputs.snapshot == 'true'
+    uses: ./.github/workflows/publish-snapshot.yml
+    with:
+      tag: ${{ needs.plan.outputs.tag }}
+      pr-number: ${{ github.event.pull_request.number }}
+      ref: ${{ github.event.pull_request.head.sha }}
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+      pull-requests: write

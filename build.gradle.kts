@@ -61,15 +61,47 @@ subprojects {
         "testRuntimeOnly"(rootProject.libs.junit.platform.launcher)
     }
 
+    val javaVersion = rootProject.layout.projectDirectory.file(".java-version").asFile.readText().trim().toInt()
+
     configure<org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension> {
-        jvmToolchain(rootProject.libs.versions.jvm.get().toInt())
+        jvmToolchain(javaVersion)
         compilerOptions {
             allWarningsAsErrors.set(true)
         }
     }
 
+    kover {
+        currentProject {
+            instrumentation {
+                disabledForTestTasks.add("integrationTest")
+            }
+        }
+    }
+
     tasks.withType<Test>().configureEach {
         useJUnitPlatform()
+    }
+
+    tasks.named<Test>("test") {
+        filter {
+            excludeTestsMatching("*IntegrationTest")
+            excludeTestsMatching("*IT")
+        }
+    }
+
+    val testTask = tasks.named<Test>("test")
+
+    tasks.register<Test>("integrationTest") {
+        description = "Runs integration tests using Testcontainers."
+        group = "verification"
+        testClassesDirs = testTask.get().testClassesDirs
+        classpath = testTask.get().classpath
+        filter {
+            includeTestsMatching("*IntegrationTest")
+            includeTestsMatching("*IT")
+            isFailOnNoMatchingTests = false
+        }
+        shouldRunAfter(testTask)
     }
 
     detekt {

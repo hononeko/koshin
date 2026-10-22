@@ -1,0 +1,87 @@
+name: PR Snapshot
+
+on:
+  pull_request:
+    types: [labeled]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: "Snapshot: Plan"
+    if: github.event.label.name == 'snapshot' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.version.outputs.snapshot-tag }}
+      version: ${{ steps.version.outputs.snapshot-version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Version
+        id: version
+        uses: hononeko/actions/version@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
+        with:
+          pr-number: ${{ github.event.pull_request.number }}
+
+  build:
+    name: "Snapshot: Build & Code Verification"
+    needs: plan
+    uses: ./.github/workflows/validate.yml
+    with:
+      ref: ${{ github.event.pull_request.head.sha }}
+    permissions:
+      contents: read
+      security-events: write
+
+  integration:
+    name: "Snapshot: Integration Tests"
+    needs: plan
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Gradle & JDK
+        uses: hononeko/actions/gradle-setup@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
+
+      - name: Run Integration Tests
+        run: ./gradlew integrationTest --no-daemon
+
+  image:
+    name: "Snapshot: Image Build & Smoke Test"
+    needs: [plan, build, integration]
+    uses: ./.github/workflows/image.yml
+    with:
+      push: true
+      ref: ${{ github.event.pull_request.head.sha }}
+      version: ${{ needs.plan.outputs.version }}
+    permissions:
+      contents: read
+      packages: write
+
+  publish:
+    name: "Snapshot: Publish"
+    needs: [plan, image]
+    uses: ./.github/workflows/publish-snapshot.yml
+    with:
+      tag: ${{ needs.plan.outputs.tag }}
+      pr-number: ${{ github.event.pull_request.number }}
+      ref: ${{ github.event.pull_request.head.sha }}
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+      pull-requests: write

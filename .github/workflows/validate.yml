@@ -1,0 +1,111 @@
+name: Validate
+
+# Reusable workflow for building, linting, and verifying the codebase.
+# Runs check (unit tests, Detekt static analysis, Kover verification),
+# merges and uploads Detekt SARIF to CodeQL code scanning,
+# prints the Kover coverage summary to $GITHUB_STEP_SUMMARY, and uploads coverage artifacts.
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit ref to check out (empty for default)
+        type: string
+        default: ""
+
+jobs:
+  validate:
+    name: Build & Code Verification
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref || '' }}
+
+      - name: Set up Gradle & JDK
+        uses: hononeko/actions/gradle-setup@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
+
+      - name: Run build and verification
+        run: ./gradlew check --no-daemon
+
+      - name: Merge Detekt SARIF reports
+        if: always()
+        run: |
+          mkdir -p build/reports
+          python3 -c "
+          import glob, json, os
+
+          sarif_files = [
+              f for f in glob.glob('**/build/reports/detekt/*.sarif', recursive=True)
+              if os.path.basename(f) in ('main.sarif', 'test.sarif')
+          ]
+          if sarif_files:
+              merged = None
+              all_results = []
+              all_rules = {}
+              for sf in sorted(sarif_files):
+                  try:
+                      with open(sf) as f:
+                          data = json.load(f)
+                          for r in data.get('runs', []):
+                              if merged is None:
+                                  merged = data
+                                  merged['runs'] = [r]
+                              all_results.extend(r.get('results', []))
+                              driver = r.get('tool', {}).get('driver', {})
+                              for rule in driver.get('rules', []):
+                                  all_rules[rule['id']] = rule
+                  except Exception as e:
+                      print(f'Error reading {sf}: {e}')
+              if merged and merged.get('runs'):
+                  merged['runs'][0]['results'] = all_results
+                  merged['runs'][0]['tool']['driver']['rules'] = list(all_rules.values())
+                  with open('build/reports/detekt-merged.sarif', 'w') as out:
+                      json.dump(merged, out)
+                  print(f'Merged {len(sarif_files)} SARIF reports into build/reports/detekt-merged.sarif with {len(all_results)} findings')
+          "
+
+      - name: Upload Detekt SARIF report
+        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && hashFiles('build/reports/detekt-merged.sarif') != ''
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4
+        with:
+          sarif_file: build/reports/detekt-merged.sarif
+          checkout_path: ${{ github.workspace }}
+
+      - name: Summarize Kover coverage
+        if: always()
+        run: |
+          echo "### Kover Coverage Summary" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f build/reports/kover/report.xml ]; then
+            python3 -c "
+          import xml.etree.ElementTree as ET
+          try:
+              tree = ET.parse('build/reports/kover/report.xml')
+              root = tree.getroot()
+              for counter in root.findall('counter'):
+                  ctype = counter.attrib.get('type')
+                  covered = int(counter.attrib.get('covered', 0))
+                  missed = int(counter.attrib.get('missed', 0))
+                  total = covered + missed
+                  pct = (covered / total * 100) if total > 0 else 0
+                  print(f'- **{ctype}**: {pct:.2f}% ({covered}/{total})')
+          except Exception as e:
+              print(f'Error reading coverage XML: {e}')
+          " >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No Kover total report.xml found." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload Kover coverage reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: kover-reports
+          path: |
+            build/reports/kover/
+            **/build/reports/kover/
+          if-no-files-found: ignore
