@@ -46,8 +46,6 @@ jobs:
       - name: Version
         id: version
         uses: hononeko/actions/version@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
-        with:
-          tag-prefix: v
 
       - name: Release notes
         uses: hononeko/actions/release-notes@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
@@ -88,7 +86,6 @@ jobs:
 
   build:
     name: Build & Code Verification
-    needs: plan
     uses: ./.github/workflows/validate.yml
     permissions:
       contents: read
@@ -96,7 +93,6 @@ jobs:
 
   integration:
     name: Integration Tests
-    needs: plan
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -122,12 +118,33 @@ jobs:
       contents: read
       packages: write
 
-  publish:
-    name: Publish Images
-    needs: [plan, image]
+  release:
+    name: Tag & Release
+    needs: [plan, build, integration, image]
     if: needs.plan.outputs.release == 'true'
     runs-on: ubuntu-24.04
     permissions:
+      contents: write
+    env:
+      VERSION_TAG: ${{ needs.plan.outputs.version_tag }}
+    steps:
+      - name: Download release notes
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: release-notes
+
+      - name: Tag & create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$VERSION_TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$VERSION_TAG" --notes-file release-notes.md
+
+  publish:
+    name: Publish Images
+    needs: [plan, image, release]
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
       packages: write
       attestations: write
       id-token: write
@@ -176,26 +193,3 @@ jobs:
           expected-digests: "2"
           title: Worker Published
           attest: "true"
-
-  release:
-    name: Tag & Release
-    needs: [plan, build, integration, image, publish]
-    if: |
-      always() && needs.plan.outputs.release == 'true' && needs.build.result == 'success' && needs.integration.result == 'success' &&
-      (needs.image.result == 'success' || needs.image.result == 'skipped') &&
-      (needs.publish.result == 'success' || needs.publish.result == 'skipped')
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    env:
-      VERSION_TAG: ${{ needs.plan.outputs.version_tag }}
-    steps:
-      - name: Download release notes
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: release-notes
-
-      - name: Tag & create the GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "$VERSION_TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$VERSION_TAG" --notes-file release-notes.md
