@@ -40,6 +40,7 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TestTimeSource
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ProcessRenovateJobUseCaseTest {
@@ -67,7 +68,7 @@ class ProcessRenovateJobUseCaseTest {
     )
 
     private var uuidCounter = 0
-    private var testClockMs = 1_000_000L
+    private val testTimeSource = TestTimeSource()
     private val useCase = ProcessRenovateJobUseCase(
         queueConsumer = queueConsumer,
         queuePublisher = queuePublisher,
@@ -79,7 +80,7 @@ class ProcessRenovateJobUseCaseTest {
         workspaceCleaner = workspaceCleaner,
         config = testConfig,
         uuidGenerator = { "uuid-${++uuidCounter}" },
-        clock = { testClockMs },
+        timeSource = testTimeSource,
     )
 
     private val testRepo = RepoRef(Platform.GITHUB, "hononeko/koshin")
@@ -95,7 +96,6 @@ class ProcessRenovateJobUseCaseTest {
     @BeforeEach
     fun setup() {
         uuidCounter = 0
-        testClockMs = 1_000_000L
         every { delivery.event } returns testEvent
         every { delivery.deliveryAttempt } returns 1
         coEvery { delivery.ack() } returns Unit
@@ -488,7 +488,7 @@ class ProcessRenovateJobUseCaseTest {
         }
 
         cliStarted.await()
-        testClockMs += (testConfig.lockTtl - testConfig.heartbeatInterval).inWholeMilliseconds + 1000L
+        testTimeSource += testConfig.lockTtl - testConfig.heartbeatInterval + 1.seconds
         advanceTimeBy(testConfig.heartbeatInterval + 10.milliseconds)
         job.join()
 
@@ -624,7 +624,7 @@ class ProcessRenovateJobUseCaseTest {
     }
 
     @Test
-    fun `cancellation during acquire releases run slot, NAKs with 0, and rethrows CancellationException`() = runTest {
+    fun `cancellation during acquire releases run slot, releases lock, NAKs with 0, and rethrows`() = runTest {
         coEvery {
             coordinationPort.acquireOrMarkDirty(any(), any(), any(), any())
         } throws CancellationException("Worker shutdown")
@@ -637,6 +637,7 @@ class ProcessRenovateJobUseCaseTest {
         }
 
         assertTrue(thrown is CancellationException)
+        coVerify(exactly = 1) { coordinationPort.releaseLock(testRepo, "token-1") }
         coVerify(exactly = 1) { delivery.nack(Duration.ZERO) }
         coVerify(exactly = 1) { throttlePort.releaseRunSlot(testRepo.platform, "token-1") }
     }
@@ -649,5 +650,43 @@ class ProcessRenovateJobUseCaseTest {
 
         coVerify(exactly = 1) { throttlePort.releaseRunSlot(testRepo.platform, "token-1") }
         coVerify(exactly = 1) { delivery.ack() }
+    }
+
+    @Test
+    fun `NATS heartbeat blip does not prevent Valkey lock extension`() = runTest {
+        val cliStarted = CompletableDeferred<Unit>()
+        val cliShouldFinish = CompletableDeferred<Unit>()
+
+        coEvery { cliExecutor.execute(any(), any(), any()) } coAnswers {
+            cliStarted.complete(Unit)
+            cliShouldFinish.await()
+            JobExecutionResult.Success
+        }
+        coEvery { delivery.heartbeat() } throws IllegalStateException("NATS connection timeout")
+
+        val job = launch {
+            useCase.processDelivery(delivery, "token-1")
+        }
+
+        cliStarted.await()
+        advanceTimeBy(testConfig.heartbeatInterval + 10.milliseconds)
+        cliShouldFinish.complete(Unit)
+        job.join()
+
+        coVerify(atLeast = 1) { coordinationPort.extendLock(testRepo, "token-1", testConfig.lockTtl) }
+        coVerify(atLeast = 1) { throttlePort.extendRunSlot(testRepo.platform, "token-1", testConfig.lockTtl) }
+        coVerify(exactly = 1) { delivery.ack() }
+    }
+
+    @Test
+    fun `cache persist failure does not fail or rerun successful job`() = runTest {
+        coEvery { cachePort.persist(testRepo) } throws IllegalStateException("Object store write failure")
+
+        useCase.processDelivery(delivery, "token-1")
+
+        coVerify(exactly = 1) { delivery.ack() }
+        coVerify(exactly = 0) { delivery.nack(any()) }
+        coVerify(exactly = 1) { throttlePort.resetBackoff(testRepo.platform) }
+        coVerify(exactly = 1) { throttlePort.releaseRunSlot(testRepo.platform, "token-1") }
     }
 }

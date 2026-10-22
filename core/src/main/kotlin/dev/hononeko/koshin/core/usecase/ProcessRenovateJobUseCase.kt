@@ -20,12 +20,14 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
 import kotlin.time.Duration
+import kotlin.time.TimeSource
 
 class ProcessRenovateJobUseCase(
     private val queueConsumer: JobQueueConsumer,
@@ -38,7 +40,7 @@ class ProcessRenovateJobUseCase(
     private val workspaceCleaner: WorkspaceCleanerPort,
     private val config: WorkerConfig = WorkerConfig(),
     private val uuidGenerator: () -> String = { UUID.randomUUID().toString() },
-    private val clock: () -> Long = { System.currentTimeMillis() },
+    private val timeSource: TimeSource = TimeSource.Monotonic,
 ) {
 
     suspend fun processNext(platforms: Collection<Platform> = Platform.entries): Boolean {
@@ -92,6 +94,7 @@ class ProcessRenovateJobUseCase(
             )
         } catch (e: CancellationException) {
             withContext(NonCancellable) {
+                runCatching { coordinationPort.releaseLock(repo, lockToken) }
                 runCatching { delivery.nack(Duration.ZERO) }
                 runCatching { throttlePort.releaseRunSlot(repo.platform, lockToken) }
             }
@@ -162,7 +165,7 @@ class ProcessRenovateJobUseCase(
             }
         } finally {
             withContext(NonCancellable) {
-                heartbeatJob?.cancel()
+                heartbeatJob?.cancelAndJoin()
                 try {
                     throttlePort.releaseRunSlot(repo.platform, lockToken)
                 } finally {
@@ -200,14 +203,14 @@ class ProcessRenovateJobUseCase(
         lockToken: String,
         onLostLock: () -> Unit,
     ) {
-        var lastSuccessfulRenewal = clock()
-        val toleranceWindowMs = (config.lockTtl - config.heartbeatInterval).inWholeMilliseconds
+        var lastSuccessfulRenewal = timeSource.markNow()
+        val toleranceWindow = config.lockTtl - config.heartbeatInterval
 
         while (true) {
             delay(config.heartbeatInterval)
             when (performHeartbeatStep(delivery, repo, lockToken)) {
                 HeartbeatStepResult.SUCCESS -> {
-                    lastSuccessfulRenewal = clock()
+                    lastSuccessfulRenewal = timeSource.markNow()
                 }
 
                 HeartbeatStepResult.LOST -> {
@@ -216,8 +219,7 @@ class ProcessRenovateJobUseCase(
                 }
 
                 HeartbeatStepResult.TRANSIENT_ERROR -> {
-                    val elapsed = clock() - lastSuccessfulRenewal
-                    if (elapsed >= toleranceWindowMs) {
+                    if (lastSuccessfulRenewal.elapsedNow() >= toleranceWindow) {
                         onLostLock()
                         return
                     }
@@ -230,19 +232,28 @@ class ProcessRenovateJobUseCase(
         delivery: JobDelivery,
         repo: RepoRef,
         lockToken: String,
-    ): HeartbeatStepResult = try {
-        delivery.heartbeat()
-        val lockExtended = coordinationPort.extendLock(repo, lockToken, config.lockTtl)
-        if (!lockExtended) {
-            HeartbeatStepResult.LOST
-        } else {
-            val slotExtended = throttlePort.extendRunSlot(repo.platform, lockToken, config.lockTtl)
-            if (!slotExtended) HeartbeatStepResult.LOST else HeartbeatStepResult.SUCCESS
+    ): HeartbeatStepResult {
+        try {
+            delivery.heartbeat()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (@Suppress("TooGenericExceptionCaught", "SwallowedException") _: Exception) {
+            // Broker blip is tolerated; do not let broker heartbeat failure block lock renewal
         }
-    } catch (e: CancellationException) {
-        throw e
-    } catch (@Suppress("TooGenericExceptionCaught", "SwallowedException") e: Exception) {
-        HeartbeatStepResult.TRANSIENT_ERROR
+
+        return try {
+            val lockExtended = coordinationPort.extendLock(repo, lockToken, config.lockTtl)
+            if (!lockExtended) {
+                HeartbeatStepResult.LOST
+            } else {
+                val slotExtended = throttlePort.extendRunSlot(repo.platform, lockToken, config.lockTtl)
+                if (!slotExtended) HeartbeatStepResult.LOST else HeartbeatStepResult.SUCCESS
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (@Suppress("TooGenericExceptionCaught", "SwallowedException") e: Exception) {
+            HeartbeatStepResult.TRANSIENT_ERROR
+        }
     }
 
     private suspend fun handleTerminalResult(
@@ -254,10 +265,10 @@ class ProcessRenovateJobUseCase(
         val repo = delivery.event.repo
 
         if (result is JobExecutionResult.Success) {
-            cachePort.persist(repo)
+            runCatching { cachePort.persist(repo) }
         }
 
-        heartbeatJob.cancel()
+        heartbeatJob.cancelAndJoin()
 
         val release = coordinationPort.releaseLockAndTakeDirty(repo, lockToken)
 
@@ -303,7 +314,7 @@ class ProcessRenovateJobUseCase(
         val event = delivery.event
         val repo = event.repo
 
-        heartbeatJob.cancel()
+        heartbeatJob.cancelAndJoin()
 
         val released = coordinationPort.releaseLock(repo, lockToken)
         if (!released) {
