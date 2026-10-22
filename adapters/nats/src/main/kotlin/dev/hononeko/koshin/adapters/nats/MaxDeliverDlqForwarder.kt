@@ -14,6 +14,7 @@ import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicInteger
 
 class MaxDeliverDlqForwarder(
     private val connection: Connection,
@@ -25,6 +26,8 @@ class MaxDeliverDlqForwarder(
 ) : AutoCloseable {
     private val logger = LoggerFactory.getLogger(MaxDeliverDlqForwarder::class.java)
     private var dispatcher: Dispatcher? = null
+
+    val handledAdvisoriesCount = AtomicInteger(0)
 
     val isRunning: Boolean
         get() = synchronized(this) { dispatcher != null }
@@ -56,19 +59,62 @@ class MaxDeliverDlqForwarder(
 
     internal fun handleAdvisory(msg: Message) {
         val advisory = parseAdvisoryOrNull(msg.data.decodeToString()) ?: return
-        if (advisory.stream != null && advisory.stream != config.jobsStreamName) {
-            logger.debug("Ignoring MaxDeliver advisory for unrelated stream: {}", advisory.stream)
+        if (!isValidAdvisory(advisory)) {
             return
         }
 
-        processExhaustedMessage(advisory.streamSeq)
+        handledAdvisoriesCount.incrementAndGet()
+        processExhaustedMessageWithRetry(advisory)
     }
 
-    private fun processExhaustedMessage(streamSeq: Long) {
-        val msgInfo = fetchMessageOrNull(streamSeq) ?: return
-        val platform = extractPlatform(msgInfo)
-        forwardToDlq(streamSeq, msgInfo, platform)
-        deleteFromWorkQueue(streamSeq)
+    private fun isValidAdvisory(advisory: MaxDeliveriesAdvisory): Boolean = when {
+        advisory.stream != null && advisory.stream != config.jobsStreamName -> {
+            logger.debug("Ignoring MaxDeliver advisory for unrelated stream: {}", advisory.stream)
+            false
+        }
+
+        advisory.streamSeq <= 0L -> {
+            logger.warn("Ignoring MaxDeliver advisory with invalid streamSeq: {}", advisory.streamSeq)
+            false
+        }
+
+        else -> true
+    }
+
+    private fun processExhaustedMessageWithRetry(
+        advisory: MaxDeliveriesAdvisory,
+        maxRetries: Int = DEFAULT_MAX_RETRIES,
+    ) {
+        var attempt = 0
+        while (attempt < maxRetries) {
+            attempt++
+            try {
+                val msgInfo = fetchMessageOrNull(advisory.streamSeq) ?: return
+                val platform = extractPlatform(msgInfo)
+                forwardToDlq(advisory.streamSeq, msgInfo, platform, advisory.deliveries)
+                deleteFromWorkQueueWithRetry(advisory.streamSeq)
+                return
+            } catch (@Suppress("TooGenericExceptionCaught") e: Exception) {
+                logger.warn(
+                    "Attempt {}/{} failed to process exhausted message seq {} from {}: {}",
+                    attempt,
+                    maxRetries,
+                    advisory.streamSeq,
+                    config.jobsStreamName,
+                    e.message,
+                )
+                if (attempt >= maxRetries) {
+                    logger.error(
+                        "Exhausted retries processing advisory for seq {} in stream {}",
+                        advisory.streamSeq,
+                        config.jobsStreamName,
+                        e,
+                    )
+                    throw e
+                }
+                Thread.sleep((RETRY_BACKOFF_BASE_MS * attempt).coerceAtMost(RETRY_BACKOFF_MAX_MS))
+            }
+        }
     }
 
     private fun parseAdvisoryOrNull(payloadString: String): MaxDeliveriesAdvisory? = try {
@@ -120,11 +166,19 @@ class MaxDeliverDlqForwarder(
         }
     }
 
-    private fun forwardToDlq(streamSeq: Long, msgInfo: MessageInfo, platform: String) {
+    private fun forwardToDlq(streamSeq: Long, msgInfo: MessageInfo, platform: String, deliveries: Long = 0L) {
         val dlqSubject = "${config.dlqSubjectPrefix}.$platform"
         val dlqMsgId = "dlq:${config.jobsStreamName}:$streamSeq"
         val headers = if (msgInfo.headers != null) Headers(msgInfo.headers) else Headers()
-        headers.put("Nats-Msg-Id", dlqMsgId)
+
+        val originalMsgId = headers.getFirst("Nats-Msg-Id")
+        if (originalMsgId != null) {
+            headers.put("Koshin-Original-Msg-Id", originalMsgId)
+        }
+        headers.put("Koshin-Stream-Seq", streamSeq.toString())
+        if (deliveries > 0L) {
+            headers.put("Koshin-Deliveries", deliveries.toString())
+        }
 
         val publishOptions = PublishOptions.builder()
             .messageId(dlqMsgId)
@@ -136,18 +190,46 @@ class MaxDeliverDlqForwarder(
             config.jobsStreamName,
             dlqSubject,
         )
-        js.publish(dlqSubject, headers, msgInfo.data, publishOptions)
+        val ack = js.publish(dlqSubject, headers, msgInfo.data, publishOptions)
+        if (ack.isDuplicate) {
+            logger.debug("DLQ message {} for sequence {} was detected as duplicate", dlqMsgId, streamSeq)
+        }
     }
 
-    private fun deleteFromWorkQueue(streamSeq: Long) {
-        try {
-            jsm.deleteMessage(config.jobsStreamName, streamSeq)
-            logger.info("Successfully evicted sequence {} from {}", streamSeq, config.jobsStreamName)
-        } catch (e: JetStreamApiException) {
-            if (e.errorCode == MESSAGE_NOT_FOUND_ERROR_CODE || e.apiErrorCode == MESSAGE_NOT_FOUND_ERROR_CODE) {
-                logger.info("Message {} was already deleted from {}", streamSeq, config.jobsStreamName)
-            } else {
-                logger.warn("Failed to delete message {} from {}", streamSeq, config.jobsStreamName, e)
+    private fun deleteFromWorkQueueWithRetry(streamSeq: Long, maxRetries: Int = DEFAULT_MAX_RETRIES) {
+        var attempt = 0
+        while (attempt < maxRetries) {
+            attempt++
+            try {
+                jsm.deleteMessage(config.jobsStreamName, streamSeq)
+                logger.info("Successfully evicted sequence {} from {}", streamSeq, config.jobsStreamName)
+                return
+            } catch (e: JetStreamApiException) {
+                if (e.errorCode == MESSAGE_NOT_FOUND_ERROR_CODE || e.apiErrorCode == MESSAGE_NOT_FOUND_ERROR_CODE) {
+                    logger.info("Message {} was already deleted from {}", streamSeq, config.jobsStreamName)
+                    return
+                } else {
+                    logger.warn(
+                        "Attempt {}/{} failed to delete message {} from {}: {}",
+                        attempt,
+                        maxRetries,
+                        streamSeq,
+                        config.jobsStreamName,
+                        e.message,
+                    )
+                    if (attempt >= maxRetries) {
+                        logger.error("Failed to delete message {} after {} attempts", streamSeq, maxRetries, e)
+                    } else {
+                        Thread.sleep((RETRY_BACKOFF_BASE_MS * attempt).coerceAtMost(RETRY_BACKOFF_MAX_MS))
+                    }
+                }
+            } catch (@Suppress("TooGenericExceptionCaught") e: Exception) {
+                logger.warn("Attempt {}/{} error deleting message {}: {}", attempt, maxRetries, streamSeq, e.message)
+                if (attempt >= maxRetries) {
+                    logger.error("Failed to delete message {} after {} attempts", streamSeq, maxRetries, e)
+                } else {
+                    Thread.sleep((RETRY_BACKOFF_BASE_MS * attempt).coerceAtMost(RETRY_BACKOFF_MAX_MS))
+                }
             }
         }
     }
@@ -169,5 +251,8 @@ class MaxDeliverDlqForwarder(
 
     companion object {
         private const val MESSAGE_NOT_FOUND_ERROR_CODE = 10037
+        private const val DEFAULT_MAX_RETRIES = 3
+        private const val RETRY_BACKOFF_BASE_MS = 50L
+        private const val RETRY_BACKOFF_MAX_MS = 500L
     }
 }

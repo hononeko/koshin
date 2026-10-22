@@ -54,5 +54,20 @@ data class NatsConfig(
         const val DEFAULT_DLQ_SUBJECT_PREFIX = "renovate.dlq"
         const val DEFAULT_DLQ_QUEUE_GROUP = "koshin-dlq-forwarders"
         const val DEFAULT_CONSUMER_PREFIX = "koshin-workers-"
+
+        fun fromEnv(env: Map<String, String> = System.getenv()): NatsConfig = NatsConfig(
+            jobsStreamName = env["NATS_JOBS_STREAM"] ?: DEFAULT_JOBS_STREAM,
+            dlqStreamName = env["NATS_DLQ_STREAM"] ?: DEFAULT_DLQ_STREAM,
+            jobsSubjectPrefix = env["NATS_JOBS_SUBJECT_PREFIX"] ?: DEFAULT_JOBS_SUBJECT_PREFIX,
+            dlqSubjectPrefix = env["NATS_DLQ_SUBJECT_PREFIX"] ?: DEFAULT_DLQ_SUBJECT_PREFIX,
+            replicas = env["NATS_STREAM_REPLICAS"]?.toIntOrNull() ?: 1,
+            ackWait = env["NATS_ACK_WAIT_SECONDS"]?.toLongOrNull()?.seconds ?: 60.seconds,
+            maxDeliver = env["NATS_MAX_DELIVER"]?.toLongOrNull() ?: 5L,
+            duplicateWindow = env["NATS_DUPLICATE_WINDOW_MINUTES"]?.toLongOrNull()?.minutes ?: 2.minutes,
+            dlqMaxAge = env["NATS_DLQ_MAX_AGE_DAYS"]?.toLongOrNull()?.days ?: 7.days,
+            dlqForwarderQueueGroup = env["NATS_DLQ_FORWARDER_QUEUE_GROUP"] ?: DEFAULT_DLQ_QUEUE_GROUP,
+            consumerPrefix = env["NATS_CONSUMER_PREFIX"] ?: DEFAULT_CONSUMER_PREFIX,
+            storageType = env["NATS_STORAGE_TYPE"]?.let { StorageType.valueOf(it) } ?: StorageType.File,
+        )
     }
 }

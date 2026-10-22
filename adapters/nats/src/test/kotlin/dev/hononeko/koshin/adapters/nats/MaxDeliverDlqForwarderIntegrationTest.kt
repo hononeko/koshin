@@ -4,6 +4,8 @@ import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.model.RepoRef
 import dev.hononeko.koshin.core.model.TriggerReason
+import io.mockk.mockk
+import io.mockk.verify
 import io.nats.client.Connection
 import io.nats.client.JetStreamManagement
 import io.nats.client.Nats
@@ -20,7 +22,9 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
+import java.io.IOException
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 class MaxDeliverDlqForwarderIntegrationTest {
@@ -68,12 +72,90 @@ class MaxDeliverDlqForwarderIntegrationTest {
 
             exhaustJobDeliveries(publisher, consumer)
             verifyDlqForwarding(dlqStream, jobsStream, jsm)
+            assertEquals(1, forwarder1.handledAdvisoriesCount.get() + forwarder2.handledAdvisoriesCount.get())
             verifyRedeliveryIgnored(jobsStream, dlqStream, jsm)
 
             forwarder1.close()
             forwarder2.close()
             consumer.close()
         }
+
+    @Test
+    fun `repeat advisory with message still present is deduplicated by DLQ`() = runBlocking {
+        val jobsStream = "DEDUP_TEST_JOBS"
+        val dlqStream = "DEDUP_TEST_DLQ"
+        val config = NatsConfig(
+            jobsStreamName = jobsStream,
+            dlqStreamName = dlqStream,
+            jobsSubjectPrefix = "dedup.jobs",
+            dlqSubjectPrefix = "dedup.dlq",
+            storageType = StorageType.Memory,
+            duplicateWindow = 2.minutes,
+            ackWait = 1.seconds,
+            maxDeliver = 2,
+        )
+
+        val jsm = connection1.jetStreamManagement()
+        NatsJetStreamBootstrap(jsm, config).bootstrap(listOf(Platform.GITHUB))
+
+        val publisher = NatsJobQueuePublisher(connection1, config)
+        val event = RenovateJobEvent(
+            repo = RepoRef(Platform.GITHUB, "hononeko/dedup-job"),
+            deliveryId = "dedup-del-1",
+            triggerReason = TriggerReason.WEBHOOK,
+        )
+        publisher.publish(event)
+
+        var deleteCallCount = 0
+        val flakyJsm = object : JetStreamManagement by jsm {
+            override fun deleteMessage(streamName: String, seq: Long): Boolean {
+                if (deleteCallCount++ < 3) {
+                    throw IOException("Simulated transient delete failure")
+                }
+                return jsm.deleteMessage(streamName, seq)
+            }
+        }
+
+        val forwarder = MaxDeliverDlqForwarder(
+            connection = connection1,
+            config = config,
+            jsm = flakyJsm,
+            autoStart = false,
+        )
+
+        val advisoryMsg = NatsMessage.builder()
+            .subject("\$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.$jobsStream.koshin-workers-github")
+            .data(
+                """
+                {
+                    "type": "io.nats.jetstream.advisory.v1.max_deliver",
+                    "stream": "$jobsStream",
+                    "consumer": "koshin-workers-github",
+                    "stream_seq": 1,
+                    "deliveries": 2
+                }
+                """.trimIndent().toByteArray(),
+            )
+            .build()
+
+        // 1. First advisory: fails deleteMessage after DLQ publish
+        runCatching { forwarder.handleAdvisory(advisoryMsg) }
+
+        // The message is still in jobsStream
+        assertEquals(1L, jsm.getStreamInfo(jobsStream).streamState.msgCount)
+        // DLQ has 1 message
+        assertEquals(1L, jsm.getStreamInfo(dlqStream).streamState.msgCount)
+
+        // 2. Second advisory: message still present, publish to DLQ is deduplicated, delete succeeds
+        forwarder.handleAdvisory(advisoryMsg)
+
+        // DLQ still has exactly 1 message (deduplicated)
+        assertEquals(1L, jsm.getStreamInfo(dlqStream).streamState.msgCount)
+        // Eviction succeeded
+        assertEquals(0L, jsm.getStreamInfo(jobsStream).streamState.msgCount)
+
+        forwarder.close()
+    }
 
     private suspend fun exhaustJobDeliveries(publisher: NatsJobQueuePublisher, consumer: NatsJobQueueConsumer) {
         val event = RenovateJobEvent(
@@ -118,6 +200,12 @@ class MaxDeliverDlqForwarderIntegrationTest {
         assertEquals("hononeko/failing-job", receivedEvent.repo.repository)
         assertEquals("fail-delivery-123", receivedEvent.deliveryId)
         assertEquals("dlq:$jobsStream:1", dlqMsg.headers?.getFirst("Nats-Msg-Id"))
+        assertEquals(
+            "github:hononeko/failing-job:fail-delivery-123",
+            dlqMsg.headers?.getFirst("Koshin-Original-Msg-Id"),
+        )
+        assertEquals("1", dlqMsg.headers?.getFirst("Koshin-Stream-Seq"))
+        assertEquals("2", dlqMsg.headers?.getFirst("Koshin-Deliveries"))
         assertEquals(0L, jsm.getStreamInfo(jobsStream).streamState.msgCount)
     }
 
@@ -142,12 +230,13 @@ class MaxDeliverDlqForwarderIntegrationTest {
 
     @Test
     fun `forwarder ignores invalid or unrelated advisories`() {
+        val mockJsm = mockk<JetStreamManagement>(relaxed = true)
         val config = NatsConfig(
             jobsStreamName = "IGNORE_TEST_JOBS",
             dlqStreamName = "IGNORE_TEST_DLQ",
             storageType = StorageType.Memory,
         )
-        val forwarder = MaxDeliverDlqForwarder(connection1, config, autoStart = false)
+        val forwarder = MaxDeliverDlqForwarder(connection1, config, jsm = mockJsm, autoStart = false)
 
         val invalidMsg = NatsMessage.builder()
             .subject("\$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.IGNORE_TEST_JOBS.foo")
@@ -160,6 +249,15 @@ class MaxDeliverDlqForwarderIntegrationTest {
             .data("""{"stream": "OTHER_STREAM", "stream_seq": 99}""".toByteArray())
             .build()
         forwarder.handleAdvisory(unrelatedMsg)
+
+        val zeroSeqMsg = NatsMessage.builder()
+            .subject("\$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.IGNORE_TEST_JOBS.foo")
+            .data("""{"stream": "IGNORE_TEST_JOBS", "stream_seq": 0}""".toByteArray())
+            .build()
+        forwarder.handleAdvisory(zeroSeqMsg)
+
+        verify(exactly = 0) { mockJsm.getMessage(any<String>(), any<Long>()) }
+        assertEquals(0, forwarder.handledAdvisoriesCount.get())
 
         forwarder.close()
     }

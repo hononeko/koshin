@@ -192,7 +192,7 @@ class NatsJobQueueIntegrationTest {
             jobsSubjectPrefix = "heartbeat.jobs",
             dlqSubjectPrefix = "heartbeat.dlq",
             storageType = StorageType.Memory,
-            ackWait = 2.seconds,
+            ackWait = 3.seconds,
         )
 
         val jsm = connection.jetStreamManagement()
@@ -209,24 +209,24 @@ class NatsJobQueueIntegrationTest {
         )
         publisher.publish(event)
 
-        val delivery = consumer.fetchNext(Platform.GITHUB, 2.seconds)
+        val delivery = consumer.fetchNext(Platform.GITHUB, 3.seconds)
         assertNotNull(delivery)
         assertEquals(1, delivery?.deliveryAttempt)
 
-        // 1. Wait 1.2s, then call heartbeat()
-        delay(1200.milliseconds)
+        // 1. Wait 1.5s, then call heartbeat()
+        delay(1500.milliseconds)
         delivery?.heartbeat()
 
-        // 2. Wait another 1.2s (total 2.4s > 2.0s initial AckWait).
+        // 2. Wait another 2.0s (total 3.5s > 3.0s initial AckWait, but only 2.0s since heartbeat).
         // Since heartbeat reset the timer, a fetch attempt should NOT see redelivery yet.
-        delay(1200.milliseconds)
-        val earlyAttempt = consumer.fetchNext(Platform.GITHUB, 200.milliseconds)
+        delay(2000.milliseconds)
+        val earlyAttempt = consumer.fetchNext(Platform.GITHUB, 300.milliseconds)
         assertNull(earlyAttempt)
 
-        // 3. Now let AckWait expire without heartbeat (wait 2.2s)
-        delay(2200.milliseconds)
+        // 3. Now let AckWait expire without heartbeat (wait 2.0s more, total 4.0s since heartbeat > 3.0s AckWait)
+        delay(2000.milliseconds)
 
-        val redelivered = consumer.fetchNext(Platform.GITHUB, 2.seconds)
+        val redelivered = consumer.fetchNext(Platform.GITHUB, 3.seconds)
         assertNotNull(redelivered)
         assertEquals(2, redelivered?.deliveryAttempt)
         redelivered?.ack()

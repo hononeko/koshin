@@ -5,7 +5,6 @@ import dev.hononeko.koshin.core.ports.JobQueuePublisher
 import io.nats.client.Connection
 import io.nats.client.JetStream
 import io.nats.client.PublishOptions
-import io.nats.client.impl.Headers
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -43,14 +42,16 @@ class NatsJobQueuePublisher(
 
     private suspend fun publishInternal(subject: String, messageId: String, event: RenovateJobEvent) {
         val payload = json.encodeToString(RenovateJobEvent.serializer(), event).toByteArray(Charsets.UTF_8)
-        val headers = Headers().add("Nats-Msg-Id", messageId)
         val publishOptions = PublishOptions.builder()
             .messageId(messageId)
             .build()
 
         logger.debug("Publishing job to {} with messageId {}", subject, messageId)
-        withContext(ioDispatcher) {
-            js.publish(subject, headers, payload, publishOptions)
+        val ack = withContext(ioDispatcher) {
+            js.publish(subject, payload, publishOptions)
+        }
+        if (ack.isDuplicate) {
+            logger.debug("Duplicate job publish detected for messageId {} on {}", messageId, subject)
         }
     }
 }
