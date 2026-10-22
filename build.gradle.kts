@@ -61,10 +61,20 @@ subprojects {
         "testRuntimeOnly"(rootProject.libs.junit.platform.launcher)
     }
 
+    val javaVersion = rootProject.layout.projectDirectory.file(".java-version").asFile.readText().trim().toInt()
+
     configure<org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension> {
-        jvmToolchain(rootProject.libs.versions.jvm.get().toInt())
+        jvmToolchain(javaVersion)
         compilerOptions {
             allWarningsAsErrors.set(true)
+        }
+    }
+
+    kover {
+        currentProject {
+            instrumentation {
+                disabledForTestTasks.add("integrationTest")
+            }
         }
     }
 

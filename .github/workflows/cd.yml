@@ -87,10 +87,18 @@ jobs:
     name: Build & Code Verification
     needs: plan
     if: needs.plan.outputs.release == 'true' || inputs.dry_run
-    runs-on: ubuntu-24.04
+    uses: ./.github/workflows/validate.yml
     permissions:
       contents: read
       security-events: write
+
+  integration:
+    name: Integration Tests
+    needs: [plan, build]
+    if: needs.plan.outputs.release == 'true' || inputs.dry_run
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -98,66 +106,12 @@ jobs:
       - name: Set up Gradle & JDK
         uses: hononeko/actions/gradle-setup@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
 
-      - name: Run build and verification
-        run: ./gradlew check --no-daemon
-
-      - name: Prepare Detekt SARIF reports
-        if: always()
-        run: |
-          mkdir -p build/reports/detekt-all
-          find . -path "*/build/reports/detekt/*.sarif" | while read -r f; do
-            mod=$(echo "$f" | sed -E 's|^\./||; s|/build/reports/.*||; s|/|-|g')
-            base=$(basename "$f")
-            cp "$f" "build/reports/detekt-all/${mod}-${base}"
-          done
-
-      - name: Upload Detekt SARIF reports
-        if: always()
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4
-        with:
-          sarif_file: build/reports/detekt-all
-          checkout_path: ${{ github.workspace }}
-
-      - name: Summarize Kover coverage
-        if: always()
-        run: |
-          echo "### Kover Coverage Summary" >> "$GITHUB_STEP_SUMMARY"
-          if [ -f build/reports/kover/report.xml ]; then
-            python3 -c "
-          import xml.etree.ElementTree as ET
-          try:
-              tree = ET.parse('build/reports/kover/report.xml')
-              root = tree.getroot()
-              for counter in root.findall('counter'):
-                  ctype = counter.attrib.get('type')
-                  covered = int(counter.attrib.get('covered', 0))
-                  missed = int(counter.attrib.get('missed', 0))
-                  total = covered + missed
-                  pct = (covered / total * 100) if total > 0 else 0
-                  print(f'- **{ctype}**: {pct:.2f}% ({covered}/{total})')
-          except Exception as e:
-              print(f'Error reading coverage XML: {e}')
-          " >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "No Kover total report.xml found." >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Upload Kover coverage reports
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: kover-reports
-          path: |
-            build/reports/kover/
-            **/build/reports/kover/
-          if-no-files-found: ignore
-
       - name: Run Integration Tests
         run: ./gradlew integrationTest --no-daemon
 
   image:
     name: Image Build & Smoke Test
-    needs: [plan, build]
+    needs: [plan, build, integration]
     if: needs.plan.outputs.release == 'true' || inputs.dry_run
     uses: ./.github/workflows/image.yml
     with:
@@ -224,9 +178,9 @@ jobs:
 
   release:
     name: Tag & Release
-    needs: [plan, build, image, publish]
+    needs: [plan, build, integration, image, publish]
     if: |
-      always() && needs.plan.outputs.release == 'true' && needs.build.result == 'success' &&
+      always() && needs.plan.outputs.release == 'true' && needs.build.result == 'success' && needs.integration.result == 'success' &&
       (needs.image.result == 'success' || needs.image.result == 'skipped') &&
       (needs.publish.result == 'success' || needs.publish.result == 'skipped')
     runs-on: ubuntu-24.04
