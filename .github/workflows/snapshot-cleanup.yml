@@ -25,8 +25,27 @@ jobs:
     permissions:
       packages: write
     steps:
+      - name: Check packages in GHCR
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          owner="${{ github.repository_owner }}"
+          proxy_exists=false
+          worker_exists=false
+          if gh api "orgs/$owner/packages/container/koshin-proxy" >/dev/null 2>&1 || \
+             gh api "users/$owner/packages/container/koshin-proxy" >/dev/null 2>&1; then
+            proxy_exists=true
+          fi
+          if gh api "orgs/$owner/packages/container/koshin-worker" >/dev/null 2>&1 || \
+             gh api "users/$owner/packages/container/koshin-worker" >/dev/null 2>&1; then
+            worker_exists=true
+          fi
+          echo "proxy=$proxy_exists" >> "$GITHUB_OUTPUT"
+          echo "worker=$worker_exists" >> "$GITHUB_OUTPUT"
+
       - name: Prune koshin-proxy snapshots
-        continue-on-error: true
+        if: steps.check.outputs.proxy == 'true'
         uses: hononeko/actions/prune-snapshots@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
         with:
           package: koshin-proxy
@@ -34,8 +53,7 @@ jobs:
           dry-run: ${{ inputs.dry-run || false }}
 
       - name: Prune koshin-worker snapshots
-        if: always()
-        continue-on-error: true
+        if: always() && steps.check.outputs.worker == 'true'
         uses: hononeko/actions/prune-snapshots@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
         with:
           package: koshin-worker

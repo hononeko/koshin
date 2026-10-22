@@ -6,12 +6,15 @@ on:
 
 # Any other label gets a group of its own, so labelling never cancels a running build.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  group: >-
+    ${{ github.workflow }}-${{ github.event.pull_request.number }}${{
+    github.event.action == 'labeled' && github.event.label.name != 'snapshot' && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 jobs:
   plan:
     name: Plan
+    if: github.event.action != 'labeled' || github.event.label.name == 'snapshot'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -36,6 +39,7 @@ jobs:
 
   build:
     name: Build & Code Verification
+    if: github.event.action != 'labeled' || github.event.label.name == 'snapshot'
     uses: ./.github/workflows/validate.yml
     with:
       ref: ${{ github.event.pull_request.head.sha }}
@@ -45,6 +49,7 @@ jobs:
 
   integration:
     name: Integration Tests
+    if: github.event.action != 'labeled' || github.event.label.name == 'snapshot'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -73,6 +78,7 @@ jobs:
 
   manifests:
     name: Validate Manifests & Workflows
+    if: github.event.action != 'labeled' || github.event.label.name == 'snapshot'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -152,6 +158,8 @@ jobs:
           digests-pattern: digests-proxy-*
           expected-digests: "2"
           title: Proxy Snapshot
+          comment-on-pr: ${{ github.event.pull_request.number }}
+          comment-note: For testing only. Deleted when this pull request closes.
           attest: "true"
 
       - name: Publish worker snapshot
@@ -166,46 +174,6 @@ jobs:
           digests-pattern: digests-worker-*
           expected-digests: "2"
           title: Worker Snapshot
+          comment-on-pr: ${{ github.event.pull_request.number }}
+          comment-note: For testing only. Deleted when this pull request closes.
           attest: "true"
-
-      - name: Comment on pull request with snapshot images
-        if: steps.publish-proxy.outcome == 'success' || steps.publish-worker.outcome == 'success'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ github.event.pull_request.number }}
-          PROXY_REF: ${{ steps.publish-proxy.outputs.reference }}
-          WORKER_REF: ${{ steps.publish-worker.outputs.reference }}
-        run: |
-          set -euo pipefail
-          marker='<!-- hononeko/actions:publish-image -->'
-          body="$marker
-          ### Snapshots published
-          "
-          if [ -n "$PROXY_REF" ]; then
-            body="$body
-          **Proxy:**
-          \`\`\`
-          $PROXY_REF
-          \`\`\`
-          "
-          fi
-          if [ -n "$WORKER_REF" ]; then
-            body="$body
-          **Worker:**
-          \`\`\`
-          $WORKER_REF
-          \`\`\`
-          "
-          fi
-          body="$body
-          For testing only. Deleted when this pull request closes."
-
-          id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
-            --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -n 1)
-          if [ -n "$id" ]; then
-            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$body" >/dev/null
-            echo "Updated snapshot comment on #$PR"
-          else
-            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -f body="$body" >/dev/null
-            echo "Posted snapshot comment on #$PR"
-          fi
