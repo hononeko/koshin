@@ -9,3 +9,10 @@ ktlint:
 naming:
   FunctionNaming:
     ignoreAnnotated: ['Test']
+
+complexity:
+  TooManyFunctions:
+    allowedFunctionsPerClass: 20
+    ignoreAnnotatedFunctions: ['Test']
+  LongParameterList:
+    allowedConstructorParameters: 12
