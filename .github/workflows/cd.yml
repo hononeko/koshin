@@ -1,0 +1,246 @@
+name: Continuous Delivery & Release
+
+# On every push to main that warrants a new version:
+# 1. Runs full verification (Detekt + Kover gates, unit tests, integration tests)
+# 2. Uploads Detekt SARIF to GitHub Code Scanning to track the default branch
+# 3. Builds and smoke-tests proxy and worker images (amd64 and arm64)
+# 4. Publishes multi-arch images with release candidate, commit, version, and latest tags
+# 5. Generates grouped release notes and publishes a GitHub release
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Show the next version and its release notes without releasing
+        type: boolean
+        default: false
+
+concurrency:
+  group: cd-release
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan Release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      release: ${{ steps.decide.outputs.release }}
+      version: ${{ steps.version.outputs.version }}
+      version_tag: ${{ steps.version.outputs.version-tag }}
+      version_type: ${{ steps.version.outputs.version-type }}
+      rc_version: ${{ steps.version.outputs.rc-version }}
+      commit_tag: ${{ steps.version.outputs.commit-tag }}
+      previous_tag: ${{ steps.version.outputs.previous-tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Version
+        id: version
+        uses: hononeko/actions/version@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
+        with:
+          tag-prefix: v
+
+      - name: Release notes
+        uses: hononeko/actions/release-notes@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
+        with:
+          previous-tag: ${{ steps.version.outputs.previous-tag }}
+          tag: ${{ steps.version.outputs.version-tag }}
+          summary: Release notes for ${{ steps.version.outputs.version-tag }}
+
+      - name: Upload release notes
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-notes
+          path: release-notes.md
+
+      - name: Decide whether to release
+        id: decide
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          VERSION_TAG: ${{ steps.version.outputs.version-tag }}
+          VERSION_TYPE: ${{ steps.version.outputs.version-type }}
+        run: |
+          release=true
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "::notice::Dry run: not releasing $VERSION_TAG"; release=false
+          elif [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::notice::Releases are published from main only"; release=false
+          elif [ "$VERSION_TYPE" = "none" ]; then
+            release=false
+          else
+            git fetch -q origin main --tags
+            if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+              echo "::warning::$GITHUB_SHA is no longer the tip of main; the newer push releases instead"; release=false
+            elif git rev-parse -q --verify "refs/tags/$VERSION_TAG" >/dev/null; then
+              echo "::warning::$VERSION_TAG already exists; not releasing it again"; release=false
+            fi
+          fi
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build & Code Verification
+    needs: plan
+    if: needs.plan.outputs.release == 'true' || inputs.dry_run
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Gradle & JDK
+        uses: hononeko/actions/gradle-setup@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
+
+      - name: Run build and verification
+        run: ./gradlew check --no-daemon
+
+      - name: Prepare Detekt SARIF reports
+        if: always()
+        run: |
+          mkdir -p build/reports/detekt-all
+          find . -path "*/build/reports/detekt/*.sarif" | while read -r f; do
+            mod=$(echo "$f" | sed -E 's|^\./||; s|/build/reports/.*||; s|/|-|g')
+            base=$(basename "$f")
+            cp "$f" "build/reports/detekt-all/${mod}-${base}"
+          done
+
+      - name: Upload Detekt SARIF reports
+        if: always()
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4
+        with:
+          sarif_file: build/reports/detekt-all
+          checkout_path: ${{ github.workspace }}
+
+      - name: Summarize Kover coverage
+        if: always()
+        run: |
+          echo "### Kover Coverage Summary" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f build/reports/kover/report.xml ]; then
+            python3 -c "
+          import xml.etree.ElementTree as ET
+          try:
+              tree = ET.parse('build/reports/kover/report.xml')
+              root = tree.getroot()
+              for counter in root.findall('counter'):
+                  ctype = counter.attrib.get('type')
+                  covered = int(counter.attrib.get('covered', 0))
+                  missed = int(counter.attrib.get('missed', 0))
+                  total = covered + missed
+                  pct = (covered / total * 100) if total > 0 else 0
+                  print(f'- **{ctype}**: {pct:.2f}% ({covered}/{total})')
+          except Exception as e:
+              print(f'Error reading coverage XML: {e}')
+          " >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No Kover total report.xml found." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload Kover coverage reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: kover-reports
+          path: |
+            build/reports/kover/
+            **/build/reports/kover/
+          if-no-files-found: ignore
+
+      - name: Run Integration Tests
+        run: ./gradlew integrationTest --no-daemon
+
+  image:
+    name: Image Build & Smoke Test
+    needs: [plan, build]
+    if: needs.plan.outputs.release == 'true' || inputs.dry_run
+    uses: ./.github/workflows/image.yml
+    with:
+      push: ${{ needs.plan.outputs.release == 'true' && !inputs.dry_run }}
+      version: ${{ needs.plan.outputs.version }}
+    permissions:
+      contents: read
+      packages: write
+
+  publish:
+    name: Publish Images
+    needs: [plan, image]
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+      attestations: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Log in to GitHub Container Registry (GHCR)
+        if: hashFiles('docker/Dockerfile.proxy') != '' || hashFiles('docker/Dockerfile.worker') != ''
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish proxy image
+        id: publish-proxy
+        if: hashFiles('docker/Dockerfile.proxy') != ''
+        uses: hononeko/actions/publish-image@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/koshin-proxy
+          tags: |
+            ${{ needs.plan.outputs.version_tag }}
+            ${{ needs.plan.outputs.version }}
+            ${{ needs.plan.outputs.rc_version }}
+            ${{ needs.plan.outputs.commit_tag }}
+            latest
+          digests-pattern: digests-proxy-*
+          expected-digests: "2"
+          title: Proxy Published
+          attest: "true"
+
+      - name: Publish worker image
+        id: publish-worker
+        if: hashFiles('docker/Dockerfile.worker') != ''
+        uses: hononeko/actions/publish-image@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/koshin-worker
+          tags: |
+            ${{ needs.plan.outputs.version_tag }}
+            ${{ needs.plan.outputs.version }}
+            ${{ needs.plan.outputs.rc_version }}
+            ${{ needs.plan.outputs.commit_tag }}
+            latest
+          digests-pattern: digests-worker-*
+          expected-digests: "2"
+          title: Worker Published
+          attest: "true"
+
+  release:
+    name: Tag & Release
+    needs: [plan, build, image, publish]
+    if: |
+      always() && needs.plan.outputs.release == 'true' && needs.build.result == 'success' &&
+      (needs.image.result == 'success' || needs.image.result == 'skipped') &&
+      (needs.publish.result == 'success' || needs.publish.result == 'skipped')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      VERSION_TAG: ${{ needs.plan.outputs.version_tag }}
+    steps:
+      - name: Download release notes
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: release-notes
+
+      - name: Tag & create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$VERSION_TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$VERSION_TAG" --notes-file release-notes.md

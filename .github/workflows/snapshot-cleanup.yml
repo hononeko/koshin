@@ -1,0 +1,40 @@
+name: Snapshot Cleanup
+
+# Deletes a pull request's snapshot images (pr-<PR>, pr-<PR>-sha-<commit>) once it's closed, merged or not.
+# Only branches of this repository get snapshots, and only their pull requests get a token that can delete packages.
+# Dispatch it with the pull request's number to retry a cleanup that failed.
+on:
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      pr-number:
+        description: Pull request whose snapshots to delete
+        required: true
+        type: number
+      dry-run:
+        description: Only log what would be deleted
+        type: boolean
+        default: false
+
+jobs:
+  prune:
+    name: Prune Snapshots
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+    steps:
+      - name: Prune koshin-proxy snapshots
+        uses: hononeko/actions/prune-snapshots@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
+        with:
+          package: koshin-proxy
+          pr-number: ${{ inputs.pr-number || github.event.pull_request.number }}
+          dry-run: ${{ inputs.dry-run || false }}
+
+      - name: Prune koshin-worker snapshots
+        uses: hononeko/actions/prune-snapshots@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
+        with:
+          package: koshin-worker
+          pr-number: ${{ inputs.pr-number || github.event.pull_request.number }}
+          dry-run: ${{ inputs.dry-run || false }}

@@ -1,0 +1,107 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    ":semanticCommitTypeAll(chore)",
+    ":semanticCommitScope(deps)",
+    "mergeConfidence:all-badges",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "minimumReleaseAge": "3 days",
+  "semanticCommits": "enabled",
+  "semanticCommitType": "chore",
+  "semanticCommitScope": "deps",
+  "dependencyDashboard": true,
+  "timezone": "Europe/Chisinau",
+  "rebaseWhen": "behind-base-branch",
+  "labels": [
+    "renovate",
+    "dependencies"
+  ],
+  "automergeType": "pr",
+  "prHeader": "## 🤖 Renovate: Dependency Maintenance",
+  "packageRules": [
+    {
+      "description": "Group Kotlin compiler, plugins, and official libraries",
+      "matchPackageNames": [
+        "org.jetbrains.kotlin*",
+        "org.jetbrains.kotlinx*"
+      ],
+      "groupName": "Kotlin & Kotlinx"
+    },
+    {
+      "description": "Group all Ktor server and client dependencies",
+      "matchPackageNames": [
+        "io.ktor*"
+      ],
+      "groupName": "Ktor"
+    },
+    {
+      "description": "Group NATS client dependencies",
+      "matchPackageNames": [
+        "io.nats*"
+      ],
+      "groupName": "NATS"
+    },
+    {
+      "description": "Group Lettuce and Valkey client dependencies",
+      "matchPackageNames": [
+        "io.lettuce*"
+      ],
+      "groupName": "Lettuce & Valkey"
+    },
+    {
+      "description": "Group Detekt static analysis plugins and rules",
+      "matchPackageNames": [
+        "dev.detekt*",
+        "io.gitlab.arturbosch.detekt*"
+      ],
+      "groupName": "Detekt"
+    },
+    {
+      "description": "Group Testcontainers dependencies",
+      "matchPackageNames": [
+        "org.testcontainers*"
+      ],
+      "groupName": "Testcontainers"
+    },
+    {
+      "description": "Group Gradle wrapper and Gradle GitHub actions",
+      "matchPackageNames": [
+        "gradle",
+        "org.gradle*",
+        "gradle/actions/**",
+        "gradle/actions"
+      ],
+      "groupName": "Gradle"
+    },
+    {
+      "description": "Group container base images",
+      "matchManagers": [
+        "dockerfile"
+      ],
+      "groupName": "Docker Base Images"
+    },
+    {
+      "description": "Group Helm chart dependencies",
+      "matchManagers": [
+        "helm-values",
+        "helmv3",
+        "helmfile"
+      ],
+      "groupName": "Helm"
+    },
+    {
+      "description": "Group GitHub Actions updates",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchPackageNames": [
+        "!gradle/actions/**",
+        "!gradle/actions"
+      ],
+      "groupName": "GitHub Actions"
+    }
+  ]
+}

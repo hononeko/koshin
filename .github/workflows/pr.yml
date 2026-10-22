@@ -1,0 +1,261 @@
+name: PR Validation
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+# Any other label gets a group of its own, so labelling never cancels a running build.
+concurrency:
+  group: >-
+    ${{ github.workflow }}-${{ github.head_ref || github.ref }}${{
+    github.event.action == 'labeled' && github.event.label.name != 'snapshot' && format('-{0}', github.run_id) || '' }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Plan
+    if: github.event.action != 'labeled' || github.event.label.name == 'snapshot'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      snapshot: >-
+        ${{ github.event.pull_request.head.repo.full_name == github.repository
+        && contains(github.event.pull_request.labels.*.name, 'snapshot') }}
+      tag: ${{ steps.version.outputs.snapshot-tag }}
+      version: ${{ steps.version.outputs.snapshot-version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Version
+        id: version
+        uses: hononeko/actions/version@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
+        with:
+          pr-number: ${{ github.event.pull_request.number }}
+
+  build:
+    name: Build & Code Verification
+    if: github.event.action != 'labeled' || github.event.label.name == 'snapshot'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Gradle & JDK
+        uses: hononeko/actions/gradle-setup@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
+
+      - name: Run build and verification
+        run: ./gradlew check --no-daemon
+
+      - name: Prepare Detekt SARIF reports
+        if: always()
+        run: |
+          mkdir -p build/reports/detekt-all
+          find . -path "*/build/reports/detekt/*.sarif" | while read -r f; do
+            mod=$(echo "$f" | sed -E 's|^\./||; s|/build/reports/.*||; s|/|-|g')
+            base=$(basename "$f")
+            cp "$f" "build/reports/detekt-all/${mod}-${base}"
+          done
+
+      - name: Upload Detekt SARIF reports
+        if: always()
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4
+        with:
+          sarif_file: build/reports/detekt-all
+          checkout_path: ${{ github.workspace }}
+
+      - name: Summarize Kover coverage
+        if: always()
+        run: |
+          echo "### Kover Coverage Summary" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f build/reports/kover/report.xml ]; then
+            python3 -c "
+          import xml.etree.ElementTree as ET
+          try:
+              tree = ET.parse('build/reports/kover/report.xml')
+              root = tree.getroot()
+              for counter in root.findall('counter'):
+                  ctype = counter.attrib.get('type')
+                  covered = int(counter.attrib.get('covered', 0))
+                  missed = int(counter.attrib.get('missed', 0))
+                  total = covered + missed
+                  pct = (covered / total * 100) if total > 0 else 0
+                  print(f'- **{ctype}**: {pct:.2f}% ({covered}/{total})')
+          except Exception as e:
+              print(f'Error reading coverage XML: {e}')
+          " >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No Kover total report.xml found." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload Kover coverage reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: kover-reports
+          path: |
+            build/reports/kover/
+            **/build/reports/kover/
+          if-no-files-found: ignore
+
+  integration:
+    name: Integration Tests
+    if: github.event.action != 'labeled' || github.event.label.name == 'snapshot'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Gradle & JDK
+        uses: hononeko/actions/gradle-setup@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
+
+      - name: Run Integration Tests
+        run: ./gradlew integrationTest --no-daemon
+
+      - name: Generate Job Summary
+        if: always()
+        run: |
+          echo "### Integration Test Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "Integration tests completed successfully." >> "$GITHUB_STEP_SUMMARY"
+
+  manifests:
+    name: Validate Manifests & Workflows
+    if: github.event.action != 'labeled' || github.event.label.name == 'snapshot'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Lint GitHub Actions workflows
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
+
+      - name: Validate Kubernetes manifests
+        run: |
+          if [ -d k8s/overlays/minimal ]; then
+            echo "Validating k8s/overlays/minimal..."
+            kubectl kustomize k8s/overlays/minimal | docker run --rm -i ghcr.io/yannh/kubeconform:latest -summary -ignore-missing-schemas -strict
+          fi
+          if [ -d k8s/overlays/ha ]; then
+            echo "Validating k8s/overlays/ha..."
+            kubectl kustomize k8s/overlays/ha | docker run --rm -i ghcr.io/yannh/kubeconform:latest -summary -ignore-missing-schemas -strict
+          fi
+          if [ -d charts ] || [ -f Chart.yaml ]; then
+            echo "Validating Helm chart..."
+            helm lint charts/* || true
+          fi
+
+  image:
+    name: Image Build & Smoke Test
+    needs: [plan, build]
+    uses: ./.github/workflows/image.yml
+    with:
+      push: ${{ needs.plan.outputs.snapshot == 'true' }}
+      ref: ${{ needs.plan.outputs.snapshot == 'true' && github.event.pull_request.head.sha || '' }}
+      version: ${{ needs.plan.outputs.version }}
+    permissions:
+      contents: read
+      packages: write
+
+  snapshot:
+    name: Publish Snapshots
+    needs: [plan, image]
+    if: needs.plan.outputs.snapshot == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+      attestations: write
+      id-token: write
+      pull-requests: write
+    steps:
+      - name: Log in to GitHub Container Registry (GHCR)
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish proxy snapshot
+        id: publish-proxy
+        if: hashFiles('docker/Dockerfile.proxy') != ''
+        uses: hononeko/actions/publish-image@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/koshin-proxy
+          tags: |
+            ${{ needs.plan.outputs.tag }}
+            pr-${{ github.event.pull_request.number }}
+          digests-pattern: digests-proxy-*
+          expected-digests: "2"
+          title: Proxy Snapshot
+          attest: "true"
+
+      - name: Publish worker snapshot
+        id: publish-worker
+        if: hashFiles('docker/Dockerfile.worker') != ''
+        uses: hononeko/actions/publish-image@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/koshin-worker
+          tags: |
+            ${{ needs.plan.outputs.tag }}
+            pr-${{ github.event.pull_request.number }}
+          digests-pattern: digests-worker-*
+          expected-digests: "2"
+          title: Worker Snapshot
+          attest: "true"
+
+      - name: Comment on pull request with snapshot images
+        if: steps.publish-proxy.outcome == 'success' || steps.publish-worker.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          PROXY_REF: ${{ steps.publish-proxy.outputs.reference }}
+          WORKER_REF: ${{ steps.publish-worker.outputs.reference }}
+        run: |
+          marker='<!-- hononeko/actions:publish-image -->'
+          body="$marker
+          ### Snapshots published
+          "
+          if [ -n "$PROXY_REF" ]; then
+            body="$body
+          **Proxy:**
+          \`\`\`
+          $PROXY_REF
+          \`\`\`
+          "
+          fi
+          if [ -n "$WORKER_REF" ]; then
+            body="$body
+          **Worker:**
+          \`\`\`
+          $WORKER_REF
+          \`\`\`
+          "
+          fi
+          body="$body
+          For testing only. Deleted when this pull request closes."
+
+          id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
+            --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -n 1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$body" >/dev/null
+            echo "Updated snapshot comment on #$PR"
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -f body="$body" >/dev/null
+            echo "Posted snapshot comment on #$PR"
+          fi

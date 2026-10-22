@@ -1,0 +1,164 @@
+name: Image
+
+# Builds proxy and worker images natively on amd64 and arm64 runners, smoke tests each on /healthz,
+# and with `push`, pushes each image to GHCR by digest and uploads the digests as artifacts.
+on:
+  workflow_call:
+    inputs:
+      push:
+        description: Push each architecture's image to GHCR by digest and upload the digests as artifacts
+        type: boolean
+        default: false
+      ref:
+        description: Commit ref to check out (used for pull request snapshots)
+        type: string
+        default: ""
+      version:
+        description: Version baked into the binary; "dev" when empty
+        type: string
+        default: ""
+
+jobs:
+  build:
+    name: Image (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref || '' }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      # Proxy image
+      - name: Build proxy image for smoke test
+        if: hashFiles('docker/Dockerfile.proxy') != ''
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: docker/Dockerfile.proxy
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          push: false
+          tags: smoke-proxy:${{ matrix.arch }}
+          cache-from: type=gha,scope=proxy-${{ matrix.arch }}
+          build-args: VERSION=${{ inputs.version || 'dev' }}
+          cache-to: type=gha,mode=max,scope=proxy-${{ matrix.arch }}
+
+      - name: Smoke test proxy
+        if: hashFiles('docker/Dockerfile.proxy') != ''
+        uses: hononeko/actions/smoke-test@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
+        with:
+          image: smoke-proxy:${{ matrix.arch }}
+          port: "8080"
+          path: /healthz
+          status: "200"
+          max-memory-mib: "384"
+
+      # Worker image
+      - name: Build worker image for smoke test
+        if: hashFiles('docker/Dockerfile.worker') != ''
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: docker/Dockerfile.worker
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          push: false
+          tags: smoke-worker:${{ matrix.arch }}
+          cache-from: type=gha,scope=worker-${{ matrix.arch }}
+          build-args: VERSION=${{ inputs.version || 'dev' }}
+          cache-to: type=gha,mode=max,scope=worker-${{ matrix.arch }}
+
+      - name: Smoke test worker
+        if: hashFiles('docker/Dockerfile.worker') != ''
+        uses: hononeko/actions/smoke-test@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
+        with:
+          image: smoke-worker:${{ matrix.arch }}
+          port: "8080"
+          path: /healthz
+          status: "200"
+          max-memory-mib: "384"
+
+      # Push by digest
+      - name: Log in to GitHub Container Registry (GHCR)
+        if: inputs.push && (hashFiles('docker/Dockerfile.proxy') != '' || hashFiles('docker/Dockerfile.worker') != '')
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push proxy image by digest
+        id: push-proxy
+        if: inputs.push && hashFiles('docker/Dockerfile.proxy') != ''
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: docker/Dockerfile.proxy
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=ghcr.io/${{ github.repository_owner }}/koshin-proxy,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=proxy-${{ matrix.arch }}
+          build-args: VERSION=${{ inputs.version || 'dev' }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Export proxy digest
+        if: inputs.push && hashFiles('docker/Dockerfile.proxy') != ''
+        env:
+          DIGEST: ${{ steps.push-proxy.outputs.digest }}
+        run: |
+          mkdir -p digests-proxy
+          touch "digests-proxy/${DIGEST#sha256:}"
+
+      - name: Upload proxy digest
+        if: inputs.push && hashFiles('docker/Dockerfile.proxy') != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: digests-proxy-${{ matrix.arch }}
+          path: digests-proxy/*
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Push worker image by digest
+        id: push-worker
+        if: inputs.push && hashFiles('docker/Dockerfile.worker') != ''
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: docker/Dockerfile.worker
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=ghcr.io/${{ github.repository_owner }}/koshin-worker,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=worker-${{ matrix.arch }}
+          build-args: VERSION=${{ inputs.version || 'dev' }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Export worker digest
+        if: inputs.push && hashFiles('docker/Dockerfile.worker') != ''
+        env:
+          DIGEST: ${{ steps.push-worker.outputs.digest }}
+        run: |
+          mkdir -p digests-worker
+          touch "digests-worker/${DIGEST#sha256:}"
+
+      - name: Upload worker digest
+        if: inputs.push && hashFiles('docker/Dockerfile.worker') != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: digests-worker-${{ matrix.arch }}
+          path: digests-worker/*
+          if-no-files-found: error
+          retention-days: 1

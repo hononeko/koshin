@@ -72,6 +72,28 @@ subprojects {
         useJUnitPlatform()
     }
 
+    tasks.named<Test>("test") {
+        filter {
+            excludeTestsMatching("*IntegrationTest")
+            excludeTestsMatching("*IT")
+        }
+    }
+
+    val testTask = tasks.named<Test>("test")
+
+    tasks.register<Test>("integrationTest") {
+        description = "Runs integration tests using Testcontainers."
+        group = "verification"
+        testClassesDirs = testTask.get().testClassesDirs
+        classpath = testTask.get().classpath
+        filter {
+            includeTestsMatching("*IntegrationTest")
+            includeTestsMatching("*IT")
+            isFailOnNoMatchingTests = false
+        }
+        shouldRunAfter(testTask)
+    }
+
     detekt {
         buildUponDefaultConfig = true
         config.setFrom(files(rootProject.layout.projectDirectory.file("config/detekt/detekt.yml")))
@@ -89,4 +111,10 @@ subprojects {
     tasks.named("check") {
         dependsOn("detektMain", "detektTest")
     }
+}
+
+tasks.register("integrationTest") {
+    group = "verification"
+    description = "Runs integration tests across all subprojects."
+    dependsOn(subprojects.map { it.tasks.matching { t -> t.name == "integrationTest" } })
 }
