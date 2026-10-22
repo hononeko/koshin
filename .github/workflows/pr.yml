@@ -6,15 +6,12 @@ on:
 
 # Any other label gets a group of its own, so labelling never cancels a running build.
 concurrency:
-  group: >-
-    ${{ github.workflow }}-${{ github.head_ref || github.ref }}${{
-    github.event.action == 'labeled' && github.event.label.name != 'snapshot' && format('-{0}', github.run_id) || '' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   plan:
     name: Plan
-    if: github.event.action != 'labeled' || github.event.label.name == 'snapshot'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -39,7 +36,6 @@ jobs:
 
   build:
     name: Build & Code Verification
-    if: github.event.action != 'labeled' || github.event.label.name == 'snapshot'
     uses: ./.github/workflows/validate.yml
     with:
       ref: ${{ github.event.pull_request.head.sha }}
@@ -49,7 +45,6 @@ jobs:
 
   integration:
     name: Integration Tests
-    if: github.event.action != 'labeled' || github.event.label.name == 'snapshot'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -78,7 +73,6 @@ jobs:
 
   manifests:
     name: Validate Manifests & Workflows
-    if: github.event.action != 'labeled' || github.event.label.name == 'snapshot'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -115,7 +109,7 @@ jobs:
     uses: ./.github/workflows/image.yml
     with:
       push: ${{ needs.plan.outputs.snapshot == 'true' }}
-      ref: ${{ needs.plan.outputs.snapshot == 'true' && github.event.pull_request.head.sha || '' }}
+      ref: ${{ github.event.pull_request.head.sha }}
       version: ${{ needs.plan.outputs.version }}
     permissions:
       contents: read

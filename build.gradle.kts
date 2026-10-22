@@ -122,9 +122,3 @@ subprojects {
         dependsOn("detektMain", "detektTest")
     }
 }
-
-tasks.register("integrationTest") {
-    group = "verification"
-    description = "Runs integration tests across all subprojects."
-    dependsOn(subprojects.map { it.tasks.matching { t -> t.name == "integrationTest" } })
-}

@@ -36,9 +36,12 @@ jobs:
         run: |
           mkdir -p build/reports
           python3 -c "
-          import glob, json
+          import glob, json, os
 
-          sarif_files = glob.glob('**/build/reports/detekt/*.sarif', recursive=True)
+          sarif_files = [
+              f for f in glob.glob('**/build/reports/detekt/*.sarif', recursive=True)
+              if os.path.basename(f) in ('main.sarif', 'test.sarif')
+          ]
           if sarif_files:
               merged = None
               all_results = []

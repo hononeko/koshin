@@ -17,7 +17,10 @@ on:
         default: false
 
 concurrency:
-  group: cd-release
+  group: >-
+    ${{ github.workflow }}-${{ github.ref }}${{
+    inputs.dry_run && format('-dry-run-{0}', github.run_id) || '' }}${{
+    github.ref != 'refs/heads/main' && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: false
 
 jobs:
@@ -86,7 +89,6 @@ jobs:
   build:
     name: Build & Code Verification
     needs: plan
-    if: needs.plan.outputs.release == 'true' || inputs.dry_run
     uses: ./.github/workflows/validate.yml
     permissions:
       contents: read
@@ -94,8 +96,7 @@ jobs:
 
   integration:
     name: Integration Tests
-    needs: [plan, build]
-    if: needs.plan.outputs.release == 'true' || inputs.dry_run
+    needs: plan
     runs-on: ubuntu-24.04
     permissions:
       contents: read
