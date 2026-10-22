@@ -27,7 +27,7 @@ class MaxDeliverDlqForwarder(
     private val logger = LoggerFactory.getLogger(MaxDeliverDlqForwarder::class.java)
     private var dispatcher: Dispatcher? = null
 
-    val handledAdvisoriesCount = AtomicInteger(0)
+    internal val handledAdvisoriesCount = AtomicInteger(0)
 
     val isRunning: Boolean
         get() = synchronized(this) { dispatcher != null }
@@ -251,8 +251,8 @@ class MaxDeliverDlqForwarder(
 
     companion object {
         private const val MESSAGE_NOT_FOUND_ERROR_CODE = 10037
-        private const val DEFAULT_MAX_RETRIES = 3
-        private const val RETRY_BACKOFF_BASE_MS = 50L
-        private const val RETRY_BACKOFF_MAX_MS = 500L
+        private const val DEFAULT_MAX_RETRIES = 5
+        private const val RETRY_BACKOFF_BASE_MS = 100L
+        private const val RETRY_BACKOFF_MAX_MS = 1000L
     }
 }

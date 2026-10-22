@@ -24,7 +24,7 @@ class NatsConfigTest {
             "NATS_MAX_DELIVER" to "10",
             "NATS_JOBS_STREAM" to "CUSTOM_JOBS",
             "NATS_DLQ_STREAM" to "CUSTOM_DLQ",
-            "NATS_STORAGE_TYPE" to "Memory",
+            "NATS_STORAGE_TYPE" to "file",
         )
         val config = NatsConfig.fromEnv(env)
         assertEquals("CUSTOM_JOBS", config.jobsStreamName)
@@ -32,7 +32,20 @@ class NatsConfigTest {
         assertEquals(3, config.replicas)
         assertEquals(120.seconds, config.ackWait)
         assertEquals(10L, config.maxDeliver)
-        assertEquals(io.nats.client.api.StorageType.Memory, config.storageType)
+        assertEquals(io.nats.client.api.StorageType.File, config.storageType)
+    }
+
+    @Test
+    fun `fromEnv rejects invalid parameters at startup`() {
+        assertThrows<IllegalArgumentException> {
+            NatsConfig.fromEnv(mapOf("NATS_STREAM_REPLICAS" to "three"))
+        }
+        assertThrows<IllegalArgumentException> {
+            NatsConfig.fromEnv(mapOf("NATS_ACK_WAIT_SECONDS" to "invalid"))
+        }
+        assertThrows<IllegalArgumentException> {
+            NatsConfig.fromEnv(mapOf("NATS_STORAGE_TYPE" to "invalid_type"))
+        }
     }
 
     @Test

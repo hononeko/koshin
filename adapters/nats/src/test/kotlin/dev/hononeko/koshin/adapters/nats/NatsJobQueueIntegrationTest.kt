@@ -131,6 +131,10 @@ class NatsJobQueueIntegrationTest {
         assertNotNull(delivery)
         delivery?.ack()
 
+        var retries = 0
+        while (jsm.getStreamInfo(jobsStream).streamState.msgCount > 0L && retries++ < 20) {
+            delay(50.milliseconds)
+        }
         assertEquals(0L, jsm.getStreamInfo(jobsStream).streamState.msgCount)
         assertNull(consumer.fetchNext(Platform.GITHUB, 200.milliseconds))
 

@@ -54,20 +54,45 @@ data class NatsConfig(
         const val DEFAULT_DLQ_SUBJECT_PREFIX = "renovate.dlq"
         const val DEFAULT_DLQ_QUEUE_GROUP = "koshin-dlq-forwarders"
         const val DEFAULT_CONSUMER_PREFIX = "koshin-workers-"
+        const val DEFAULT_REPLICAS = 1
+        const val DEFAULT_ACK_WAIT_SECONDS = 60L
+        const val DEFAULT_MAX_DELIVER = 5L
+        const val DEFAULT_DUPLICATE_WINDOW_MINUTES = 2L
+        const val DEFAULT_DLQ_MAX_AGE_DAYS = 7L
 
         fun fromEnv(env: Map<String, String> = System.getenv()): NatsConfig = NatsConfig(
             jobsStreamName = env["NATS_JOBS_STREAM"] ?: DEFAULT_JOBS_STREAM,
             dlqStreamName = env["NATS_DLQ_STREAM"] ?: DEFAULT_DLQ_STREAM,
             jobsSubjectPrefix = env["NATS_JOBS_SUBJECT_PREFIX"] ?: DEFAULT_JOBS_SUBJECT_PREFIX,
             dlqSubjectPrefix = env["NATS_DLQ_SUBJECT_PREFIX"] ?: DEFAULT_DLQ_SUBJECT_PREFIX,
-            replicas = env["NATS_STREAM_REPLICAS"]?.toIntOrNull() ?: 1,
-            ackWait = env["NATS_ACK_WAIT_SECONDS"]?.toLongOrNull()?.seconds ?: 60.seconds,
-            maxDeliver = env["NATS_MAX_DELIVER"]?.toLongOrNull() ?: 5L,
-            duplicateWindow = env["NATS_DUPLICATE_WINDOW_MINUTES"]?.toLongOrNull()?.minutes ?: 2.minutes,
-            dlqMaxAge = env["NATS_DLQ_MAX_AGE_DAYS"]?.toLongOrNull()?.days ?: 7.days,
+            replicas = parseEnvInt(env, "NATS_STREAM_REPLICAS", DEFAULT_REPLICAS),
+            ackWait = parseEnvLong(env, "NATS_ACK_WAIT_SECONDS", DEFAULT_ACK_WAIT_SECONDS).seconds,
+            maxDeliver = parseEnvLong(env, "NATS_MAX_DELIVER", DEFAULT_MAX_DELIVER),
+            duplicateWindow = parseEnvLong(
+                env,
+                "NATS_DUPLICATE_WINDOW_MINUTES",
+                DEFAULT_DUPLICATE_WINDOW_MINUTES,
+            ).minutes,
+            dlqMaxAge = parseEnvLong(
+                env,
+                "NATS_DLQ_MAX_AGE_DAYS",
+                DEFAULT_DLQ_MAX_AGE_DAYS,
+            ).days,
             dlqForwarderQueueGroup = env["NATS_DLQ_FORWARDER_QUEUE_GROUP"] ?: DEFAULT_DLQ_QUEUE_GROUP,
             consumerPrefix = env["NATS_CONSUMER_PREFIX"] ?: DEFAULT_CONSUMER_PREFIX,
-            storageType = env["NATS_STORAGE_TYPE"]?.let { StorageType.valueOf(it) } ?: StorageType.File,
+            storageType = parseEnvStorageType(env["NATS_STORAGE_TYPE"]),
         )
+
+        private fun parseEnvInt(env: Map<String, String>, key: String, default: Int): Int = env[key]?.let { raw ->
+            requireNotNull(raw.toIntOrNull()) { "Invalid integer for $key: '$raw'" }
+        } ?: default
+
+        private fun parseEnvLong(env: Map<String, String>, key: String, default: Long): Long = env[key]?.let { raw ->
+            requireNotNull(raw.toLongOrNull()) { "Invalid long for $key: '$raw'" }
+        } ?: default
+
+        private fun parseEnvStorageType(raw: String?): StorageType = raw?.let {
+            requireNotNull(StorageType.get(it)) { "Invalid NATS_STORAGE_TYPE: '$it'" }
+        } ?: StorageType.File
     }
 }

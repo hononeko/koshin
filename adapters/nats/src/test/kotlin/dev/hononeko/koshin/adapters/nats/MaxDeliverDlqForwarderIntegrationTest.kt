@@ -82,13 +82,13 @@ class MaxDeliverDlqForwarderIntegrationTest {
 
     @Test
     fun `repeat advisory with message still present is deduplicated by DLQ`() = runBlocking {
-        val jobsStream = "DEDUP_TEST_JOBS"
-        val dlqStream = "DEDUP_TEST_DLQ"
+        val jobsStream = "FWD_DEDUP_JOBS"
+        val dlqStream = "FWD_DEDUP_DLQ"
         val config = NatsConfig(
             jobsStreamName = jobsStream,
             dlqStreamName = dlqStream,
-            jobsSubjectPrefix = "dedup.jobs",
-            dlqSubjectPrefix = "dedup.dlq",
+            jobsSubjectPrefix = "fwd-dedup.jobs",
+            dlqSubjectPrefix = "fwd-dedup.dlq",
             storageType = StorageType.Memory,
             duplicateWindow = 2.minutes,
             ackWait = 1.seconds,
@@ -106,10 +106,10 @@ class MaxDeliverDlqForwarderIntegrationTest {
         )
         publisher.publish(event)
 
-        var deleteCallCount = 0
+        var failDelete = true
         val flakyJsm = object : JetStreamManagement by jsm {
             override fun deleteMessage(streamName: String, seq: Long): Boolean {
-                if (deleteCallCount++ < 3) {
+                if (failDelete) {
                     throw IOException("Simulated transient delete failure")
                 }
                 return jsm.deleteMessage(streamName, seq)
@@ -147,6 +147,7 @@ class MaxDeliverDlqForwarderIntegrationTest {
         assertEquals(1L, jsm.getStreamInfo(dlqStream).streamState.msgCount)
 
         // 2. Second advisory: message still present, publish to DLQ is deduplicated, delete succeeds
+        failDelete = false
         forwarder.handleAdvisory(advisoryMsg)
 
         // DLQ still has exactly 1 message (deduplicated)

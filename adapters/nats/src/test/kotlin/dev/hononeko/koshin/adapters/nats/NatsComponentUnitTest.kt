@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
+import java.io.IOException
 import java.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -165,6 +166,37 @@ class NatsComponentUnitTest {
         assertEquals("true", capturedHeaders.captured.getFirst("Koshin-Poison-Pill"))
         assertEquals("42", capturedHeaders.captured.getFirst("Koshin-Stream-Seq"))
         assertEquals("github:hononeko/repo:delivery-42", capturedHeaders.captured.getFirst("Koshin-Original-Msg-Id"))
+
+        consumer.close()
+    }
+
+    @Test
+    fun `consumer does not terminate and naks poison pill if DLQ publish fails`() = runBlocking(testDispatcher) {
+        val mockJs = mockk<JetStream>()
+        val mockSub = mockk<io.nats.client.JetStreamSubscription>()
+        val mockMsg = mockk<Message>(relaxed = true)
+        val mockMeta = mockk<NatsJetStreamMetaData>()
+
+        every { mockMeta.deliveredCount() } returns 1L
+        every { mockMeta.streamSequence() } returns 42L
+        every { mockMeta.stream } returns "RENOVATE_JOBS"
+        every { mockMsg.headers } returns Headers()
+        every { mockMsg.metaData() } returns mockMeta
+        every { mockMsg.data } returns "not valid json".toByteArray()
+        every { mockSub.fetch(1, any<Duration>()) } returns listOf(mockMsg)
+        every { mockJs.subscribe(any<String>(), any<io.nats.client.PullSubscribeOptions>()) } returns mockSub
+
+        every {
+            mockJs.publish("renovate.dlq.github", any<Headers>(), any(), any())
+        } throws IOException("DLQ publish connection dropped")
+
+        val consumer = NatsJobQueueConsumer(mockJs, ioDispatcher = testDispatcher)
+
+        val result = consumer.fetchNext(Platform.GITHUB, 1.seconds)
+        assertNull(result)
+
+        verify(exactly = 0) { mockMsg.term() }
+        verify(exactly = 1) { mockMsg.nak() }
 
         consumer.close()
     }

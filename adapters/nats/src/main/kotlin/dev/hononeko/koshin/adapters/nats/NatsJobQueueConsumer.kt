@@ -71,7 +71,8 @@ class NatsJobQueueConsumer(
         val dlqSubject = config.dlqSubjectFor(platform)
         val streamSeq: Long = runCatching { msg.metaData().streamSequence() }.getOrDefault(0L)
         val stream: String = runCatching { msg.metaData().stream }.getOrDefault(config.jobsStreamName)
-        val dlqMsgId = "dlq:poison:$stream:$streamSeq"
+        val seqId = if (streamSeq > 0) streamSeq.toString() else java.util.UUID.randomUUID().toString()
+        val dlqMsgId = "dlq:poison:$stream:$seqId"
 
         val headers = if (msg.headers != null) Headers(msg.headers) else Headers()
         val originalMsgId = headers.getFirst("Nats-Msg-Id")
@@ -92,19 +93,26 @@ class NatsJobQueueConsumer(
             .messageId(dlqMsgId)
             .build()
 
-        runCatching {
+        val publishResult = runCatching {
             val ack = js.publish(dlqSubject, headers, msg.data, publishOptions)
             if (ack.isDuplicate) {
                 logger.debug("Poison pill DLQ publish duplicate for {}", dlqMsgId)
             }
-        }.onFailure { ex ->
-            logger.error("Failed to forward poison pill to DLQ subject {}", dlqSubject, ex)
         }
 
-        runCatching {
-            msg.term()
-        }.onFailure { ex ->
-            logger.error("Failed to terminate poison pill message {}", streamSeq, ex)
+        if (publishResult.isSuccess) {
+            runCatching {
+                msg.term()
+            }.onFailure { ex ->
+                logger.error("Failed to terminate poison pill message {}", streamSeq, ex)
+            }
+        } else {
+            logger.error("Failed to forward poison pill to DLQ subject {}", dlqSubject, publishResult.exceptionOrNull())
+            runCatching {
+                msg.nak()
+            }.onFailure { ex ->
+                logger.warn("Failed to NAK poison pill message {} after DLQ publish failure", streamSeq, ex)
+            }
         }
     }
 
