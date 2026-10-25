@@ -58,6 +58,15 @@ Run Detekt directly:
 
 ---
 
+## Valkey Coordination Requirements
+
+The coordination Valkey instance (`VALKEY_URL`, supporting both standalone `redis://` and Sentinel `redis-sentinel://` URIs) stores per-repository mutexes (`koshin:{<platform>:<repo>}:lock`) and dirty flags (`koshin:{<platform>:<repo>}:dirty`) with explicit TTLs (`EX`).
+
+* **`maxmemory-policy noeviction` (Required):** You **must** configure `maxmemory-policy noeviction` on the coordination Valkey instance. Because repository locks and dirty flags are TTL-bearing keys, any `volatile-*` eviction policy (`volatile-lru`, `volatile-ttl`, `volatile-random`, `volatile-lfu`) or `allkeys-*` policy under memory pressure would evict active locks or pending dirty flags first, breaking mutual exclusion and coalescing guarantees. In the `ha` deployment profile, Renovate's package cache (`RENOVATE_REDIS_URL`) runs on a separate Valkey instance where `allkeys-lru` is safe.
+* **Optional Replica Acknowledgment (`LOCK_REPLICA_ACK_TIMEOUT_MS`):** When set to a positive value (in milliseconds), `ValkeyRepoCoordinationAdapter` issues `WAIT 1 <ms>` after acquiring a repository lock to narrow the replication failover window in primary-replica topologies.
+
+---
+
 ## Licensing & Distribution Notice
 
 * **Source Code:** All original source code across `:core`, `:adapters:*`, `:proxy`, and `:worker` is licensed under the [Apache License, Version 2.0](LICENSE).
