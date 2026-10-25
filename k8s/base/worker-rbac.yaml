@@ -1,0 +1,27 @@
+# Lets each worker patch its own controller.kubernetes.io/pod-deletion-cost annotation, so KEDA scale-in
+# removes idle workers before busy ones.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: koshin-worker
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: koshin-worker
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: koshin-worker
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: koshin-worker
+subjects:
+  - kind: ServiceAccount
+    name: koshin-worker

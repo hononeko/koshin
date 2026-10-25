@@ -1,0 +1,68 @@
+# Local stack matching the `minimal` profile: `docker compose up --build`.
+# Webhooks: http://localhost:8080/webhooks/{github,gitlab}; trigger a run with
+#   curl -X POST localhost:8080/api/v1/trigger -H "Authorization: Bearer dev-trigger-token" \
+#     -H "Content-Type: application/json" -d '{"repositories":[{"platform":"github","repository":"org/repo"}]}'
+# Set GITHUB_TOKEN (and/or GITLAB_TOKEN) in your shell or a .env file for runs to succeed.
+name: koshin
+
+services:
+  nats:
+    image: nats:2.15.1-alpine
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    ports:
+      - "8222:8222"
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8222/healthz?js-enabled-only=true"]
+      interval: 5s
+      retries: 10
+
+  valkey:
+    image: valkey/valkey:9.1.2-alpine
+    command: ["valkey-server", "--save", "", "--appendonly", "no", "--maxmemory", "384mb", "--maxmemory-policy", "noeviction"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+  proxy:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.proxy
+    image: koshin-proxy:dev
+    ports:
+      - "8080:8080"
+    environment:
+      PLATFORMS: ${PLATFORMS:-github}
+      NATS_URL: nats://nats:4222
+      NATS_STREAM_REPLICAS: "1"
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-dev-webhook-secret}
+      GITLAB_WEBHOOK_SECRET: ${GITLAB_WEBHOOK_SECRET:-dev-webhook-secret}
+      INTERNAL_TRIGGER_TOKEN: ${INTERNAL_TRIGGER_TOKEN:-dev-trigger-token}
+    depends_on:
+      nats:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    image: koshin-worker:dev
+    ports:
+      - "8081:8080"
+    environment:
+      PLATFORMS: ${PLATFORMS:-github}
+      NATS_URL: nats://nats:4222
+      NATS_STREAM_REPLICAS: "1"
+      VALKEY_URL: redis://valkey:6379
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITLAB_TOKEN: ${GITLAB_TOKEN:-}
+    tmpfs:
+      - /tmp/renovate:uid=12021,mode=0700
+    stop_grace_period: 30s
+    depends_on:
+      nats:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy

@@ -1,0 +1,106 @@
+# Infrastructure, not koshin compute: a single JetStream server on emptyDir (stream replicas: 1).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: koshin-nats-config
+data:
+  nats.conf: |
+    port: 4222
+    http_port: 8222
+    server_name: koshin-nats
+    jetstream {
+      store_dir: /data
+      max_memory_store: 64MB
+      max_file_store: 1GB
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: koshin-nats
+  labels:
+    app.kubernetes.io/name: koshin-nats
+    app.kubernetes.io/component: queue
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: koshin-nats
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: koshin-nats
+        app.kubernetes.io/component: queue
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: nats
+          image: nats:2.15.1-alpine
+          args: ["-c", "/etc/nats/nats.conf"]
+          ports:
+            - name: client
+              containerPort: 4222
+            - name: monitor
+              containerPort: 8222
+          readinessProbe:
+            httpGet:
+              path: /healthz?js-enabled-only=true
+              port: monitor
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz?js-enabled-only=true
+              port: monitor
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nats
+              readOnly: true
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: config
+          configMap:
+            name: koshin-nats-config
+        - name: data
+          emptyDir:
+            sizeLimit: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: koshin-nats
+  labels:
+    app.kubernetes.io/name: koshin-nats
+    app.kubernetes.io/component: queue
+spec:
+  selector:
+    app.kubernetes.io/name: koshin-nats
+  ports:
+    - name: client
+      port: 4222
+      targetPort: client
+    # Polled by KEDA's nats-jetstream scaler
+    - name: monitor
+      port: 8222
+      targetPort: monitor
