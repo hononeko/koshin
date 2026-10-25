@@ -19,6 +19,7 @@ import java.io.IOException
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TestTimeSource
 
 class RetryingJobQueuePublisherTest {
 
@@ -39,12 +40,17 @@ class RetryingJobQueuePublisherTest {
             }
         }
 
+        val timeSource = TestTimeSource()
         val recordedDelays = mutableListOf<Duration>()
         val retrying = RetryingJobQueuePublisher(
             delegate = delegate,
             baseDelay = 100.milliseconds,
             maxTotalDelay = 5.seconds,
-            delayFn = { recordedDelays.add(it) },
+            timeSource = timeSource,
+            delayFn = {
+                timeSource += it
+                recordedDelays.add(it)
+            },
         )
 
         retrying.publish(sampleEvent)
@@ -58,12 +64,17 @@ class RetryingJobQueuePublisherTest {
         val delegate = mockk<JobQueuePublisher>()
         coEvery { delegate.publish(sampleEvent) } throws IOException("NATS unreachable")
 
+        val timeSource = TestTimeSource()
         val recordedDelays = mutableListOf<Duration>()
         val retrying = RetryingJobQueuePublisher(
             delegate = delegate,
             baseDelay = 100.milliseconds,
             maxTotalDelay = 700.milliseconds,
-            delayFn = { recordedDelays.add(it) },
+            timeSource = timeSource,
+            delayFn = {
+                timeSource += it
+                recordedDelays.add(it)
+            },
         )
 
         assertThrows<IOException> {
@@ -79,12 +90,17 @@ class RetryingJobQueuePublisherTest {
         val delegate = mockk<JobQueuePublisher>()
         coEvery { delegate.publishToDeadLetter(sampleEvent) } throws IOException("NATS DLQ failure")
 
+        val timeSource = TestTimeSource()
         val recordedDelays = mutableListOf<Duration>()
         val retrying = RetryingJobQueuePublisher(
             delegate = delegate,
             baseDelay = 200.milliseconds,
             maxTotalDelay = 500.milliseconds,
-            delayFn = { recordedDelays.add(it) },
+            timeSource = timeSource,
+            delayFn = {
+                timeSource += it
+                recordedDelays.add(it)
+            },
         )
 
         assertThrows<IOException> {

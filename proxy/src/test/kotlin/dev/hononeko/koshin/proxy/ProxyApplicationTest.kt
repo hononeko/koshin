@@ -32,7 +32,9 @@ import java.util.HexFormat
 import java.util.concurrent.CopyOnWriteArrayList
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 class ProxyApplicationTest {
 
@@ -44,6 +46,8 @@ class ProxyApplicationTest {
     private fun testConfig(
         platforms: Set<Platform> = setOf(Platform.GITHUB, Platform.GITLAB),
         maxRequestBodyBytes: Int = ProxyConfig.DEFAULT_MAX_REQUEST_BODY_BYTES,
+        publishRetryBaseDelay: Duration = 5.milliseconds,
+        publishRetryBudget: Duration = 5.seconds,
     ): ProxyConfig = ProxyConfig(
         port = 0,
         http2Enabled = true,
@@ -51,8 +55,8 @@ class ProxyApplicationTest {
         githubWebhookSecret = ghSecret,
         gitlabWebhookSecret = glSecret,
         internalTriggerToken = triggerToken,
-        publishRetryBaseDelay = 2.milliseconds,
-        publishRetryBudget = 50.milliseconds,
+        publishRetryBaseDelay = publishRetryBaseDelay,
+        publishRetryBudget = publishRetryBudget,
         maxRequestBodyBytes = maxRequestBodyBytes,
     )
 
@@ -532,7 +536,7 @@ class ProxyApplicationTest {
     }
 
     @Test
-    fun `retries transient publish failures and returns 503 when retries exhausted`() = testApplication {
+    fun `retries transient publish failures and succeeds when broker recovers`() = testApplication {
         val flakyPublisher = mockk<JobQueuePublisher>()
         var callCount = 0
         coEvery { flakyPublisher.publish(any()) } answers {
@@ -543,7 +547,10 @@ class ProxyApplicationTest {
         }
 
         application {
-            proxyModule(config = testConfig(), publisher = flakyPublisher)
+            proxyModule(
+                config = testConfig(publishRetryBaseDelay = 5.milliseconds, publishRetryBudget = 5.seconds),
+                publisher = flakyPublisher,
+            )
         }
 
         val payload = """
@@ -560,8 +567,26 @@ class ProxyApplicationTest {
         }
         assertEquals(HttpStatusCode.Accepted, successRes.status)
         coVerify(exactly = 3) { flakyPublisher.publish(any()) }
+    }
 
-        coEvery { flakyPublisher.publish(any()) } throws IOException("NATS cluster down")
+    @Test
+    fun `returns 503 when publish retries are exhausted`() = testApplication {
+        val failingPublisher = mockk<JobQueuePublisher>()
+        coEvery { failingPublisher.publish(any()) } throws IOException("NATS cluster down")
+
+        application {
+            proxyModule(
+                config = testConfig(publishRetryBaseDelay = 5.milliseconds, publishRetryBudget = 25.milliseconds),
+                publisher = failingPublisher,
+            )
+        }
+
+        val payload = """
+            {
+              "action": "closed",
+              "repository": { "full_name": "hononeko/koshin" }
+            }
+        """.trimIndent()
 
         val failGhRes = client.post("/webhooks/github") {
             header("X-Hub-Signature-256", signGitHub(payload))
