@@ -11,6 +11,9 @@ import io.lettuce.core.ScriptOutputType
 import io.lettuce.core.api.StatefulRedisConnection
 import io.lettuce.core.api.coroutines
 import io.lettuce.core.api.coroutines.RedisCoroutinesCommands
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration
@@ -46,6 +49,8 @@ class ValkeyRepoCoordinationAdapter(
         dirtyTtl: Duration,
     ): AcquireResult {
         require(token.isNotBlank()) { "token cannot be blank" }
+        require(lockTtl.isFinite()) { "lockTtl must be finite: $lockTtl" }
+        require(dirtyTtl.isFinite()) { "dirtyTtl must be finite: $dirtyTtl" }
         val lockSeconds = lockTtl.inWholeSeconds
         val dirtySeconds = dirtyTtl.inWholeSeconds
         require(lockSeconds >= 1) { "lockTtl must be at least 1 second: $lockTtl" }
@@ -63,7 +68,7 @@ class ValkeyRepoCoordinationAdapter(
 
         return if (outcome == ACQUIRED_RESULT) {
             if (config.lockReplicaAckTimeoutMs > 0) {
-                commands.waitForReplication(REPLICA_ACK_COUNT, config.lockReplicaAckTimeoutMs)
+                awaitReplicaAck(repo)
             }
             AcquireResult.ACQUIRED
         } else {
@@ -73,6 +78,7 @@ class ValkeyRepoCoordinationAdapter(
 
     override suspend fun extendLock(repo: RepoRef, token: String, ttl: Duration): Boolean {
         require(token.isNotBlank()) { "token cannot be blank" }
+        require(ttl.isFinite()) { "ttl must be finite: $ttl" }
         val ttlSeconds = ttl.inWholeSeconds
         require(ttlSeconds >= 1) { "ttl must be at least 1 second: $ttl" }
 
@@ -90,32 +96,59 @@ class ValkeyRepoCoordinationAdapter(
     override suspend fun releaseLockAndTakeDirty(repo: RepoRef, token: String): ReleaseResult {
         require(token.isNotBlank()) { "token cannot be blank" }
 
-        val keys = arrayOf(config.lockKeyFor(repo), config.dirtyKeyFor(repo))
-        val outcome = evalIntegerScript(
-            script = RELEASE_LOCK_AND_TAKE_DIRTY_SCRIPT,
-            shaRef = releaseLockAndTakeDirtySha,
-            keys = keys,
-            token,
-        )
-        return when (outcome) {
-            NOT_OWNER_RESULT -> ReleaseResult.NOT_OWNER
-            DIRTY_RESULT -> ReleaseResult.DIRTY
-            CLEAN_RESULT -> ReleaseResult.CLEAN
-            else -> error("Unexpected releaseLockAndTakeDirty script result: $outcome")
+        return withContext(NonCancellable) {
+            val keys = arrayOf(config.lockKeyFor(repo), config.dirtyKeyFor(repo))
+            val outcome = evalIntegerScript(
+                script = RELEASE_LOCK_AND_TAKE_DIRTY_SCRIPT,
+                shaRef = releaseLockAndTakeDirtySha,
+                keys = keys,
+                token,
+            )
+            when (outcome) {
+                NOT_OWNER_RESULT -> ReleaseResult.NOT_OWNER
+                DIRTY_RESULT -> ReleaseResult.DIRTY
+                CLEAN_RESULT -> ReleaseResult.CLEAN
+                else -> error("Unexpected releaseLockAndTakeDirty script result: $outcome")
+            }
         }
     }
 
     override suspend fun releaseLock(repo: RepoRef, token: String): Boolean {
         require(token.isNotBlank()) { "token cannot be blank" }
 
-        val keys = arrayOf(config.lockKeyFor(repo))
-        val outcome = evalIntegerScript(
-            script = RELEASE_LOCK_SCRIPT,
-            shaRef = releaseLockSha,
-            keys = keys,
-            token,
-        )
-        return outcome == RELEASED_RESULT
+        return withContext(NonCancellable) {
+            val keys = arrayOf(config.lockKeyFor(repo))
+            val outcome = evalIntegerScript(
+                script = RELEASE_LOCK_SCRIPT,
+                shaRef = releaseLockSha,
+                keys = keys,
+                token,
+            )
+            outcome == RELEASED_RESULT
+        }
+    }
+
+    private suspend fun awaitReplicaAck(repo: RepoRef) {
+        try {
+            val ackedReplicas = commands.waitForReplication(REPLICA_ACK_COUNT, config.lockReplicaAckTimeoutMs)
+            if (ackedReplicas == null || ackedReplicas < REPLICA_ACK_COUNT) {
+                logger.warn(
+                    "WAIT for lock on {} acknowledged by {} replicas (expected >= {}) within {}ms",
+                    repo,
+                    ackedReplicas ?: 0L,
+                    REPLICA_ACK_COUNT,
+                    config.lockReplicaAckTimeoutMs,
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (@Suppress("TooGenericExceptionCaught") e: Exception) {
+            logger.warn(
+                "WAIT for lock replication on {} failed after lock was already acquired on primary",
+                repo,
+                e,
+            )
+        }
     }
 
     private suspend fun evalIntegerScript(
@@ -127,8 +160,9 @@ class ValkeyRepoCoordinationAdapter(
         val sha = shaRef.get() ?: commands.scriptLoad(script)?.also { shaRef.set(it) }
         if (sha != null) {
             try {
-                val result = commands.evalsha<Long>(sha, ScriptOutputType.INTEGER, keys, *values)
-                if (result != null) return result
+                return checkNotNull(commands.evalsha<Long>(sha, ScriptOutputType.INTEGER, keys, *values)) {
+                    "Lua script returned null"
+                }
             } catch (e: RedisNoScriptException) {
                 logger.debug("NOSCRIPT for sha {}, falling back to EVAL", sha, e)
             } catch (e: RedisCommandExecutionException) {
@@ -139,9 +173,11 @@ class ValkeyRepoCoordinationAdapter(
                 }
             }
         }
-        return checkNotNull(commands.eval<Long>(script, ScriptOutputType.INTEGER, keys, *values)) {
+        val result = checkNotNull(commands.eval<Long>(script, ScriptOutputType.INTEGER, keys, *values)) {
             "Lua script returned null"
         }
+        commands.scriptLoad(script)?.let { shaRef.set(it) }
+        return result
     }
 
     companion object {

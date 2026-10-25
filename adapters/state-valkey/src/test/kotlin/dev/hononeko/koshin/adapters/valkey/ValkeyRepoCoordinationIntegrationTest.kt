@@ -9,6 +9,7 @@ import io.lettuce.core.RedisClient
 import io.lettuce.core.api.StatefulRedisConnection
 import io.lettuce.core.api.coroutines
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
@@ -21,10 +22,12 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import java.util.concurrent.locks.LockSupport
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalLettuceCoroutinesApi::class)
+@Suppress("InjectDispatcher")
 class ValkeyRepoCoordinationIntegrationTest {
     companion object {
         private lateinit var client: RedisClient
@@ -61,139 +64,195 @@ class ValkeyRepoCoordinationIntegrationTest {
     }
 
     @Test
-    fun `10 concurrent coroutines competing for the same repo yield 1 ACQUIRED, 9 COALESCED, and 1 DIRTY on release`() =
-        runBlocking {
-            val adapter = ValkeyRepoCoordinationAdapter(connection, config)
-            adapter.preloadScripts()
-
-            val repo = RepoRef(Platform.GITHUB, "hononeko/concurrent-repo")
-            val startGate = CompletableDeferred<Unit>()
-
-            val competitors = (1..10).map { index ->
-                val token = "worker-token-$index"
-                async {
-                    startGate.await()
-                    token to adapter.acquireOrMarkDirty(
-                        repo = repo,
-                        token = token,
-                        lockTtl = 30.seconds,
-                        dirtyTtl = 300.seconds,
-                    )
+    fun `10 concurrent coroutines across separate connections yield 1 ACQUIRED, 9 COALESCED, and 1 DIRTY on release`() =
+        runBlocking(Dispatchers.Default) {
+            val workerConnections = List(10) { client.connect() }
+            try {
+                val adapters = workerConnections.map { conn ->
+                    ValkeyRepoCoordinationAdapter(conn, config).also { it.preloadScripts() }
                 }
+
+                val repo = RepoRef(Platform.GITHUB, "hononeko/concurrent-repo")
+                val startGate = CompletableDeferred<Unit>()
+
+                val competitors = adapters.mapIndexed { index, adapter ->
+                    val token = "worker-token-${index + 1}"
+                    async {
+                        startGate.await()
+                        token to adapter.acquireOrMarkDirty(
+                            repo = repo,
+                            token = token,
+                            lockTtl = 30.seconds,
+                            dirtyTtl = 300.seconds,
+                        )
+                    }
+                }
+
+                startGate.complete(Unit)
+                val outcomes = competitors.awaitAll()
+
+                val acquired = outcomes.filter { it.second == AcquireResult.ACQUIRED }
+                val coalesced = outcomes.filter { it.second == AcquireResult.COALESCED }
+
+                assertEquals(1, acquired.size)
+                assertEquals(9, coalesced.size)
+
+                val winnerToken = acquired.single().first
+                val lockKey = config.lockKeyFor(repo)
+                val dirtyKey = config.dirtyKeyFor(repo)
+
+                assertEquals(winnerToken, connection.coroutines().get(lockKey))
+                assertEquals("1", connection.coroutines().get(dirtyKey))
+                assertTrue((connection.coroutines().ttl(lockKey) ?: -1L) in 1L..30L)
+                assertTrue((connection.coroutines().ttl(dirtyKey) ?: -1L) in 1L..300L)
+
+                // Winner releases lock and atomically takes dirty flag
+                val releaseResult = adapters.first().releaseLockAndTakeDirty(repo, winnerToken)
+                assertEquals(ReleaseResult.DIRTY, releaseResult)
+
+                // Both lock and dirty keys must now be removed
+                assertNull(connection.coroutines().get(lockKey))
+                assertNull(connection.coroutines().get(dirtyKey))
+
+                // Follow-up run acquires cleanly and releases as CLEAN
+                val followUpAcquire = adapters.first().acquireOrMarkDirty(
+                    repo,
+                    "followup-token",
+                    30.seconds,
+                    300.seconds,
+                )
+                assertEquals(AcquireResult.ACQUIRED, followUpAcquire)
+                val followUpRelease = adapters.first().releaseLockAndTakeDirty(repo, "followup-token")
+                assertEquals(ReleaseResult.CLEAN, followUpRelease)
+            } finally {
+                workerConnections.forEach { it.close() }
             }
-
-            startGate.complete(Unit)
-            val outcomes = competitors.awaitAll()
-
-            val acquired = outcomes.filter { it.second == AcquireResult.ACQUIRED }
-            val coalesced = outcomes.filter { it.second == AcquireResult.COALESCED }
-
-            assertEquals(1, acquired.size)
-            assertEquals(9, coalesced.size)
-
-            val winnerToken = acquired.single().first
-            assertEquals(winnerToken, connection.coroutines().get(config.lockKeyFor(repo)))
-            assertEquals("1", connection.coroutines().get(config.dirtyKeyFor(repo)))
-
-            // Winner releases lock and atomically takes dirty flag
-            val releaseResult = adapter.releaseLockAndTakeDirty(repo, winnerToken)
-            assertEquals(ReleaseResult.DIRTY, releaseResult)
-
-            // Both lock and dirty keys must now be removed
-            assertNull(connection.coroutines().get(config.lockKeyFor(repo)))
-            assertNull(connection.coroutines().get(config.dirtyKeyFor(repo)))
-
-            // Follow-up run acquires cleanly and releases as CLEAN
-            val followUpAcquire = adapter.acquireOrMarkDirty(repo, "followup-token", 30.seconds, 300.seconds)
-            assertEquals(AcquireResult.ACQUIRED, followUpAcquire)
-            val followUpRelease = adapter.releaseLockAndTakeDirty(repo, "followup-token")
-            assertEquals(ReleaseResult.CLEAN, followUpRelease)
         }
 
     @Test
-    fun `stale lock holder cannot extend or release lock acquired by a new holder after TTL expiry`() = runBlocking {
+    fun `stale lock holder cannot extend or release expired lock with or without a new holder`() = runBlocking {
         val adapter = ValkeyRepoCoordinationAdapter(connection, config)
         val repo = RepoRef(Platform.GITHUB, "hononeko/stale-holder-repo")
+        val lockKey = config.lockKeyFor(repo)
+        val dirtyKey = config.dirtyKeyFor(repo)
 
-        // Token 1 acquires lock with a short 1s TTL
-        val firstAcquire = adapter.acquireOrMarkDirty(repo, "token-1", 1.seconds, 300.seconds)
-        assertEquals(AcquireResult.ACQUIRED, firstAcquire)
+        // Token 1 acquires lock and another delivery coalesces to set dirty flag
+        assertEquals(AcquireResult.ACQUIRED, adapter.acquireOrMarkDirty(repo, "token-1", 10.seconds, 300.seconds))
+        assertEquals(AcquireResult.COALESCED, adapter.acquireOrMarkDirty(repo, "token-c1", 10.seconds, 300.seconds))
 
-        // Wait for lock TTL to expire
-        delay(1200.milliseconds)
+        // Fast-expire the lock on the server (100ms) while dirty flag remains
+        connection.coroutines().pexpire(lockKey, 100L)
+        delay(150.milliseconds)
 
-        // Token 2 acquires the lock after expiry
-        val secondAcquire = adapter.acquireOrMarkDirty(repo, "token-2", 30.seconds, 300.seconds)
-        assertEquals(AcquireResult.ACQUIRED, secondAcquire)
-
-        // Another webhook arrives and coalesces (marks dirty)
-        val coalesced = adapter.acquireOrMarkDirty(repo, "token-3", 30.seconds, 300.seconds)
-        assertEquals(AcquireResult.COALESCED, coalesced)
-
-        // Stale holder (token-1) tries to extend lock -> false
+        // Case A: Lock expired and NO new holder acquired yet — stale release returns NOT_OWNER and keeps dirty flag
         assertFalse(adapter.extendLock(repo, "token-1", 30.seconds))
-
-        // Stale holder (token-1) tries to releaseLock -> false
         assertFalse(adapter.releaseLock(repo, "token-1"))
-
-        // Stale holder (token-1) tries to releaseLockAndTakeDirty -> NOT_OWNER, leaving new lock and dirty flag intact
         assertEquals(ReleaseResult.NOT_OWNER, adapter.releaseLockAndTakeDirty(repo, "token-1"))
-        assertEquals("token-2", connection.coroutines().get(config.lockKeyFor(repo)))
-        assertEquals("1", connection.coroutines().get(config.dirtyKeyFor(repo)))
+        assertEquals("1", connection.coroutines().get(dirtyKey))
 
-        // Active holder (token-2) can still extend and release normally, observing the dirty flag
-        assertTrue(adapter.extendLock(repo, "token-2", 45.seconds))
+        // Case B: Token 2 acquires the lock after expiry
+        assertEquals(AcquireResult.ACQUIRED, adapter.acquireOrMarkDirty(repo, "token-2", 10.seconds, 300.seconds))
+
+        // Stale holder (token-1) tries to extend, releaseLock, or releaseLockAndTakeDirty -> all rejected
+        assertFalse(adapter.extendLock(repo, "token-1", 30.seconds))
+        assertFalse(adapter.releaseLock(repo, "token-1"))
+        assertEquals(ReleaseResult.NOT_OWNER, adapter.releaseLockAndTakeDirty(repo, "token-1"))
+        assertEquals("token-2", connection.coroutines().get(lockKey))
+        assertEquals("1", connection.coroutines().get(dirtyKey))
+
+        // Active holder (token-2) extends lock to 60s and verifies TTL actually increased > 10s
+        assertTrue(adapter.extendLock(repo, "token-2", 60.seconds))
+        assertTrue((connection.coroutines().ttl(lockKey) ?: 0L) > 10L)
+
+        // Active holder (token-2) releases and observes the preserved dirty flag
         assertEquals(ReleaseResult.DIRTY, adapter.releaseLockAndTakeDirty(repo, "token-2"))
     }
 
     @Test
-    fun `interleaved releaseLockAndTakeDirty and acquireOrMarkDirty never leave an orphaned dirty flag`() =
-        runBlocking {
-            val adapter = ValkeyRepoCoordinationAdapter(connection, config)
-            adapter.preloadScripts()
-            val repo = RepoRef(Platform.GITLAB, "hononeko/race-repo")
-
-            repeat(50) { iteration ->
-                val initialToken = "holder-$iteration"
-                val contenderToken = "contender-$iteration"
-
-                assertEquals(
-                    AcquireResult.ACQUIRED,
-                    adapter.acquireOrMarkDirty(repo, initialToken, 30.seconds, 300.seconds),
-                )
-
-                val gate = CompletableDeferred<Unit>()
-                val releaseDeferred = async {
-                    gate.await()
-                    adapter.releaseLockAndTakeDirty(repo, initialToken)
+    fun `interleaved releaseLockAndTakeDirty and acquireOrMarkDirty across connections never orphan dirty flag`() =
+        runBlocking(Dispatchers.Default) {
+            val holderConnection = client.connect()
+            val contenderConnection = client.connect()
+            try {
+                val holderAdapter = ValkeyRepoCoordinationAdapter(holderConnection, config).also {
+                    it.preloadScripts()
                 }
-                val acquireDeferred = async {
-                    gate.await()
-                    adapter.acquireOrMarkDirty(repo, contenderToken, 30.seconds, 300.seconds)
+                val contenderAdapter = ValkeyRepoCoordinationAdapter(contenderConnection, config).also {
+                    it.preloadScripts()
                 }
+                val repo = RepoRef(Platform.GITLAB, "hononeko/race-repo")
+                var coalescedObservations = 0
+                var acquiredObservations = 0
 
-                gate.complete(Unit)
-                val releaseOutcome = releaseDeferred.await()
-                val acquireOutcome = acquireDeferred.await()
-
-                when (acquireOutcome) {
-                    AcquireResult.COALESCED -> {
-                        // Contender ran BEFORE holder released: holder MUST see DIRTY
-                        assertEquals(ReleaseResult.DIRTY, releaseOutcome)
-                        assertNull(connection.coroutines().get(config.dirtyKeyFor(repo)))
-                        assertNull(connection.coroutines().get(config.lockKeyFor(repo)))
-                    }
-
-                    AcquireResult.ACQUIRED -> {
-                        // Contender ran AFTER holder released: holder saw CLEAN, and contender now holds the lock
-                        assertEquals(ReleaseResult.CLEAN, releaseOutcome)
-                        assertEquals(contenderToken, connection.coroutines().get(config.lockKeyFor(repo)))
-                        assertNull(connection.coroutines().get(config.dirtyKeyFor(repo)))
-                        assertEquals(ReleaseResult.CLEAN, adapter.releaseLockAndTakeDirty(repo, contenderToken))
+                repeat(100) { iteration ->
+                    val acquireOutcome = runRaceIteration(holderAdapter, contenderAdapter, repo, iteration)
+                    when (acquireOutcome) {
+                        AcquireResult.COALESCED -> coalescedObservations++
+                        AcquireResult.ACQUIRED -> acquiredObservations++
                     }
                 }
+
+                assertTrue(coalescedObservations > 0, "Expected at least one COALESCED race outcome")
+                assertTrue(acquiredObservations > 0, "Expected at least one ACQUIRED race outcome")
+            } finally {
+                holderConnection.close()
+                contenderConnection.close()
             }
         }
+
+    private suspend fun runRaceIteration(
+        holderAdapter: ValkeyRepoCoordinationAdapter,
+        contenderAdapter: ValkeyRepoCoordinationAdapter,
+        repo: RepoRef,
+        iteration: Int,
+    ): AcquireResult = kotlinx.coroutines.coroutineScope {
+        val initialToken = "holder-$iteration"
+        val contenderToken = "contender-$iteration"
+
+        assertEquals(
+            AcquireResult.ACQUIRED,
+            holderAdapter.acquireOrMarkDirty(repo, initialToken, 30.seconds, 300.seconds),
+        )
+
+        val gate = CompletableDeferred<Unit>()
+        val releaseDeferred = async {
+            gate.await()
+            if (iteration % 3 == 0) {
+                LockSupport.parkNanos(250_000L)
+            }
+            holderAdapter.releaseLockAndTakeDirty(repo, initialToken)
+        }
+        val acquireDeferred = async {
+            gate.await()
+            if (iteration % 3 == 1) {
+                LockSupport.parkNanos(250_000L)
+            }
+            contenderAdapter.acquireOrMarkDirty(repo, contenderToken, 30.seconds, 300.seconds)
+        }
+
+        gate.complete(Unit)
+        val releaseOutcome = releaseDeferred.await()
+        val acquireOutcome = acquireDeferred.await()
+
+        when (acquireOutcome) {
+            AcquireResult.COALESCED -> {
+                assertEquals(ReleaseResult.DIRTY, releaseOutcome)
+                assertNull(connection.coroutines().get(config.dirtyKeyFor(repo)))
+                assertNull(connection.coroutines().get(config.lockKeyFor(repo)))
+            }
+
+            AcquireResult.ACQUIRED -> {
+                assertEquals(ReleaseResult.CLEAN, releaseOutcome)
+                assertEquals(contenderToken, connection.coroutines().get(config.lockKeyFor(repo)))
+                assertNull(connection.coroutines().get(config.dirtyKeyFor(repo)))
+                assertEquals(
+                    ReleaseResult.CLEAN,
+                    contenderAdapter.releaseLockAndTakeDirty(repo, contenderToken),
+                )
+            }
+        }
+        acquireOutcome
+    }
 
     @Test
     fun `releaseLock removes lock for owner while keeping dirty flag intact for next holder`() = runBlocking {
@@ -215,37 +274,43 @@ class ValkeyRepoCoordinationIntegrationTest {
     }
 
     @Test
-    fun `EVALSHA falls back to EVAL after SCRIPT FLUSH and WAIT executes when lockReplicaAckTimeoutMs is set`() =
-        runBlocking {
-            val waitConfig = ValkeyConfig(
-                valkeyUrl = SharedValkeyContainer.valkeyUrl,
-                lockReplicaAckTimeoutMs = 20L,
-            )
-            val adapter = ValkeyRepoCoordinationAdapter(connection, waitConfig)
-            adapter.preloadScripts()
+    fun `EVALSHA falls back to EVAL after SCRIPT FLUSH, reloads script cache, and executes WAIT`() = runBlocking {
+        val waitConfig = ValkeyConfig(
+            valkeyUrl = SharedValkeyContainer.valkeyUrl,
+            lockReplicaAckTimeoutMs = 20L,
+        )
+        val adapter = ValkeyRepoCoordinationAdapter(connection, waitConfig)
+        adapter.preloadScripts()
 
-            val repo = RepoRef(Platform.GITHUB, "hononeko/noscript-repo")
+        val repo = RepoRef(Platform.GITHUB, "hononeko/noscript-repo")
+        val acquireDigest = checkNotNull(
+            connection.coroutines().digest(
+                ValkeyRepoCoordinationAdapter.ACQUIRE_OR_MARK_DIRTY_SCRIPT,
+            ),
+        )
 
-            // Flush scripts on Valkey server after preloadScripts() cached SHA1 digests
-            connection.coroutines().scriptFlush()
+        // Flush scripts on Valkey server after preloadScripts() cached SHA1 digests
+        connection.coroutines().scriptFlush()
+        assertEquals(listOf(false), connection.coroutines().scriptExists(acquireDigest))
 
-            // All 4 operations must transparently recover from NOSCRIPT via EVAL
-            assertEquals(
-                AcquireResult.ACQUIRED,
-                adapter.acquireOrMarkDirty(repo, "token-1", 30.seconds, 300.seconds),
-            )
+        // First call after flush recovers from NOSCRIPT via EVAL and reloads script into cache
+        assertEquals(
+            AcquireResult.ACQUIRED,
+            adapter.acquireOrMarkDirty(repo, "token-1", 30.seconds, 300.seconds),
+        )
+        assertEquals(listOf(true), connection.coroutines().scriptExists(acquireDigest))
 
-            connection.coroutines().scriptFlush()
-            assertTrue(adapter.extendLock(repo, "token-1", 45.seconds))
+        connection.coroutines().scriptFlush()
+        assertTrue(adapter.extendLock(repo, "token-1", 45.seconds))
 
-            connection.coroutines().scriptFlush()
-            assertEquals(ReleaseResult.CLEAN, adapter.releaseLockAndTakeDirty(repo, "token-1"))
+        connection.coroutines().scriptFlush()
+        assertEquals(ReleaseResult.CLEAN, adapter.releaseLockAndTakeDirty(repo, "token-1"))
 
-            assertEquals(
-                AcquireResult.ACQUIRED,
-                adapter.acquireOrMarkDirty(repo, "token-2", 30.seconds, 300.seconds),
-            )
-            connection.coroutines().scriptFlush()
-            assertTrue(adapter.releaseLock(repo, "token-2"))
-        }
+        assertEquals(
+            AcquireResult.ACQUIRED,
+            adapter.acquireOrMarkDirty(repo, "token-2", 30.seconds, 300.seconds),
+        )
+        connection.coroutines().scriptFlush()
+        assertTrue(adapter.releaseLock(repo, "token-2"))
+    }
 }

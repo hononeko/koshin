@@ -15,6 +15,9 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -22,6 +25,7 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -32,10 +36,10 @@ class ValkeyComponentUnitTest {
     private val dirtyKey = "koshin:{github:hononeko/koshin}:dirty"
 
     @Test
-    fun `connection health reports status and ping result`() = runTest {
+    fun `connection health reports status, ping result, and enforces pingTimeout`() = runTest {
         val mockConnection = mockk<StatefulRedisConnection<String, String>>()
         val mockCommands = mockk<RedisCoroutinesCommands<String, String>>()
-        val health = ValkeyConnectionHealth(mockConnection, mockCommands)
+        val health = ValkeyConnectionHealth(mockConnection, mockCommands, pingTimeout = 100.milliseconds)
 
         every { mockConnection.isOpen } returns false
         assertFalse(health.isConnected())
@@ -51,6 +55,19 @@ class ValkeyComponentUnitTest {
 
         coEvery { mockCommands.ping() } throws RedisCommandExecutionException("ERR broken")
         assertFalse(health.ping())
+
+        coEvery { mockCommands.ping() } coAnswers {
+            delay(500.milliseconds)
+            "PONG"
+        }
+        assertFalse(health.ping())
+
+        assertThrows<IllegalArgumentException> {
+            ValkeyConnectionHealth(mockConnection, mockCommands, pingTimeout = 0.seconds)
+        }
+        assertThrows<IllegalArgumentException> {
+            ValkeyConnectionHealth(mockConnection, mockCommands, pingTimeout = Duration.INFINITE)
+        }
     }
 
     @Test
@@ -122,7 +139,7 @@ class ValkeyComponentUnitTest {
     }
 
     @Test
-    fun `acquireOrMarkDirty issues WAIT when lockReplicaAckTimeoutMs is configured and acquired`() = runTest {
+    fun `acquireOrMarkDirty handles WAIT success, insufficient replicas, errors, and cancellation`() = runTest {
         val mockCommands = mockk<RedisCoroutinesCommands<String, String>>()
         val config = ValkeyConfig(lockReplicaAckTimeoutMs = 150L)
         val adapter = ValkeyRepoCoordinationAdapter(mockCommands, config)
@@ -133,32 +150,51 @@ class ValkeyComponentUnitTest {
                 "sha-acquire",
                 ScriptOutputType.INTEGER,
                 arrayOf(lockKey, dirtyKey),
-                "tok-1",
+                any(),
                 "45",
                 "3600",
             )
         } returns 1L
+
+        // 1. Replica acknowledged (1 >= 1)
         coEvery { mockCommands.waitForReplication(1, 150L) } returns 1L
+        assertEquals(AcquireResult.ACQUIRED, adapter.acquireOrMarkDirty(repo, "tok-1", 45.seconds, 3600.seconds))
 
-        val acquired = adapter.acquireOrMarkDirty(repo, "tok-1", 45.seconds, 3600.seconds)
-        assertEquals(AcquireResult.ACQUIRED, acquired)
-        coVerify(exactly = 1) { mockCommands.waitForReplication(1, 150L) }
+        // 2. Zero replicas acknowledged (0 < 1) -> logs warning, still returns ACQUIRED
+        coEvery { mockCommands.waitForReplication(1, 150L) } returns 0L
+        assertEquals(AcquireResult.ACQUIRED, adapter.acquireOrMarkDirty(repo, "tok-2", 45.seconds, 3600.seconds))
 
+        // 3. Null replica count -> logs warning, still returns ACQUIRED
+        coEvery { mockCommands.waitForReplication(1, 150L) } returns null
+        assertEquals(AcquireResult.ACQUIRED, adapter.acquireOrMarkDirty(repo, "tok-3", 45.seconds, 3600.seconds))
+
+        // 4. WAIT command throws exception -> logs warning, still returns ACQUIRED
+        coEvery {
+            mockCommands.waitForReplication(1, 150L)
+        } throws RedisCommandExecutionException("ERR WAIT failed")
+        assertEquals(AcquireResult.ACQUIRED, adapter.acquireOrMarkDirty(repo, "tok-4", 45.seconds, 3600.seconds))
+
+        // 5. WAIT command throws CancellationException -> rethrown
+        coEvery {
+            mockCommands.waitForReplication(1, 150L)
+        } throws CancellationException("cancelled")
+        assertThrows<CancellationException> {
+            adapter.acquireOrMarkDirty(repo, "tok-5", 45.seconds, 3600.seconds)
+        }
+
+        // 6. Coalesced outcome does not call WAIT
         coEvery {
             mockCommands.evalsha<Long>(
                 "sha-acquire",
                 ScriptOutputType.INTEGER,
                 arrayOf(lockKey, dirtyKey),
-                "tok-2",
+                "tok-6",
                 "45",
                 "3600",
             )
         } returns 0L
-
-        val coalesced = adapter.acquireOrMarkDirty(repo, "tok-2", 45.seconds, 3600.seconds)
-        assertEquals(AcquireResult.COALESCED, coalesced)
-        // WAIT must not be called again when coalesced
-        coVerify(exactly = 1) { mockCommands.waitForReplication(any(), any()) }
+        assertEquals(AcquireResult.COALESCED, adapter.acquireOrMarkDirty(repo, "tok-6", 45.seconds, 3600.seconds))
+        coVerify(exactly = 5) { mockCommands.waitForReplication(1, 150L) }
     }
 
     @Test
@@ -212,7 +248,56 @@ class ValkeyComponentUnitTest {
     }
 
     @Test
-    fun `evalsha falls back to eval on RedisNoScriptException and NOSCRIPT error message`() = runTest {
+    fun `releaseLockAndTakeDirty and releaseLock complete non-cancellably when caller job is cancelled`() = runTest {
+        val mockCommands = mockk<RedisCoroutinesCommands<String, String>>()
+        val adapter = ValkeyRepoCoordinationAdapter(mockCommands)
+        coEvery { mockCommands.scriptLoad(any<String>()) } returns "sha-release"
+
+        val enteredEval = CompletableDeferred<Unit>()
+        val allowFinish = CompletableDeferred<Unit>()
+        var observedDirtyResult: ReleaseResult? = null
+
+        coEvery {
+            mockCommands.evalsha<Long>("sha-release", ScriptOutputType.INTEGER, arrayOf(lockKey, dirtyKey), "tok-1")
+        } coAnswers {
+            enteredEval.complete(Unit)
+            allowFinish.await()
+            1L
+        }
+
+        val job1 = launch {
+            observedDirtyResult = adapter.releaseLockAndTakeDirty(repo, "tok-1")
+        }
+        enteredEval.await()
+        job1.cancel()
+        allowFinish.complete(Unit)
+        job1.join()
+        assertEquals(ReleaseResult.DIRTY, observedDirtyResult)
+
+        val enteredRelease = CompletableDeferred<Unit>()
+        val allowReleaseFinish = CompletableDeferred<Unit>()
+        var observedReleaseResult: Boolean? = null
+
+        coEvery {
+            mockCommands.evalsha<Long>("sha-release", ScriptOutputType.INTEGER, arrayOf(lockKey), "tok-1")
+        } coAnswers {
+            enteredRelease.complete(Unit)
+            allowReleaseFinish.await()
+            1L
+        }
+
+        val job2 = launch {
+            observedReleaseResult = adapter.releaseLock(repo, "tok-1")
+        }
+        enteredRelease.await()
+        job2.cancel()
+        allowReleaseFinish.complete(Unit)
+        job2.join()
+        assertEquals(true, observedReleaseResult)
+    }
+
+    @Test
+    fun `evalsha falls back to eval on NOSCRIPT, reloads sha, and never falls through on null result`() = runTest {
         val mockCommands = mockk<RedisCoroutinesCommands<String, String>>()
         val adapter = ValkeyRepoCoordinationAdapter(mockCommands)
 
@@ -231,6 +316,7 @@ class ValkeyComponentUnitTest {
         } returns 1L
 
         assertTrue(adapter.extendLock(repo, "tok-1", 45.seconds))
+        coVerify(exactly = 2) { mockCommands.scriptLoad(ValkeyRepoCoordinationAdapter.EXTEND_LOCK_SCRIPT) }
 
         // Generic RedisCommandExecutionException containing NOSCRIPT also falls back
         coEvery {
@@ -238,6 +324,24 @@ class ValkeyComponentUnitTest {
         } throws RedisCommandExecutionException("ERR NOSCRIPT flushed")
 
         assertTrue(adapter.extendLock(repo, "tok-1", 45.seconds))
+
+        // Null EVALSHA result throws IllegalStateException immediately without calling EVAL
+        coEvery {
+            mockCommands.evalsha<Long>("sha-extend", ScriptOutputType.INTEGER, arrayOf(lockKey), "tok-1", "45")
+        } returns null
+        assertThrows<IllegalStateException> {
+            adapter.extendLock(repo, "tok-1", 45.seconds)
+        }
+        // EVAL count must still be 2 (not 3)
+        coVerify(exactly = 2) {
+            mockCommands.eval<Long>(
+                ValkeyRepoCoordinationAdapter.EXTEND_LOCK_SCRIPT,
+                ScriptOutputType.INTEGER,
+                arrayOf(lockKey),
+                "tok-1",
+                "45",
+            )
+        }
 
         // Non-NOSCRIPT RedisCommandExecutionException is rethrown
         coEvery {
@@ -279,13 +383,22 @@ class ValkeyComponentUnitTest {
             adapter.acquireOrMarkDirty(repo, "tok", 500.milliseconds, 3600.seconds)
         }
         assertThrows<IllegalArgumentException> {
+            adapter.acquireOrMarkDirty(repo, "tok", Duration.INFINITE, 3600.seconds)
+        }
+        assertThrows<IllegalArgumentException> {
             adapter.acquireOrMarkDirty(repo, "tok", 45.seconds, 500.milliseconds)
+        }
+        assertThrows<IllegalArgumentException> {
+            adapter.acquireOrMarkDirty(repo, "tok", 45.seconds, Duration.INFINITE)
         }
         assertThrows<IllegalArgumentException> {
             adapter.extendLock(repo, " ", 45.seconds)
         }
         assertThrows<IllegalArgumentException> {
             adapter.extendLock(repo, "tok", 500.milliseconds)
+        }
+        assertThrows<IllegalArgumentException> {
+            adapter.extendLock(repo, "tok", Duration.INFINITE)
         }
         assertThrows<IllegalArgumentException> {
             adapter.releaseLockAndTakeDirty(repo, " ")
