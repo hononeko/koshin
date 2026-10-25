@@ -3,7 +3,9 @@ package dev.hononeko.koshin.core.model
 import dev.hononeko.koshin.core.ports.JobDelivery
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -64,6 +66,12 @@ class DomainModelTest {
         assertThrows(IllegalArgumentException::class.java) {
             PlatformCredentials("   ")
         }
+        assertThrows(IllegalArgumentException::class.java) {
+            PlatformCredentials("token", endpoint = " ")
+        }
+        val creds = PlatformCredentials("s3cr3t", "https://api.github.com")
+        assertFalse(creds.toString().contains("s3cr3t"))
+        assertTrue(creds.toString().contains("https://api.github.com"))
     }
 
     @Test

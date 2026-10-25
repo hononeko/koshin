@@ -18,7 +18,7 @@ Stateless, horizontally scalable Renovate CLI orchestrator built with Kotlin, Kt
 * **`:adapters:state-valkey`**: Valkey/Redis adapter for per-repository distributed mutexes and atomic dirty-flag coalescing via Lettuce.
 * **`:adapters:github-app`**: GitHub App authentication, JWT signing, and installation access token rotation.
 * **`:proxy`**: Stateless Ktor HTTP server receiving webhooks (GitHub/GitLab) and internal cron trigger schedules.
-* **`:worker`**: Autonomous coroutine daemon that pulls jobs from NATS, acquires repo mutexes, enforces LRU workspace cleanup, runs Renovate CLI subprocesses, and handles heartbeats & dirty catch-ups.
+* **`:worker`**: Autonomous coroutine daemon that pulls jobs from NATS, acquires repo mutexes, runs Renovate CLI subprocesses, deletes each repo workspace after the run, and handles heartbeats & dirty catch-ups.
 
 ---
 
@@ -67,6 +67,18 @@ The coordination Valkey instance (`VALKEY_URL`, supporting both standalone `redi
   * In the **`minimal`** deployment profile, where a single Valkey instance is shared between coordination (`VALKEY_URL`) and Renovate's package cache (`RENOVATE_REDIS_URL`), size `maxmemory` with enough headroom for both coordination keys and Renovate's cache so `noeviction` does not reject lock writes with `OOM`.
   * In the **`ha`** deployment profile, Renovate's package cache runs on a dedicated Valkey instance where `allkeys-lru` is safe.
 * **Optional Replica Acknowledgment (`LOCK_REPLICA_ACK_TIMEOUT_MS`):** When set to a positive value (in milliseconds), `ValkeyRepoCoordinationAdapter` issues `WAIT 1 <ms>` after acquiring a repository lock to narrow the replication failover window in primary-replica (`ha`) topologies. Keep this timeout small (e.g., `20`–`100` ms) and **only enable it in the `ha` profile**; on a single-node `minimal` deployment with zero replicas, `WAIT 1 <ms>` blocks the connection for the full timeout on every lock acquisition.
+
+---
+
+## Worker Runtime (KSH-7)
+
+* **1 job per pod.** The daemon polls the enabled `PLATFORMS` and runs one `renovate <repository>` at a time. Each run gets `RENOVATE_PLATFORM`, `RENOVATE_ENDPOINT` and `RENOVATE_TOKEN` for the job's platform (`GITHUB_TOKEN`/`GITHUB_API_URL`, `GITLAB_TOKEN`/`GITLAB_ENDPOINT`), plus `LOG_FORMAT=json`, `RENOVATE_BASE_DIR`, `RENOVATE_BINARYSOURCE`, `RENOVATE_REDIS_URL` and `RENOVATE_REPOSITORY_CACHE=enabled`. Other `RENOVATE_*` variables on the worker are passed through; worker secrets (`GITHUB_TOKEN`, `GITLAB_TOKEN`, `VALKEY_URL`, …) are not.
+* **Timeouts and cancellation** (`CLI_TIMEOUT_MINUTES`, lost lock, shutdown) forcibly kill the whole CLI process tree.
+* **Workspaces:** `$RENOVATE_BASE_DIR/repos/<platform>/<repo>` is deleted after every run; everything under `$RENOVATE_BASE_DIR` is purged at startup.
+* **SIGTERM:** stops fetching, kills the CLI, releases the lock (keeping the dirty flag), NAKs the delivery and releases the run slot, without waiting for the run to finish.
+* **Pod deletion cost (optional):** with `POD_DELETION_COST_ENABLED=true` (plus `POD_NAME` / `POD_NAMESPACE` from the downward API), the worker sets `controller.kubernetes.io/pod-deletion-cost` to `1000` while Renovate runs and back to `0` afterwards. Failed patches are logged and ignored.
+* **Health:** `GET /healthz` is liveness only; `GET /readyz` checks NATS and Valkey.
+* Run-slot throttling (KSH-11) and the shared repository cache (KSH-10) are no-ops for now.
 
 ---
 
