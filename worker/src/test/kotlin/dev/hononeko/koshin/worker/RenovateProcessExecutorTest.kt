@@ -101,7 +101,7 @@ class RenovateProcessExecutorTest {
         assertEquals("ghp_secret", seen["RENOVATE_TOKEN"])
         assertEquals("https://ghe.example.com/api/v3", seen["RENOVATE_ENDPOINT"])
         assertEquals(baseDir.toString(), seen["RENOVATE_BASE_DIR"])
-        assertEquals("global", seen["RENOVATE_BINARYSOURCE"])
+        assertEquals("global", seen["RENOVATE_BINARY_SOURCE"])
         assertEquals("redis://cache:6379", seen["RENOVATE_REDIS_URL"])
         assertEquals("enabled", seen["RENOVATE_REPOSITORY_CACHE"])
         assertEquals("false", seen["RENOVATE_ONBOARDING"])

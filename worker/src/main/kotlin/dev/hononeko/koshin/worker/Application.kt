@@ -2,6 +2,7 @@ package dev.hononeko.koshin.worker
 
 import dev.hononeko.koshin.adapters.nats.NatsConfig
 import dev.hononeko.koshin.adapters.valkey.ValkeyConfig
+import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.ports.CliExecutorPort
 import dev.hononeko.koshin.core.usecase.ProcessRenovateJobUseCase
 import io.ktor.http.HttpStatusCode
@@ -102,7 +103,8 @@ fun main() {
     }
 
     val backends = WorkerBackends(
-        connectNats = { WorkerBackends.connectNats(settings.natsUrl, natsConfig, settings.platforms) },
+        // Consumers for every platform, so KEDA's per-platform triggers never hit a missing consumer.
+        connectNats = { WorkerBackends.connectNats(settings.natsUrl, natsConfig, Platform.entries) },
         connectValkey = { WorkerBackends.connectValkey(valkeyConfig) },
     )
     backends.startAsync()
