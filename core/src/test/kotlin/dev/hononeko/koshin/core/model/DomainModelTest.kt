@@ -40,6 +40,10 @@ class DomainModelTest {
         assertThrows(IllegalArgumentException::class.java) { RepoRef(Platform.GITHUB, "single-segment") }
         assertThrows(IllegalArgumentException::class.java) { RepoRef(Platform.GITHUB, "owner/repo/extra") }
         assertThrows(IllegalArgumentException::class.java) { RepoRef(Platform.GITLAB, "single-segment") }
+
+        assertEquals(Platform.GITHUB, Platform.fromString("github"))
+        assertEquals(Platform.GITLAB, Platform.fromString(" GITLAB "))
+        assertThrows(IllegalArgumentException::class.java) { Platform.fromString("bitbucket") }
     }
 
     @Test

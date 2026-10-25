@@ -1,8 +1,6 @@
 <configuration>
     <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder>
-            <pattern>{"timestamp":"%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX,UTC}","level":"%level","thread":"%thread","logger":"%logger{36}","message":"%replace(%replace(%msg){'\\','\\\\'}){'\"','\\\"'}"}%n</pattern>
-        </encoder>
+        <encoder class="ch.qos.logback.classic.encoder.JsonEncoder" />
     </appender>
     <root level="INFO">
         <appender-ref ref="STDOUT" />

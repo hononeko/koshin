@@ -72,7 +72,7 @@ class StaticFileRepositoryDiscovery(
             val platform = if (platformRaw.isNullOrBlank()) {
                 defaultPlatform
             } else {
-                parsePlatform(platformRaw)
+                Platform.fromString(platformRaw)
             }
             val repository = requireNotNull(item["repository"]?.jsonPrimitive?.contentOrNull) {
                 "Missing 'repository' field in SWEEP_REPOSITORIES_FILE object"
@@ -96,17 +96,12 @@ class StaticFileRepositoryDiscovery(
             return if (':' in trimmed) {
                 val platformPart = trimmed.substringBefore(':').trim()
                 val repoPart = trimmed.substringAfter(':').trim()
-                RepoRef(parsePlatform(platformPart), repoPart)
+                RepoRef(Platform.fromString(platformPart), repoPart)
             } else {
                 RepoRef(defaultPlatform, trimmed)
             }
         }
 
-        fun parsePlatform(raw: String): Platform {
-            val cleaned = raw.trim()
-            return requireNotNull(
-                Platform.entries.firstOrNull { it.name.equals(cleaned, ignoreCase = true) },
-            ) { "Unknown platform: '$raw'" }
-        }
+        fun parsePlatform(raw: String): Platform = Platform.fromString(raw)
     }
 }

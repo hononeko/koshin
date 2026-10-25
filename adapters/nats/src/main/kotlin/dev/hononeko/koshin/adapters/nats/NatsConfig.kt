@@ -61,7 +61,7 @@ data class NatsConfig(
         const val DEFAULT_DLQ_MAX_AGE_DAYS = 7L
 
         fun fromEnv(env: Map<String, String> = System.getenv()): NatsConfig = NatsConfig(
-            jobsStreamName = env["NATS_JOBS_STREAM"] ?: DEFAULT_JOBS_STREAM,
+            jobsStreamName = env["NATS_STREAM_NAME"] ?: env["NATS_JOBS_STREAM"] ?: DEFAULT_JOBS_STREAM,
             dlqStreamName = env["NATS_DLQ_STREAM"] ?: DEFAULT_DLQ_STREAM,
             jobsSubjectPrefix = env["NATS_JOBS_SUBJECT_PREFIX"] ?: DEFAULT_JOBS_SUBJECT_PREFIX,
             dlqSubjectPrefix = env["NATS_DLQ_SUBJECT_PREFIX"] ?: DEFAULT_DLQ_SUBJECT_PREFIX,

@@ -33,6 +33,9 @@ class NatsConfigTest {
         assertEquals(120.seconds, config.ackWait)
         assertEquals(10L, config.maxDeliver)
         assertEquals(io.nats.client.api.StorageType.File, config.storageType)
+
+        val streamNameConfig = NatsConfig.fromEnv(mapOf("NATS_STREAM_NAME" to "PRIMARY_JOBS_STREAM"))
+        assertEquals("PRIMARY_JOBS_STREAM", streamNameConfig.jobsStreamName)
     }
 
     @Test

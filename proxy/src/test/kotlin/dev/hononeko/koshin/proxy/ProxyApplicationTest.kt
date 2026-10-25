@@ -12,9 +12,13 @@ import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.content.OutgoingContent
 import io.ktor.http.contentType
 import io.ktor.server.testing.testApplication
+import io.ktor.utils.io.ByteWriteChannel
+import io.ktor.utils.io.writeFully
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
@@ -37,17 +41,20 @@ class ProxyApplicationTest {
     private val triggerToken = "test-internal-trigger-token"
     private val json = Json { ignoreUnknownKeys = true }
 
-    private fun testConfig(platforms: Set<Platform> = setOf(Platform.GITHUB, Platform.GITLAB)): ProxyConfig =
-        ProxyConfig(
-            port = 0,
-            http2Enabled = true,
-            platforms = platforms,
-            githubWebhookSecret = ghSecret,
-            gitlabWebhookSecret = glSecret,
-            internalTriggerToken = triggerToken,
-            publishRetryBaseDelay = 1.milliseconds,
-            publishRetryBudget = 5.milliseconds,
-        )
+    private fun testConfig(
+        platforms: Set<Platform> = setOf(Platform.GITHUB, Platform.GITLAB),
+        maxRequestBodyBytes: Int = ProxyConfig.DEFAULT_MAX_REQUEST_BODY_BYTES,
+    ): ProxyConfig = ProxyConfig(
+        port = 0,
+        http2Enabled = true,
+        platforms = platforms,
+        githubWebhookSecret = ghSecret,
+        gitlabWebhookSecret = glSecret,
+        internalTriggerToken = triggerToken,
+        publishRetryBaseDelay = 2.milliseconds,
+        publishRetryBudget = 50.milliseconds,
+        maxRequestBodyBytes = maxRequestBodyBytes,
+    )
 
     private fun signGitHub(payload: String, secret: String = ghSecret): String {
         val mac = Mac.getInstance("HmacSHA256")
@@ -150,7 +157,7 @@ class ProxyApplicationTest {
     }
 
     @Test
-    fun `GitHub webhook returns 202 without publishing when filtered by self-trigger rules`() = testApplication {
+    fun `GitHub webhook returns 202 with enqueued false when filtered by self-trigger rules`() = testApplication {
         val publisher = RecordingPublisher()
         application {
             proxyModule(config = testConfig(), publisher = publisher)
@@ -178,6 +185,7 @@ class ProxyApplicationTest {
             setBody(botPushPayload)
         }
         assertEquals(HttpStatusCode.Accepted, res.status)
+        assertTrue(res.bodyAsText().contains("\"enqueued\":false"))
         assertTrue(publisher.published.isEmpty())
     }
 
@@ -237,6 +245,7 @@ class ProxyApplicationTest {
             setBody(ignoredPayload)
         }
         assertEquals(HttpStatusCode.Accepted, ignoredRes.status)
+        assertTrue(ignoredRes.bodyAsText().contains("\"enqueued\":false"))
         assertEquals(1, publisher.published.size)
     }
 
@@ -275,48 +284,50 @@ class ProxyApplicationTest {
     }
 
     @Test
-    fun `trigger API validates Bearer token and queues batch repositories with fresh UUIDs`() = testApplication {
-        val publisher = RecordingPublisher()
-        application {
-            proxyModule(config = testConfig(), publisher = publisher)
-        }
-
-        val unauthRes = client.post("/api/v1/trigger") {
-            contentType(ContentType.Application.Json)
-            setBody("""{"discover": true}""")
-        }
-        assertEquals(HttpStatusCode.Unauthorized, unauthRes.status)
-
-        val wrongTokenRes = client.post("/api/v1/trigger") {
-            header("Authorization", "Bearer wrong-token")
-            contentType(ContentType.Application.Json)
-            setBody("""{"discover": true}""")
-        }
-        assertEquals(HttpStatusCode.Unauthorized, wrongTokenRes.status)
-
-        val batchBody = """
-            {
-              "repositories": [
-                {"platform": "github", "repository": "hononeko/koshin"},
-                {"platform": "gitlab", "repository": "gitlab-org/sub/repo"}
-              ]
+    fun `trigger API validates Bearer token, deduplicates, and queues batch repositories with fresh UUIDs`() =
+        testApplication {
+            val publisher = RecordingPublisher()
+            application {
+                proxyModule(config = testConfig(), publisher = publisher)
             }
-        """.trimIndent()
-        val batchRes = client.post("/api/v1/trigger") {
-            header("Authorization", "Bearer $triggerToken")
-            contentType(ContentType.Application.Json)
-            setBody(batchBody)
+
+            val unauthRes = client.post("/api/v1/trigger") {
+                contentType(ContentType.Application.Json)
+                setBody("""{"discover": true}""")
+            }
+            assertEquals(HttpStatusCode.Unauthorized, unauthRes.status)
+
+            val wrongTokenRes = client.post("/api/v1/trigger") {
+                header("Authorization", "Bearer wrong-token")
+                contentType(ContentType.Application.Json)
+                setBody("""{"discover": true}""")
+            }
+            assertEquals(HttpStatusCode.Unauthorized, wrongTokenRes.status)
+
+            val batchBody = """
+                {
+                  "repositories": [
+                    {"platform": "github", "repository": "hononeko/koshin"},
+                    {"platform": "GITHUB", "repository": "hononeko/koshin"},
+                    {"platform": "gitlab", "repository": "gitlab-org/sub/repo"}
+                  ]
+                }
+            """.trimIndent()
+            val batchRes = client.post("/api/v1/trigger") {
+                header("Authorization", "Bearer $triggerToken")
+                contentType(ContentType.Application.Json)
+                setBody(batchBody)
+            }
+            assertEquals(HttpStatusCode.Accepted, batchRes.status)
+            val batchRespObj = json.decodeFromString(TriggerResponse.serializer(), batchRes.bodyAsText())
+            assertEquals(2, batchRespObj.enqueued)
+            assertEquals(2, publisher.published.size)
+            assertTrue(publisher.published.all { it.triggerReason == TriggerReason.SCHEDULE })
+            assertNotEquals(publisher.published[0].deliveryId, publisher.published[1].deliveryId)
         }
-        assertEquals(HttpStatusCode.Accepted, batchRes.status)
-        val batchRespObj = json.decodeFromString(TriggerResponse.serializer(), batchRes.bodyAsText())
-        assertEquals(2, batchRespObj.enqueued)
-        assertEquals(2, publisher.published.size)
-        assertTrue(publisher.published.all { it.triggerReason == TriggerReason.SCHEDULE })
-        assertNotEquals(publisher.published[0].deliveryId, publisher.published[1].deliveryId)
-    }
 
     @Test
-    fun `trigger API with discover true uses RepositoryDiscoveryPort`() = testApplication {
+    fun `trigger API with discover true filters enabled platforms and handles discovery errors`() = testApplication {
         val publisher = RecordingPublisher()
         val discoveryPort = object : RepositoryDiscoveryPort {
             override suspend fun discover(): List<RepoRef> = listOf(
@@ -327,12 +338,13 @@ class ProxyApplicationTest {
 
         application {
             proxyModule(
-                config = testConfig(),
+                config = testConfig(platforms = setOf(Platform.GITHUB)),
                 publisher = publisher,
                 discoveryPort = discoveryPort,
             )
         }
 
+        // Only enabled platform (GITHUB) from discovery is enqueued
         val discoverRes = client.post("/api/v1/trigger") {
             header("Authorization", "Bearer $triggerToken")
             contentType(ContentType.Application.Json)
@@ -340,15 +352,120 @@ class ProxyApplicationTest {
         }
         assertEquals(HttpStatusCode.Accepted, discoverRes.status)
         val discoverRespObj = json.decodeFromString(TriggerResponse.serializer(), discoverRes.bodyAsText())
-        assertEquals(2, discoverRespObj.enqueued)
-        assertEquals(
-            listOf(
-                RepoRef(Platform.GITHUB, "hononeko/discovered-1"),
-                RepoRef(Platform.GITLAB, "gitlab-org/discovered-2"),
-            ),
-            publisher.published.map { it.repo },
-        )
-        assertNotEquals(publisher.published[0].deliveryId, publisher.published[1].deliveryId)
+        assertEquals(1, discoverRespObj.enqueued)
+        assertEquals(listOf(RepoRef(Platform.GITHUB, "hononeko/discovered-1")), publisher.published.map { it.repo })
+
+        // Explicit disabled platform in request -> 400 Bad Request
+        val disabledPlatformRes = client.post("/api/v1/trigger") {
+            header("Authorization", "Bearer $triggerToken")
+            contentType(ContentType.Application.Json)
+            setBody("""{"repositories":[{"platform":"gitlab","repository":"gitlab-org/repo"}]}""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, disabledPlatformRes.status)
+
+        // Empty trigger request -> 400 Bad Request
+        val emptyTriggerRes = client.post("/api/v1/trigger") {
+            header("Authorization", "Bearer $triggerToken")
+            contentType(ContentType.Application.Json)
+            setBody("""{"repositories":[],"discover":false}""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, emptyTriggerRes.status)
+    }
+
+    @Test
+    fun `trigger API returns 503 when discovery is unconfigured and 500 when discovery throws`() = testApplication {
+        var shouldThrow = false
+        val failingDiscovery = object : RepositoryDiscoveryPort {
+            override suspend fun discover(): List<RepoRef> {
+                if (shouldThrow) {
+                    throw IOException("Failed to read sweep file")
+                }
+                return emptyList()
+            }
+        }
+
+        val publisher = RecordingPublisher()
+        application {
+            proxyModule(
+                config = testConfig(),
+                publisher = publisher,
+                discoveryPort = failingDiscovery,
+            )
+        }
+
+        shouldThrow = true
+        val errorRes = client.post("/api/v1/trigger") {
+            header("Authorization", "Bearer $triggerToken")
+            contentType(ContentType.Application.Json)
+            setBody("""{"discover": true}""")
+        }
+        assertEquals(HttpStatusCode.InternalServerError, errorRes.status)
+    }
+
+    @Test
+    fun `trigger API returns 503 when discoveryPort is null`() = testApplication {
+        val publisher = RecordingPublisher()
+        application {
+            proxyModule(
+                config = testConfig(),
+                publisher = publisher,
+                discoveryPort = null,
+            )
+        }
+
+        val res = client.post("/api/v1/trigger") {
+            header("Authorization", "Bearer $triggerToken")
+            contentType(ContentType.Application.Json)
+            setBody("""{"discover": true}""")
+        }
+        assertEquals(HttpStatusCode.ServiceUnavailable, res.status)
+    }
+
+    @Test
+    fun `oversized request bodies return 413 Payload Too Large with Content-Length or chunked`() = testApplication {
+        val publisher = RecordingPublisher()
+        application {
+            proxyModule(
+                config = testConfig(maxRequestBodyBytes = 64),
+                publisher = publisher,
+            )
+        }
+
+        val oversizedPayload = "x".repeat(128)
+
+        // Unauthenticated GitHub webhook with Content-Length > 64 -> 413 Payload Too Large
+        val ghOversizedRes = client.post("/webhooks/github") {
+            setBody(oversizedPayload)
+        }
+        assertEquals(HttpStatusCode.PayloadTooLarge, ghOversizedRes.status)
+
+        // Chunked / streaming request without Content-Length exceeding maxRequestBodyBytes -> 413 Payload Too Large
+        val chunkedBody = object : OutgoingContent.WriteChannelContent() {
+            override val contentLength: Long? = null
+            override suspend fun writeTo(channel: ByteWriteChannel) {
+                val bytes = oversizedPayload.toByteArray(Charsets.UTF_8)
+                channel.writeFully(bytes, 0, bytes.size)
+            }
+        }
+        val ghChunkedRes = client.post("/webhooks/github") {
+            setBody(chunkedBody)
+        }
+        assertEquals(HttpStatusCode.PayloadTooLarge, ghChunkedRes.status)
+
+        // GitLab oversized -> 413
+        val glOversizedRes = client.post("/webhooks/gitlab") {
+            header("X-Gitlab-Token", glSecret)
+            header(HttpHeaders.ContentLength, "200")
+            setBody(oversizedPayload)
+        }
+        assertEquals(HttpStatusCode.PayloadTooLarge, glOversizedRes.status)
+
+        // Trigger oversized -> 413
+        val triggerOversizedRes = client.post("/api/v1/trigger") {
+            header("Authorization", "Bearer $triggerToken")
+            setBody(oversizedPayload)
+        }
+        assertEquals(HttpStatusCode.PayloadTooLarge, triggerOversizedRes.status)
     }
 
     @Test

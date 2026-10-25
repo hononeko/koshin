@@ -9,6 +9,8 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
@@ -93,6 +95,27 @@ class RetryingJobQueuePublisherTest {
     }
 
     @Test
+    fun `bounds hanging delegate publish by maxTotalDelay timeout`() = runTest {
+        val hangingDelegate = object : JobQueuePublisher {
+            override suspend fun publish(event: RenovateJobEvent) {
+                delay(10.seconds)
+            }
+
+            override suspend fun publishToDeadLetter(event: RenovateJobEvent) = Unit
+        }
+
+        val retrying = RetryingJobQueuePublisher(
+            delegate = hangingDelegate,
+            baseDelay = 50.milliseconds,
+            maxTotalDelay = 150.milliseconds,
+        )
+
+        assertThrows<TimeoutCancellationException> {
+            retrying.publish(sampleEvent)
+        }
+    }
+
+    @Test
     fun `does not retry CancellationException or IllegalArgumentException`() = runTest {
         val delegate = mockk<JobQueuePublisher>()
         coEvery { delegate.publish(sampleEvent) } throws CancellationException("cancelled")
@@ -122,13 +145,16 @@ class RetryingJobQueuePublisherTest {
     }
 
     @Test
-    fun `rejects negative retry configuration`() {
+    fun `rejects negative or zero baseDelay when maxTotalDelay is positive`() {
         val delegate = mockk<JobQueuePublisher>()
         assertThrows<IllegalArgumentException> {
             RetryingJobQueuePublisher(delegate, baseDelay = (-1).milliseconds)
         }
         assertThrows<IllegalArgumentException> {
             RetryingJobQueuePublisher(delegate, maxTotalDelay = (-1).milliseconds)
+        }
+        assertThrows<IllegalArgumentException> {
+            RetryingJobQueuePublisher(delegate, baseDelay = Duration.ZERO, maxTotalDelay = 1.seconds)
         }
     }
 }

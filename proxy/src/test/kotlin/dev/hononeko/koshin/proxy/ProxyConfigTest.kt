@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -25,9 +26,11 @@ class ProxyConfigTest {
         assertNull(config.gitlabWebhookSecret)
         assertNull(config.internalTriggerToken)
         assertNull(config.sweepRepositoriesFile)
-        assertEquals(setOf("renovate[bot]", "renovate"), config.botLogins)
+        assertEquals(setOf("renovate[bot]", "renovate", "renovate-bot"), config.botLogins)
         assertEquals(100.milliseconds, config.publishRetryBaseDelay)
         assertEquals(5.seconds, config.publishRetryBudget)
+        assertEquals(10 * 1024 * 1024, config.maxRequestBodyBytes)
+        assertEquals(15, config.requestReadTimeoutSeconds)
     }
 
     @Test
@@ -55,7 +58,7 @@ class ProxyConfigTest {
         assertEquals("gl-secret", config.gitlabWebhookSecret)
         assertEquals("trigger-secret", config.internalTriggerToken)
         assertEquals("/etc/koshin/repos.json", config.sweepRepositoriesFile)
-        val expectedBots = listOf("renovate[bot]", "custom-bot[bot]", "gh-app[bot]", "gl-renovate")
+        val expectedBots = listOf("renovate[bot]", "renovate-bot", "custom-bot[bot]", "gh-app[bot]", "gl-renovate")
         assertTrue(config.botLogins.containsAll(expectedBots))
     }
 
@@ -110,6 +113,15 @@ class ProxyConfigTest {
         }
         assertThrows<IllegalArgumentException> {
             ProxyConfig(publishRetryBudget = (-1).seconds)
+        }
+        assertThrows<IllegalArgumentException> {
+            ProxyConfig(publishRetryBaseDelay = Duration.ZERO, publishRetryBudget = 1.seconds)
+        }
+        assertThrows<IllegalArgumentException> {
+            ProxyConfig(maxRequestBodyBytes = 0)
+        }
+        assertThrows<IllegalArgumentException> {
+            ProxyConfig(requestReadTimeoutSeconds = 0)
         }
     }
 }

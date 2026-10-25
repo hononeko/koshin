@@ -7,10 +7,12 @@ import org.junit.jupiter.api.Test
 
 class WebhookEventFilterTest {
 
-    private val filter = WebhookEventFilter(botLogins = setOf("renovate[bot]", "renovate", "koshin-bot"))
+    private val filter = WebhookEventFilter(
+        botLogins = setOf("renovate[bot]", "renovate", "renovate-bot", "koshin-bot"),
+    )
 
     @Test
-    fun `GitHub push to default branch by human is enqueued`() {
+    fun `GitHub push to default branch by human or non-Renovate bot is enqueued`() {
         val payload = """
             {
               "ref": "refs/heads/main",
@@ -29,9 +31,27 @@ class WebhookEventFilterTest {
               }
             }
         """.trimIndent()
+        assertEquals(WebhookDecision.Enqueue("hononeko/koshin"), filter.evaluateGitHub("push", payload))
 
-        val decision = filter.evaluateGitHub("push", payload)
-        assertEquals(WebhookDecision.Enqueue("hononeko/koshin"), decision)
+        val githubActionsReleasePush = """
+            {
+              "ref": "refs/heads/main",
+              "deleted": false,
+              "after": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+              "repository": {
+                "full_name": "hononeko/koshin",
+                "default_branch": "main"
+              },
+              "sender": {
+                "login": "github-actions[bot]",
+                "type": "Bot"
+              }
+            }
+        """.trimIndent()
+        assertEquals(
+            WebhookDecision.Enqueue("hononeko/koshin"),
+            filter.evaluateGitHub("push", githubActionsReleasePush),
+        )
     }
 
     @Test
@@ -76,7 +96,7 @@ class WebhookEventFilterTest {
     }
 
     @Test
-    fun `GitHub push filters out bot pushes`() {
+    fun `GitHub push filters out Renovate and configured bot pushes`() {
         val renovateBotPush = """
             {
               "ref": "refs/heads/main",
@@ -107,28 +127,33 @@ class WebhookEventFilterTest {
     }
 
     @Test
-    fun `GitHub pull_request allows closed and edited with checkbox toggle only`() {
+    fun `GitHub pull_request allows human closed and checkbox edit, filters bot-originated PR events`() {
         val prClosed = """
             {
               "action": "closed",
               "repository": { "full_name": "hononeko/koshin" },
+              "sender": { "login": "octocat", "type": "User" },
               "pull_request": { "body": "PR description" }
             }
         """.trimIndent()
         assertEquals(WebhookDecision.Enqueue("hononeko/koshin"), filter.evaluateGitHub("pull_request", prClosed))
 
+        val botPrClosed = """
+            {
+              "action": "closed",
+              "repository": { "full_name": "hononeko/koshin" },
+              "sender": { "login": "renovate[bot]", "type": "Bot" }
+            }
+        """.trimIndent()
+        assertTrue(filter.evaluateGitHub("pull_request", botPrClosed) is WebhookDecision.Ignore)
+
         val prEditedWithCheckboxToggle = """
             {
               "action": "edited",
               "repository": { "full_name": "hononeko/koshin" },
-              "pull_request": {
-                "body": "If you want to rebase/retry this PR, check this box\n- [x] <!-- rebase-check -->Rebase"
-              },
-              "changes": {
-                "body": {
-                  "from": "If you want to rebase/retry this PR, check this box\n- [ ] <!-- rebase-check -->Rebase"
-                }
-              }
+              "sender": { "login": "octocat", "type": "User" },
+              "pull_request": { "body": "- [x] <!-- rebase-check -->Rebase" },
+              "changes": { "body": { "from": "- [ ] <!-- rebase-check -->Rebase" } }
             }
         """.trimIndent()
         assertEquals(
@@ -136,73 +161,67 @@ class WebhookEventFilterTest {
             filter.evaluateGitHub("pull_request", prEditedWithCheckboxToggle),
         )
 
+        val botPrCheckboxReset = """
+            {
+              "action": "edited",
+              "repository": { "full_name": "hononeko/koshin" },
+              "sender": { "login": "renovate[bot]", "type": "Bot" },
+              "pull_request": { "body": "- [ ] <!-- rebase-check -->Rebase" },
+              "changes": { "body": { "from": "- [x] <!-- rebase-check -->Rebase" } }
+            }
+        """.trimIndent()
+        assertTrue(filter.evaluateGitHub("pull_request", botPrCheckboxReset) is WebhookDecision.Ignore)
+
         val prEditedWithoutCheckboxToggle = """
             {
               "action": "edited",
               "repository": { "full_name": "hononeko/koshin" },
-              "pull_request": {
-                "body": "Updated text only\n- [ ] <!-- rebase-check -->Rebase"
-              },
-              "changes": {
-                "body": {
-                  "from": "Original text\n- [ ] <!-- rebase-check -->Rebase"
-                }
-              }
+              "pull_request": { "body": "Updated text\n- [ ] Rebase" },
+              "changes": { "body": { "from": "Original text\n- [ ] Rebase" } }
             }
         """.trimIndent()
         assertTrue(filter.evaluateGitHub("pull_request", prEditedWithoutCheckboxToggle) is WebhookDecision.Ignore)
 
-        val prOpened = """
-            {
-              "action": "opened",
-              "repository": { "full_name": "hononeko/koshin" }
-            }
-        """.trimIndent()
+        val prOpened = """{"action":"opened","repository":{"full_name":"hononeko/koshin"}}"""
         assertTrue(filter.evaluateGitHub("pull_request", prOpened) is WebhookDecision.Ignore)
     }
 
     @Test
-    fun `GitHub issues allows edited Dependency Dashboard with checkbox toggle only`() {
+    fun `GitHub issues allows human Dependency Dashboard checkbox edit and filters bot edits`() {
         val dashboardToggled = """
             {
               "action": "edited",
               "repository": { "full_name": "hononeko/koshin" },
-              "issue": {
-                "title": "Dependency Dashboard",
-                "body": "## Pending Approval\n- [X] Approve all"
-              },
-              "changes": {
-                "body": {
-                  "from": "## Pending Approval\n- [ ] Approve all"
-                }
-              }
+              "sender": { "login": "octocat", "type": "User" },
+              "issue": { "title": "Dependency Dashboard", "body": "## Pending\n- [X] Approve all" },
+              "changes": { "body": { "from": "## Pending\n- [ ] Approve all" } }
             }
         """.trimIndent()
         assertEquals(WebhookDecision.Enqueue("hononeko/koshin"), filter.evaluateGitHub("issues", dashboardToggled))
+
+        val botDashboardEdited = """
+            {
+              "action": "edited",
+              "repository": { "full_name": "hononeko/koshin" },
+              "sender": { "login": "renovate[bot]", "type": "Bot" },
+              "issue": { "title": "Dependency Dashboard", "body": "## Pending\n- [ ] Approve all" },
+              "changes": { "body": { "from": "## Pending\n- [X] Approve all" } }
+            }
+        """.trimIndent()
+        assertTrue(filter.evaluateGitHub("issues", botDashboardEdited) is WebhookDecision.Ignore)
 
         val otherIssueEdited = """
             {
               "action": "edited",
               "repository": { "full_name": "hononeko/koshin" },
-              "issue": {
-                "title": "Bug report",
-                "body": "- [x] Reproduce"
-              },
-              "changes": {
-                "body": {
-                  "from": "- [ ] Reproduce"
-                }
-              }
+              "issue": { "title": "Bug report", "body": "- [x] Reproduce" },
+              "changes": { "body": { "from": "- [ ] Reproduce" } }
             }
         """.trimIndent()
         assertTrue(filter.evaluateGitHub("issues", otherIssueEdited) is WebhookDecision.Ignore)
 
         val dashboardOpened = """
-            {
-              "action": "opened",
-              "repository": { "full_name": "hononeko/koshin" },
-              "issue": { "title": "Dependency Dashboard" }
-            }
+            {"action":"opened","repository":{"full_name":"hononeko/koshin"},"issue":{"title":"Dependency Dashboard"}}
         """.trimIndent()
         assertTrue(filter.evaluateGitHub("issues", dashboardOpened) is WebhookDecision.Ignore)
 
@@ -210,15 +229,8 @@ class WebhookEventFilterTest {
             {
               "action": "edited",
               "repository": { "full_name": "hononeko/koshin" },
-              "issue": {
-                "title": "Dependency Dashboard",
-                "body": "## Pending Approval (updated text)\n- [ ] Approve all"
-              },
-              "changes": {
-                "body": {
-                  "from": "## Pending Approval\n- [ ] Approve all"
-                }
-              }
+              "issue": { "title": "Dependency Dashboard", "body": "## Updated\n- [ ] Approve" },
+              "changes": { "body": { "from": "## Original\n- [ ] Approve" } }
             }
         """.trimIndent()
         assertTrue(filter.evaluateGitHub("issues", dashboardEditedNoToggle) is WebhookDecision.Ignore)
@@ -302,10 +314,11 @@ class WebhookEventFilterTest {
     }
 
     @Test
-    fun `GitLab merge_request events are filtered properly`() {
+    fun `GitLab merge_request events are filtered properly including bot actions`() {
         val gitlabMrMerged = """
             {
               "object_kind": "merge_request",
+              "user": { "username": "developer" },
               "project": { "path_with_namespace": "gitlab-org/koshin" },
               "object_attributes": { "action": "merge" }
             }
@@ -315,21 +328,20 @@ class WebhookEventFilterTest {
             filter.evaluateGitLab("Merge Request Hook", gitlabMrMerged),
         )
 
-        val gitlabMrClosed = """
+        val gitlabBotMrClosed = """
             {
               "object_kind": "merge_request",
+              "user": { "username": "renovate-bot" },
               "project": { "path_with_namespace": "gitlab-org/koshin" },
               "object_attributes": { "action": "close" }
             }
         """.trimIndent()
-        assertEquals(
-            WebhookDecision.Enqueue("gitlab-org/koshin"),
-            filter.evaluateGitLab("Merge Request Hook", gitlabMrClosed),
-        )
+        assertTrue(filter.evaluateGitLab("Merge Request Hook", gitlabBotMrClosed) is WebhookDecision.Ignore)
 
         val gitlabMrCheckboxUpdate = """
             {
               "object_kind": "merge_request",
+              "user": { "username": "developer" },
               "project": { "path_with_namespace": "gitlab-org/koshin" },
               "object_attributes": { "action": "update" },
               "changes": { "description": { "previous": "- [ ] Rebase MR", "current": "- [x] Rebase MR" } }
@@ -361,10 +373,11 @@ class WebhookEventFilterTest {
     }
 
     @Test
-    fun `GitLab issue and unrecognized events are filtered properly`() {
+    fun `GitLab issue and unrecognized events are filtered properly including bot edits`() {
         val gitlabDashboardIssueUpdate = """
             {
               "object_kind": "issue",
+              "user": { "username": "developer" },
               "project": { "path_with_namespace": "gitlab-org/koshin" },
               "object_attributes": {
                 "action": "update",
@@ -383,20 +396,31 @@ class WebhookEventFilterTest {
             filter.evaluateGitLab("Issue Hook", gitlabDashboardIssueUpdate),
         )
 
+        val gitlabBotDashboardIssueUpdate = """
+            {
+              "object_kind": "issue",
+              "user": { "username": "renovate" },
+              "project": { "path_with_namespace": "gitlab-org/koshin" },
+              "object_attributes": {
+                "action": "update",
+                "title": "Dependency Dashboard"
+              },
+              "changes": {
+                "description": {
+                  "previous": "- [x] Trigger manual run",
+                  "current": "- [ ] Trigger manual run"
+                }
+              }
+            }
+        """.trimIndent()
+        assertTrue(filter.evaluateGitLab("Issue Hook", gitlabBotDashboardIssueUpdate) is WebhookDecision.Ignore)
+
         val gitlabOtherIssueUpdate = """
             {
               "object_kind": "issue",
               "project": { "path_with_namespace": "gitlab-org/koshin" },
-              "object_attributes": {
-                "action": "update",
-                "title": "Normal Issue"
-              },
-              "changes": {
-                "description": {
-                  "previous": "- [ ] Item",
-                  "current": "- [x] Item"
-                }
-              }
+              "object_attributes": { "action": "update", "title": "Normal Issue" },
+              "changes": { "description": { "previous": "- [ ] Item", "current": "- [x] Item" } }
             }
         """.trimIndent()
         assertTrue(filter.evaluateGitLab("Issue Hook", gitlabOtherIssueUpdate) is WebhookDecision.Ignore)

@@ -12,13 +12,13 @@ object SignatureVerifier {
     private const val BEARER_PREFIX = "Bearer "
 
     fun verifyGitHubSignature(payload: ByteArray, signatureHeader: String?, secret: String?): Boolean {
-        val trimmedSecret = secret?.takeIf { it.isNotBlank() }
+        val secretBytes = secret?.takeIf { it.isNotBlank() }?.toByteArray(Charsets.UTF_8)
         val providedBytes = extractGitHubSignatureBytes(signatureHeader)
-        return if (trimmedSecret == null || providedBytes == null) {
+        return if (secretBytes == null || providedBytes == null) {
             false
         } else {
             val mac = Mac.getInstance(HMAC_SHA256_ALGORITHM)
-            mac.init(SecretKeySpec(trimmedSecret.toByteArray(Charsets.UTF_8), HMAC_SHA256_ALGORITHM))
+            mac.init(SecretKeySpec(secretBytes, HMAC_SHA256_ALGORITHM))
             val expectedBytes = mac.doFinal(payload)
             MessageDigest.isEqual(expectedBytes, providedBytes)
         }
@@ -52,13 +52,13 @@ object SignatureVerifier {
     }
 
     private fun constantTimeTokenEquals(provided: String?, expected: String?): Boolean {
-        val cleanExpected = expected?.takeIf { it.isNotBlank() }
-        val cleanProvided = provided?.takeIf { it.isNotEmpty() }
-        return if (cleanExpected == null || cleanProvided == null) {
+        val expectedBytes = expected?.takeIf { it.isNotBlank() }?.toByteArray(Charsets.UTF_8)
+        val providedBytes = provided?.takeIf { it.isNotEmpty() }?.toByteArray(Charsets.UTF_8)
+        return if (expectedBytes == null || providedBytes == null) {
             false
         } else {
-            val expectedDigest = sha256(cleanExpected.toByteArray(Charsets.UTF_8))
-            val providedDigest = sha256(cleanProvided.toByteArray(Charsets.UTF_8))
+            val expectedDigest = sha256(expectedBytes)
+            val providedDigest = sha256(providedBytes)
             MessageDigest.isEqual(expectedDigest, providedDigest)
         }
     }

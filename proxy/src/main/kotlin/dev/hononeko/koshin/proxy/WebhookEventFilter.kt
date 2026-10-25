@@ -107,13 +107,20 @@ class WebhookEventFilter(
     }
 
     private fun evaluateGitHubPullRequest(root: JsonObject, fullName: String): WebhookDecision {
+        val senderObj = root["sender"] as? JsonObject
+        val senderLogin = senderObj?.stringField("login")
+        val senderType = senderObj?.stringField("type")
         val action = root.stringField("action")?.lowercase()
-            ?: return WebhookDecision.Ignore("pull_request missing action")
 
-        return when (action) {
-            "closed" -> WebhookDecision.Enqueue(fullName)
+        return when {
+            isBotActor(senderLogin, senderType) ->
+                WebhookDecision.Ignore("self-triggered pull_request by bot ($senderLogin)")
 
-            "edited" -> {
+            action == null -> WebhookDecision.Ignore("pull_request missing action")
+
+            action == "closed" -> WebhookDecision.Enqueue(fullName)
+
+            action == "edited" -> {
                 val prObj = root["pull_request"] as? JsonObject
                 val currentBody = prObj?.stringField("body")
                 val previousBody = ((root["changes"] as? JsonObject)?.get("body") as? JsonObject)
@@ -130,6 +137,9 @@ class WebhookEventFilter(
     }
 
     private fun evaluateGitHubIssues(root: JsonObject, fullName: String): WebhookDecision {
+        val senderObj = root["sender"] as? JsonObject
+        val senderLogin = senderObj?.stringField("login")
+        val senderType = senderObj?.stringField("type")
         val action = root.stringField("action")?.lowercase()
         val issueObj = root["issue"] as? JsonObject
         val title = issueObj?.stringField("title").orEmpty()
@@ -138,6 +148,9 @@ class WebhookEventFilter(
             ?.stringField("from")
 
         return when {
+            isBotActor(senderLogin, senderType) ->
+                WebhookDecision.Ignore("self-triggered issue event by bot ($senderLogin)")
+
             action == null -> WebhookDecision.Ignore("issues missing action")
 
             action != "edited" -> WebhookDecision.Ignore("issues action '$action' ignored")
@@ -162,8 +175,7 @@ class WebhookEventFilter(
         val ref = root.stringField("ref")
         val defaultBranch = projectObj.stringField("default_branch")?.takeIf { it.isNotBlank() } ?: DEFAULT_BRANCH
         val expectedRef = "refs/heads/$defaultBranch"
-        val username = root.stringField("user_username")
-            ?: (root["user"] as? JsonObject)?.stringField("username")
+        val username = extractGitLabUsername(root)
 
         return when {
             after == ZERO_COMMIT_SHA -> WebhookDecision.Ignore("GitLab branch deletion push")
@@ -176,10 +188,14 @@ class WebhookEventFilter(
     }
 
     private fun evaluateGitLabMergeRequest(root: JsonObject, pathWithNamespace: String): WebhookDecision {
+        val username = extractGitLabUsername(root)
         val attrs = root["object_attributes"] as? JsonObject
         val action = attrs?.stringField("action")?.lowercase()
 
         return when {
+            isBotActor(username, null) ->
+                WebhookDecision.Ignore("GitLab self-triggered merge_request by bot ($username)")
+
             attrs == null -> WebhookDecision.Ignore("GitLab merge_request missing object_attributes")
 
             action == null -> WebhookDecision.Ignore("GitLab merge_request missing action")
@@ -202,6 +218,7 @@ class WebhookEventFilter(
     }
 
     private fun evaluateGitLabIssue(root: JsonObject, pathWithNamespace: String): WebhookDecision {
+        val username = extractGitLabUsername(root)
         val attrs = root["object_attributes"] as? JsonObject
         val action = attrs?.stringField("action")?.lowercase()
         val title = attrs?.stringField("title").orEmpty()
@@ -210,6 +227,9 @@ class WebhookEventFilter(
         val current = descChange?.stringField("current") ?: attrs?.stringField("description")
 
         return when {
+            isBotActor(username, null) ->
+                WebhookDecision.Ignore("GitLab self-triggered issue event by bot ($username)")
+
             attrs == null -> WebhookDecision.Ignore("GitLab issue missing object_attributes")
 
             action == null -> WebhookDecision.Ignore("GitLab issue missing action")
@@ -225,10 +245,12 @@ class WebhookEventFilter(
         }
     }
 
+    private fun extractGitLabUsername(root: JsonObject): String? =
+        root.stringField("user_username") ?: (root["user"] as? JsonObject)?.stringField("username")
+
     private fun isBotActor(login: String?, senderType: String?): Boolean {
         val normalized = login?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return false
         return normalized in normalizedBotLogins ||
-            normalized.endsWith("[bot]") ||
             (senderType.equals("Bot", ignoreCase = true) && normalized.contains("renovate"))
     }
 
