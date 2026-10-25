@@ -37,8 +37,8 @@ data class WorkerSettings(
     }
 
     override fun toString(): String = "WorkerSettings(port=$port, http2Enabled=$http2Enabled, platforms=$platforms, " +
-        "natsUrl=$natsUrl, renovateBaseDir=$renovateBaseDir, githubToken=${githubToken.redacted()}, " +
-        "gitlabToken=${gitlabToken.redacted()}, jobConfig=$jobConfig)"
+        "natsUrl=${natsUrl.withoutUserInfo()}, renovateBaseDir=$renovateBaseDir, " +
+        "githubToken=${githubToken.redacted()}, gitlabToken=${gitlabToken.redacted()}, jobConfig=$jobConfig)"
 
     companion object {
         const val DEFAULT_PORT = 8080
@@ -56,9 +56,7 @@ data class WorkerSettings(
             natsUrl = env.nonBlank("NATS_URL") ?: DEFAULT_NATS_URL,
             renovateBaseDir = Path(env.nonBlank("RENOVATE_BASE_DIR") ?: DEFAULT_RENOVATE_BASE_DIR),
             renovateBinarySource = env.nonBlank("RENOVATE_BINARYSOURCE") ?: DEFAULT_RENOVATE_BINARY_SOURCE,
-            renovateRedisUrl = env.nonBlank("RENOVATE_REDIS_URL")
-                ?: env.nonBlank("VALKEY_URL")
-                ?: ValkeyConfig.DEFAULT_VALKEY_URL,
+            renovateRedisUrl = env.nonBlank("RENOVATE_REDIS_URL") ?: renovateRedisFallback(env.nonBlank("VALKEY_URL")),
             githubToken = env.nonBlank("GITHUB_TOKEN"),
             githubEndpoint = env.nonBlank("GITHUB_API_URL"),
             gitlabToken = env.nonBlank("GITLAB_TOKEN"),
@@ -107,5 +105,14 @@ data class WorkerSettings(
         }
 
         private fun String?.redacted(): String = if (this == null) "null" else "***"
+
+        private fun String.withoutUserInfo(): String = replace(Regex("(?<=://)[^@/]+@"), "***@")
+
+        /** Renovate can't use a `redis-sentinel://` URL, so only plain Valkey URLs double as the package cache. */
+        private fun renovateRedisFallback(valkeyUrl: String?): String? = when {
+            valkeyUrl == null -> ValkeyConfig.DEFAULT_VALKEY_URL
+            valkeyUrl.startsWith("redis://") || valkeyUrl.startsWith("rediss://") -> valkeyUrl
+            else -> null
+        }
     }
 }

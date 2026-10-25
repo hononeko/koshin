@@ -16,6 +16,8 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.io.IOException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -71,14 +73,16 @@ class WorkerDaemonTest {
 
     @Test
     fun `stop reports a job that does not finish in time`() {
+        val started = CountDownLatch(1)
         val useCase = mockk<ProcessRenovateJobUseCase>()
         coEvery { useCase.processNext(any()) } coAnswers {
+            started.countDown()
             Thread.sleep(1_000)
             false
         }
         val daemon = WorkerDaemon(platforms) { useCase }
         daemon.start()
-        Thread.sleep(50)
+        assertTrue(started.await(5, TimeUnit.SECONDS))
 
         assertFalse(daemon.stop(timeout = 50.milliseconds))
     }

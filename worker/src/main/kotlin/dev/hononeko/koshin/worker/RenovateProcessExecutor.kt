@@ -78,7 +78,7 @@ class RenovateProcessExecutor(
     }
 
     fun buildEnvironment(repo: RepoRef, creds: PlatformCredentials): Map<String, String> = buildMap {
-        putAll(inheritedEnv.filterKeys { it !in STRIPPED_ENV })
+        putAll(inheritedEnv.filterKeys { !isStripped(it) })
         put("LOG_FORMAT", "json")
         put("RENOVATE_PLATFORM", repo.platform.name.lowercase())
         put("RENOVATE_TOKEN", creds.token)
@@ -106,26 +106,27 @@ class RenovateProcessExecutor(
 
     private fun killProcessTree(process: Process) {
         // Snapshot first: once the root dies its children are reparented and no longer reachable.
-        val descendants = process.descendants().toList()
-        process.destroyForcibly()
-        descendants.forEach { it.destroyForcibly() }
-        runCatching { process.onExit().get(KILL_WAIT.inWholeMilliseconds, TimeUnit.MILLISECONDS) }
+        val tree = listOf(process.toHandle()) + process.descendants().toList()
+        tree.forEach { it.destroyForcibly() }
+        // Wait for the whole tree, so nothing still writes to the workspace while it is deleted.
+        val deadline = System.nanoTime() + KILL_WAIT.inWholeNanoseconds
+        tree.forEach { handle ->
+            val remaining = (deadline - System.nanoTime()).coerceAtLeast(0)
+            runCatching { handle.onExit().get(remaining, TimeUnit.NANOSECONDS) }
+        }
     }
 
     companion object {
         private val OUTPUT_DRAIN_TIMEOUT = 2.seconds
         private val KILL_WAIT = 5.seconds
 
-        /** Worker secrets that must not leak into the Renovate process (or anything it spawns). */
-        val STRIPPED_ENV = setOf(
-            "GITHUB_TOKEN",
-            "GITLAB_TOKEN",
-            "RENOVATE_ENDPOINT",
-            "VALKEY_URL",
-            "GITHUB_APP_PRIVATE_KEY_PATH",
-            "GITHUB_WEBHOOK_SECRET",
-            "GITLAB_WEBHOOK_SECRET",
-            "INTERNAL_TRIGGER_TOKEN",
-        )
+        /** Worker settings and secrets that must not leak into Renovate (or repo code it runs). */
+        private val STRIPPED_ENV = setOf("GITHUB_TOKEN", "GITLAB_TOKEN", "RENOVATE_ENDPOINT", "INTERNAL_TRIGGER_TOKEN")
+        private val STRIPPED_PREFIXES = listOf("NATS_", "VALKEY_", "GITHUB_APP_")
+        private const val STRIPPED_SUFFIX = "_WEBHOOK_SECRET"
+
+        fun isStripped(key: String): Boolean = key in STRIPPED_ENV ||
+            STRIPPED_PREFIXES.any { key.startsWith(it) } ||
+            key.endsWith(STRIPPED_SUFFIX)
     }
 }

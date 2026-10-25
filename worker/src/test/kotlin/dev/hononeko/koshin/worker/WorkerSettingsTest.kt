@@ -87,10 +87,22 @@ class WorkerSettingsTest {
     }
 
     @Test
-    fun `toString redacts tokens`() {
-        val text = WorkerSettings(githubToken = "ghp_secret", gitlabToken = "glpat_secret").toString()
+    fun `sentinel VALKEY_URL is not reused as the Renovate package cache`() {
+        val settings = WorkerSettings.fromEnv(mapOf("VALKEY_URL" to "redis-sentinel://sentinel:26379#mymaster"))
+        assertNull(settings.renovateRedisUrl)
+    }
+
+    @Test
+    fun `toString redacts tokens and NATS credentials`() {
+        val text = WorkerSettings(
+            natsUrl = "nats://koshin:natspw@nats:4222",
+            githubToken = "ghp_secret",
+            gitlabToken = "glpat_secret",
+        ).toString()
         assertFalse(text.contains("ghp_secret"))
         assertFalse(text.contains("glpat_secret"))
+        assertFalse(text.contains("natspw"))
+        assertTrue(text.contains("nats://***@nats:4222"))
     }
 
     @Test

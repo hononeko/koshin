@@ -33,6 +33,9 @@ class RenovateProcessExecutorTest {
         "PATH" to System.getenv("PATH"),
         "GITHUB_TOKEN" to "worker-pat",
         "VALKEY_URL" to "redis://:pw@valkey:6379",
+        "NATS_URL" to "nats://koshin:pw@nats:4222",
+        "GITHUB_APP_PRIVATE_KEY_PATH" to "/secrets/key.pem",
+        "GITLAB_WEBHOOK_SECRET" to "hook",
         "RENOVATE_ENDPOINT" to "https://wrong.example.com",
         "RENOVATE_ONBOARDING" to "false",
     )
@@ -104,6 +107,9 @@ class RenovateProcessExecutorTest {
         assertEquals("false", seen["RENOVATE_ONBOARDING"])
         assertNull(seen["GITHUB_TOKEN"])
         assertNull(seen["VALKEY_URL"])
+        assertNull(seen["NATS_URL"])
+        assertNull(seen["GITHUB_APP_PRIVATE_KEY_PATH"])
+        assertNull(seen["GITLAB_WEBHOOK_SECRET"])
     }
 
     @Test

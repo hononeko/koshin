@@ -6,6 +6,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
+import java.nio.file.LinkOption
 import java.nio.file.Path
 import kotlin.io.path.ExperimentalPathApi
 import kotlin.io.path.createDirectories
@@ -40,7 +41,7 @@ class WorkspaceCleaner(baseDir: Path, private val ioDispatcher: CoroutineDispatc
     override suspend fun cleanup(repo: RepoRef) {
         val dir = workspaceFor(repo)
         withContext(ioDispatcher) {
-            if (dir.exists()) {
+            if (dir.exists(LinkOption.NOFOLLOW_LINKS)) {
                 dir.deleteRecursively()
                 logger.debug("Deleted workspace {} for {}", dir, repo)
             }
@@ -53,9 +54,12 @@ class WorkspaceCleaner(baseDir: Path, private val ioDispatcher: CoroutineDispatc
         withContext(ioDispatcher) {
             baseDir.createDirectories()
             val entries = baseDir.listDirectoryEntries()
-            entries.forEach { it.deleteRecursively() }
+            entries.forEach { entry ->
+                runCatching { entry.deleteRecursively() }
+                    .onFailure { logger.warn("Could not purge {}; leaving it in place", entry, it) }
+            }
             if (entries.isNotEmpty()) {
-                logger.info("Purged {} leftover entries from {}", entries.size, baseDir)
+                logger.info("Purged leftover entries from {}", baseDir)
             }
         }
     }

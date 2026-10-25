@@ -18,6 +18,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
+import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
 import kotlin.io.path.readText
 import kotlin.time.Duration
@@ -62,8 +63,7 @@ class WorkerShutdownTest {
 
         val cleaner = WorkspaceCleaner(baseDir)
         val workspace = cleaner.workspaceFor(repo)
-        val pidDir = baseDir.resolveSibling("${baseDir.fileName}-pids")
-        pidDir.toFile().mkdirs()
+        val pidDir = baseDir.resolve("pids").createDirectories()
         // Simulates Renovate: clones into the workspace, then hangs with a child process.
         val script = """
             mkdir -p "$workspace" && touch "$workspace/package.json"

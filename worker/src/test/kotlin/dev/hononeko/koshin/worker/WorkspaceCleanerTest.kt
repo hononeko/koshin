@@ -92,6 +92,20 @@ class WorkspaceCleanerTest {
     }
 
     @Test
+    fun `purgeAll skips entries it cannot delete`() = runTest {
+        val locked = baseDir.resolve("lost+found").createDirectories()
+        locked.resolve("file").writeText("x")
+        locked.toFile().setWritable(false)
+        baseDir.resolve("stray.log").writeText("x")
+        try {
+            WorkspaceCleaner(baseDir).purgeAll()
+            assertFalse(baseDir.resolve("stray.log").exists())
+        } finally {
+            locked.toFile().setWritable(true)
+        }
+    }
+
+    @Test
     fun `purgeAll creates a missing base dir`() = runTest {
         val missing = baseDir.resolve("not/yet/created")
         WorkspaceCleaner(missing).purgeAll()

@@ -9,6 +9,10 @@ import dev.hononeko.koshin.core.ports.CliExecutorPort
 import io.mockk.coEvery
 import io.mockk.coVerifyOrder
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
@@ -18,6 +22,7 @@ import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.URI
 import java.net.http.HttpClient
+import java.nio.file.NoSuchFileException
 import java.nio.file.Path
 import kotlin.io.path.writeText
 import kotlin.time.Duration.Companion.minutes
@@ -62,7 +67,13 @@ class PodDeletionCostTest {
 
     private fun updater(apiServer: URI): KubernetesPodDeletionCostUpdater {
         val token = dir.resolve("token").apply { writeText("sa-token\n") }
-        return KubernetesPodDeletionCostUpdater("worker-0", "koshin", apiServer, token, HttpClient.newHttpClient())
+        return KubernetesPodDeletionCostUpdater(
+            "worker-0",
+            "koshin",
+            apiServer,
+            token,
+            lazyOf(HttpClient.newHttpClient()),
+        )
     }
 
     @Test
@@ -115,5 +126,36 @@ class PodDeletionCostTest {
             updater.update(1000)
             updater.update(0)
         }
+    }
+
+    @Test
+    fun `cancellation during the busy patch still resets the cost`() = runTest {
+        val costs = mutableListOf<Int>()
+        val busyStarted = CompletableDeferred<Unit>()
+        val updater = PodDeletionCostUpdater { cost ->
+            costs += cost
+            if (cost == PodDeletionCostCliExecutor.DEFAULT_BUSY_COST) {
+                busyStarted.complete(Unit)
+                awaitCancellation()
+            }
+        }
+        val run = launch { PodDeletionCostCliExecutor(mockk(), updater).execute(repo, creds, 1.minutes) }
+
+        busyStarted.await()
+        run.cancelAndJoin()
+
+        assertEquals(listOf(1000, 0), costs)
+    }
+
+    @Test
+    fun `missing in-cluster CA fails the update instead of construction`() = runTest {
+        val updater = KubernetesPodDeletionCostUpdater(
+            podName = "worker-0",
+            namespace = "koshin",
+            tokenPath = dir.resolve("token").apply { writeText("t") },
+            httpClient = lazy { KubernetesPodDeletionCostUpdater.inClusterHttpClient(dir.resolve("missing.crt")) },
+        )
+        assertThrows<NoSuchFileException> { updater.update(0) }
+        Unit
     }
 }

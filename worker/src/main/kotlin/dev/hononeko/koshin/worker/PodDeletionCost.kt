@@ -37,8 +37,11 @@ class KubernetesPodDeletionCostUpdater(
     namespace: String,
     private val apiServer: URI = URI(DEFAULT_API_SERVER),
     private val tokenPath: Path = Path(SERVICE_ACCOUNT_DIR, "token"),
-    private val httpClient: HttpClient = inClusterHttpClient(Path(SERVICE_ACCOUNT_DIR, "ca.crt")),
+    httpClient: Lazy<HttpClient> = lazy { inClusterHttpClient(Path(SERVICE_ACCOUNT_DIR, "ca.crt")) },
 ) : PodDeletionCostUpdater {
+
+    // Lazy, so a missing CA cert surfaces as a (logged) failed update instead of a startup crash.
+    private val httpClient by httpClient
 
     private val podPath = "/api/v1/namespaces/${namespace.urlEncoded()}/pods/${podName.urlEncoded()}"
 
@@ -92,8 +95,8 @@ class PodDeletionCostCliExecutor(
     private val logger = LoggerFactory.getLogger(PodDeletionCostCliExecutor::class.java)
 
     override suspend fun execute(repo: RepoRef, creds: PlatformCredentials, timeout: Duration): JobExecutionResult {
-        trySet(busyCost)
         try {
+            trySet(busyCost)
             return delegate.execute(repo, creds, timeout)
         } finally {
             withContext(NonCancellable) { trySet(IDLE_COST) }
