@@ -39,7 +39,7 @@ class WorkerSettingsTest {
                 "PLATFORMS" to "github, gitlab",
                 "NATS_URL" to "nats://nats:4222",
                 "RENOVATE_BASE_DIR" to "/work",
-                "RENOVATE_BINARYSOURCE" to "install",
+                "RENOVATE_BINARY_SOURCE" to "install",
                 "VALKEY_URL" to "redis://coord:6379",
                 "GITHUB_TOKEN" to "ghp",
                 "GITHUB_API_URL" to "https://ghe/api/v3",
@@ -76,6 +76,12 @@ class WorkerSettingsTest {
             assertEquals(30.minutes, cliTimeout)
             assertEquals(2, maxRateLimitRequeues)
         }
+    }
+
+    @Test
+    fun `legacy RENOVATE_BINARYSOURCE is still accepted`() {
+        val settings = WorkerSettings.fromEnv(mapOf("RENOVATE_BINARYSOURCE" to "install"))
+        assertEquals("install", settings.renovateBinarySource)
     }
 
     @Test

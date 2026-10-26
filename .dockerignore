@@ -1,0 +1,12 @@
+**/build/
+**/.gradle/
+.git/
+.github/
+.idea/
+.kotlin/
+**/*.iml
+k8s/
+charts/
+docker-compose.yml
+docker/
+*.md

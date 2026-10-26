@@ -1,0 +1,33 @@
+# syntax=docker/dockerfile:1
+
+# Bytecode is platform-independent: build natively, even for a cross-platform image
+FROM --platform=$BUILDPLATFORM eclipse-temurin:25.0.4_7-jdk-noble AS build
+WORKDIR /src
+# Build scripts first, so dependency resolution is cached until they change
+COPY gradlew settings.gradle.kts build.gradle.kts gradle.properties .java-version ./
+COPY gradle/ gradle/
+COPY core/build.gradle.kts core/
+COPY adapters/nats/build.gradle.kts adapters/nats/
+COPY adapters/state-valkey/build.gradle.kts adapters/state-valkey/
+COPY adapters/github-app/build.gradle.kts adapters/github-app/
+COPY proxy/build.gradle.kts proxy/
+COPY worker/build.gradle.kts worker/
+RUN ./gradlew --no-daemon --quiet :proxy:dependencies --configuration runtimeClasspath > /dev/null
+COPY . .
+RUN ./gradlew --no-daemon :proxy:installDist
+
+FROM eclipse-temurin:25.0.4_7-jre-noble
+ARG VERSION=dev
+LABEL org.opencontainers.image.title="koshin-proxy" \
+      org.opencontainers.image.source="https://github.com/hononeko/koshin" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.version="${VERSION}"
+
+RUN groupadd --system --gid 10001 koshin \
+    && useradd --system --uid 10001 --gid koshin --no-create-home koshin
+COPY --from=build /src/proxy/build/install/proxy/lib/ /opt/koshin/lib/
+
+ENV KOSHIN_JAVA_OPTS="-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
+USER 10001:10001
+EXPOSE 8080
+ENTRYPOINT ["/bin/sh", "-c", "exec java $KOSHIN_JAVA_OPTS -cp '/opt/koshin/lib/*' dev.hononeko.koshin.proxy.ApplicationKt"]

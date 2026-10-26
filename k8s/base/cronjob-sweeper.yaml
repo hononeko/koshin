@@ -1,0 +1,66 @@
+# Every 6 hours, enqueue a SCHEDULE run for every discovered repository (koshin-repositories, or the
+# GitHub App installations once KSH-14 lands). Also recovers jobs lost when NATS restarts in `minimal`.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: koshin-sweeper
+  labels:
+    app.kubernetes.io/name: koshin-sweeper
+    app.kubernetes.io/component: sweeper
+spec:
+  schedule: "0 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: koshin-sweeper
+            app.kubernetes.io/component: sweeper
+        spec:
+          restartPolicy: OnFailure
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 100
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: sweeper
+              image: curlimages/curl:8.23.0
+              env:
+                - name: INTERNAL_TRIGGER_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: koshin-proxy-secrets
+                      key: INTERNAL_TRIGGER_TOKEN
+              command: ["curl"]
+              args:
+                - -fsS
+                - --retry=5
+                - --retry-all-errors
+                - --max-time=60
+                - -X
+                - POST
+                - http://koshin-proxy/api/v1/trigger
+                - -H
+                - "Authorization: Bearer $(INTERNAL_TRIGGER_TOKEN)"
+                - -H
+                - "Content-Type: application/json"
+                - -d
+                - '{"discover": true}'
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 16Mi
+                limits:
+                  memory: 64Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]

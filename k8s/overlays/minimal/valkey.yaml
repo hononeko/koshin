@@ -1,0 +1,87 @@
+# Infrastructure: coordination Valkey (locks, dirty flags) on emptyDir. `noeviction` is required: evicting a
+# lock or dirty flag breaks mutual exclusion or drops a coalesced run. The keys are tiny, so a small maxmemory
+# is plenty; Renovate's package cache lives in koshin-valkey-cache.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: koshin-valkey
+  labels:
+    app.kubernetes.io/name: koshin-valkey
+    app.kubernetes.io/component: state
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: koshin-valkey
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: koshin-valkey
+        app.kubernetes.io/component: state
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: valkey
+          image: valkey/valkey:9.1.2-alpine
+          args:
+            - valkey-server
+            - --save
+            - ""
+            - --appendonly
+            - "no"
+            - --maxmemory
+            - 64mb
+            - --maxmemory-policy
+            - noeviction
+          ports:
+            - name: valkey
+              containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["valkey-cli", "ping"]
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: valkey
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: koshin-valkey
+  labels:
+    app.kubernetes.io/name: koshin-valkey
+    app.kubernetes.io/component: state
+spec:
+  selector:
+    app.kubernetes.io/name: koshin-valkey
+  ports:
+    - name: valkey
+      port: 6379
+      targetPort: valkey

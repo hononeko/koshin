@@ -1,0 +1,42 @@
+# One worker per active or pending job: KEDA's nats-jetstream lag is num_pending + num_ack_pending
+# (verified in KEDA v2.21.0), and each worker runs exactly one job. Workers serve every platform, so the
+# replica count follows the *sum* of the platform lags (the HPA alone would take the max).
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: koshin-worker
+spec:
+  scaleTargetRef:
+    name: koshin-worker
+  minReplicaCount: 1
+  # MAX_CONCURRENT_RUNS_PER_PLATFORM (3) × enabled platforms; raise to 6 when enabling GitLab
+  maxReplicaCount: 3
+  advanced:
+    scalingModifiers:
+      formula: "github + gitlab"
+      target: "1"
+      metricType: AverageValue
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 60
+  triggers:
+    # The worker creates both consumers even when a platform is disabled: a missing consumer makes its
+    # scaler error, which breaks the summed metric.
+    - type: nats-jetstream
+      name: github
+      metadata:
+        # Resolved from the KEDA operator's namespace, so it must be fully qualified (the overlay sets it)
+        natsServerMonitoringEndpoint: koshin-nats.NAMESPACE.svc.cluster.local:8222
+        account: $G
+        stream: RENOVATE_JOBS
+        consumer: koshin-workers-github
+        lagThreshold: "1"
+    - type: nats-jetstream
+      name: gitlab
+      metadata:
+        natsServerMonitoringEndpoint: koshin-nats.NAMESPACE.svc.cluster.local:8222
+        account: $G
+        stream: RENOVATE_JOBS
+        consumer: koshin-workers-gitlab
+        lagThreshold: "1"

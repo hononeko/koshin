@@ -5,6 +5,7 @@ import dev.hononeko.koshin.adapters.nats.NatsConfig
 import dev.hononeko.koshin.adapters.nats.NatsJetStreamBootstrap
 import dev.hononeko.koshin.adapters.nats.NatsJobQueueConsumer
 import dev.hononeko.koshin.adapters.nats.NatsJobQueuePublisher
+import dev.hononeko.koshin.adapters.nats.NatsReconnectBootstrapper
 import dev.hononeko.koshin.adapters.nats.isConnected
 import dev.hononeko.koshin.adapters.valkey.ValkeyConfig
 import dev.hononeko.koshin.adapters.valkey.ValkeyConnectionHealth
@@ -15,6 +16,7 @@ import dev.hononeko.koshin.core.ports.JobQueuePublisher
 import dev.hononeko.koshin.core.ports.RepoCoordinationPort
 import io.lettuce.core.ExperimentalLettuceCoroutinesApi
 import io.lettuce.core.RedisClient
+import io.nats.client.Connection
 import io.nats.client.Nats
 import io.nats.client.Options
 import kotlinx.coroutines.CancellationException
@@ -24,6 +26,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -118,10 +121,22 @@ class WorkerBackends(
     }
 
     companion object {
-        fun connectNats(url: String, config: NatsConfig, platforms: Collection<Platform>): NatsBackend {
-            val connection = Nats.connect(Options.Builder().server(url).maxReconnects(-1).build())
+        fun connectNats(
+            url: String,
+            config: NatsConfig,
+            platforms: Collection<Platform>,
+            ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+        ): NatsBackend {
+            val reconnectScope = CoroutineScope(SupervisorJob() + ioDispatcher)
+            val bootstrap = { conn: Connection -> NatsJetStreamBootstrap(conn, config).bootstrap(platforms) }
+            val options = Options.Builder()
+                .server(url)
+                .maxReconnects(-1)
+                .connectionListener(NatsReconnectBootstrapper(reconnectScope, bootstrap = bootstrap))
+                .build()
+            val connection = Nats.connect(options)
             try {
-                NatsJetStreamBootstrap(connection, config).bootstrap(platforms)
+                bootstrap(connection)
                 val forwarder = MaxDeliverDlqForwarder(connection, config)
                 val consumer = NatsJobQueueConsumer(connection, config)
                 return NatsBackend(
@@ -129,11 +144,13 @@ class WorkerBackends(
                     publisher = NatsJobQueuePublisher(connection, config),
                     healthy = connection::isConnected,
                 ) {
+                    reconnectScope.cancel()
                     runCatching { consumer.close() }
                     runCatching { forwarder.close() }
                     connection.close()
                 }
             } catch (@Suppress("TooGenericExceptionCaught") e: Exception) {
+                reconnectScope.cancel()
                 runCatching { connection.close() }
                 throw e
             }

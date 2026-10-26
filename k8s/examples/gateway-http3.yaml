@@ -1,0 +1,51 @@
+# Example, not part of any kustomization: Envoy Gateway terminates TLS and HTTP/3 (QUIC) at the edge and
+# forwards to koshin-proxy over h2c (the Service's `appProtocol: kubernetes.io/h2c`). Only the webhook paths
+# are exposed; /api/v1/trigger stays cluster-internal for the sweeper.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: koshin
+  namespace: koshin
+spec:
+  gatewayClassName: envoy-gateway
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: koshin.example.com
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: koshin-tls
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: koshin-webhooks
+  namespace: koshin
+spec:
+  parentRefs:
+    - name: koshin
+  hostnames:
+    - koshin.example.com
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /webhooks/
+      backendRefs:
+        - name: koshin-proxy
+          port: 80
+---
+# Advertises and serves HTTP/3 on the HTTPS listener (Envoy Gateway specific)
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: koshin-http3
+  namespace: koshin
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: koshin
+  http3: {}

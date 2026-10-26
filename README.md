@@ -64,7 +64,7 @@ The coordination Valkey instance (`VALKEY_URL`, supporting both standalone `redi
 
 * **Minimum Server Version:** `releaseLockAndTakeDirty` uses the `GETDEL` command inside Lua, requiring **Valkey 7.2+** (or **Redis 6.2+**).
 * **`maxmemory-policy noeviction` (Required):** You **must** configure `maxmemory-policy noeviction` on the coordination Valkey instance. Because repository locks and dirty flags are TTL-bearing keys, any `volatile-*` eviction policy (`volatile-lru`, `volatile-ttl`, `volatile-random`, `volatile-lfu`) or `allkeys-*` policy under memory pressure would evict active locks or pending dirty flags first, breaking mutual exclusion and coalescing guarantees.
-  * In the **`minimal`** deployment profile, where a single Valkey instance is shared between coordination (`VALKEY_URL`) and Renovate's package cache (`RENOVATE_REDIS_URL`), size `maxmemory` with enough headroom for both coordination keys and Renovate's cache so `noeviction` does not reject lock writes with `OOM`.
+  * Keep Renovate's package cache (`RENOVATE_REDIS_URL`) on a **separate** instance with `allkeys-lru`: with `noeviction`, a full cache makes Valkey reject every write, lock acquisition included. Both the `minimal` profile and `docker-compose.yml` run a dedicated cache Valkey.
   * In the **`ha`** deployment profile, Renovate's package cache runs on a dedicated Valkey instance where `allkeys-lru` is safe.
 * **Optional Replica Acknowledgment (`LOCK_REPLICA_ACK_TIMEOUT_MS`):** When set to a positive value (in milliseconds), `ValkeyRepoCoordinationAdapter` issues `WAIT 1 <ms>` after acquiring a repository lock to narrow the replication failover window in primary-replica (`ha`) topologies. Keep this timeout small (e.g., `20`–`100` ms) and **only enable it in the `ha` profile**; on a single-node `minimal` deployment with zero replicas, `WAIT 1 <ms>` blocks the connection for the full timeout on every lock acquisition.
 
@@ -72,13 +72,52 @@ The coordination Valkey instance (`VALKEY_URL`, supporting both standalone `redi
 
 ## Worker Runtime (KSH-7)
 
-* **1 job per pod.** The daemon polls the enabled `PLATFORMS` and runs one `renovate <repository>` at a time. Each run gets `RENOVATE_PLATFORM`, `RENOVATE_ENDPOINT` and `RENOVATE_TOKEN` for the job's platform (`GITHUB_TOKEN`/`GITHUB_API_URL`, `GITLAB_TOKEN`/`GITLAB_ENDPOINT`), plus `LOG_FORMAT=json`, `RENOVATE_BASE_DIR`, `RENOVATE_BINARYSOURCE`, `RENOVATE_REDIS_URL` and `RENOVATE_REPOSITORY_CACHE=enabled`. Other `RENOVATE_*` variables on the worker are passed through; worker secrets (`GITHUB_TOKEN`, `GITLAB_TOKEN`, `VALKEY_URL`, …) are not.
+* **1 job per pod.** The daemon polls the enabled `PLATFORMS` and runs one `renovate <repository>` at a time. Each run gets `RENOVATE_PLATFORM`, `RENOVATE_ENDPOINT` and `RENOVATE_TOKEN` for the job's platform (`GITHUB_TOKEN`/`GITHUB_API_URL`, `GITLAB_TOKEN`/`GITLAB_ENDPOINT`), plus `LOG_FORMAT=json`, `RENOVATE_BASE_DIR`, `RENOVATE_BINARY_SOURCE`, `RENOVATE_REDIS_URL` and `RENOVATE_REPOSITORY_CACHE=enabled`. Other `RENOVATE_*` variables on the worker are passed through; worker secrets (`GITHUB_TOKEN`, `GITLAB_TOKEN`, `VALKEY_URL`, …) are not.
 * **Timeouts and cancellation** (`CLI_TIMEOUT_MINUTES`, lost lock, shutdown) forcibly kill the whole CLI process tree.
 * **Workspaces:** `$RENOVATE_BASE_DIR/repos/<platform>/<repo>` is deleted after every run; everything under `$RENOVATE_BASE_DIR` is purged at startup.
 * **SIGTERM:** stops fetching, kills the CLI, releases the lock (keeping the dirty flag), NAKs the delivery and releases the run slot, without waiting for the run to finish.
 * **Pod deletion cost (optional):** with `POD_DELETION_COST_ENABLED=true` (plus `POD_NAME` / `POD_NAMESPACE` from the downward API), the worker sets `controller.kubernetes.io/pod-deletion-cost` to `1000` while Renovate runs and back to `0` afterwards. Failed patches are logged and ignored.
 * **Health:** `GET /healthz` is liveness only; `GET /readyz` checks NATS and Valkey.
 * Run-slot throttling (KSH-11) and the shared repository cache (KSH-10) are no-ops for now.
+
+---
+
+## Running Locally (Docker Compose)
+
+`docker compose up --build` starts NATS (JetStream), the coordination and cache Valkeys, the proxy (`localhost:8080`) and a worker (`localhost:8081`), matching the `minimal` profile. Export `GITHUB_TOKEN` (or `GITLAB_TOKEN`) first so runs can authenticate, then trigger one:
+
+```bash
+curl -X POST localhost:8080/api/v1/trigger -H "Authorization: Bearer dev-trigger-token" \
+  -H "Content-Type: application/json" -d '{"repositories":[{"platform":"github","repository":"org/repo"}]}'
+```
+
+---
+
+## Container Images
+
+* **`koshin-proxy`**: `eclipse-temurin:25-jre-noble`, runs as UID `10001`.
+* **`koshin-worker`**: the pinned `ghcr.io/renovatebot/renovate:<version>-full` image (Renovate plus its whole toolchain, `RENOVATE_BINARY_SOURCE=global`) with a private Temurin 25 JRE under `/opt/koshin/jre`. Runs as Renovate's UID `12021`; `dumb-init` is PID 1 and reaps orphaned processes.
+  * The image is ~10 GB. In-cluster **[Spegel](https://github.com/spegel-org/spegel)** shares image layers between nodes P2P, so a new worker pod usually pulls from a peer instead of the registry; no koshin-specific config is needed.
+* JVM flags come from `KOSHIN_JAVA_OPTS` (not `JAVA_OPTS`/`JAVA_TOOL_OPTIONS`, which Renovate's own Java/Gradle runs would inherit).
+
+---
+
+## Kubernetes Deployment (Kustomize)
+
+`k8s/base` holds the proxy (2 replicas, `appProtocol: kubernetes.io/h2c`), the worker, its KEDA `ScaledObject`, the 6-hourly sweeper `CronJob`, and the worker's RBAC. `k8s/overlays/minimal` adds the `koshin` namespace plus a single NATS, a coordination Valkey (`noeviction`) and a package-cache Valkey (`allkeys-lru`), all on `emptyDir`. Requires [KEDA](https://keda.sh) 2.21+.
+
+```bash
+kubectl -n koshin create secret generic koshin-proxy-secrets \
+  --from-literal=GITHUB_WEBHOOK_SECRET=... --from-literal=INTERNAL_TRIGGER_TOKEN=...
+kubectl -n koshin create secret generic koshin-worker-secrets --from-literal=GITHUB_TOKEN=...
+kubectl apply -k k8s/overlays/minimal
+```
+
+* **Repositories to sweep:** the `koshin-repositories` ConfigMap (`github:org/repo` per line), replaced from your overlay. Empty by default, so the sweeper enqueues nothing.
+* **Autoscaling:** one `nats-jetstream` trigger per platform consumer, summed with `scalingModifiers` (`github + gitlab`, target `1`); KEDA counts pending plus in-flight jobs, so workers scale one-to-one with jobs across platforms up to `maxReplicaCount`. The worker creates both platform consumers so neither trigger errors.
+* **Scale-in:** workers annotate their own pod with `controller.kubernetes.io/pod-deletion-cost` (`1000` while running), so idle pods are removed first. If a busy pod is still picked, the SIGTERM path NAKs its job for another worker.
+* **`minimal` trade-off:** a NATS or Valkey restart loses pending jobs, locks, dirty flags and the package cache; proxy and worker recreate the streams and consumers on reconnect, and the sweeper re-enqueues every repository within 6 hours. NATS and Valkey are infrastructure, so they're the only stateful pieces; the `ha` profile (KSH-12) gives them persistence.
+* **Edge HTTP/3:** `k8s/examples/gateway-http3.yaml` is an Envoy Gateway example that terminates TLS + HTTP/3 and exposes only `/webhooks/`.
 
 ---
 

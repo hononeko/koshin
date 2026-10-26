@@ -84,7 +84,7 @@ class RenovateProcessExecutor(
         put("RENOVATE_TOKEN", creds.token)
         creds.endpoint?.let { put("RENOVATE_ENDPOINT", it) }
         put("RENOVATE_BASE_DIR", baseDir.toString())
-        put("RENOVATE_BINARYSOURCE", binarySource)
+        put("RENOVATE_BINARY_SOURCE", binarySource)
         redisUrl?.let { put("RENOVATE_REDIS_URL", it) }
         put("RENOVATE_REPOSITORY_CACHE", "enabled")
     }

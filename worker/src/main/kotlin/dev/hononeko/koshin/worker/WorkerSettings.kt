@@ -55,7 +55,10 @@ data class WorkerSettings(
             platforms = parsePlatforms(env["PLATFORMS"]),
             natsUrl = env.nonBlank("NATS_URL") ?: DEFAULT_NATS_URL,
             renovateBaseDir = Path(env.nonBlank("RENOVATE_BASE_DIR") ?: DEFAULT_RENOVATE_BASE_DIR),
-            renovateBinarySource = env.nonBlank("RENOVATE_BINARYSOURCE") ?: DEFAULT_RENOVATE_BINARY_SOURCE,
+            // Renovate reads RENOVATE_BINARY_SOURCE; RENOVATE_BINARYSOURCE is the older koshin spelling.
+            renovateBinarySource = env.nonBlank("RENOVATE_BINARY_SOURCE")
+                ?: env.nonBlank("RENOVATE_BINARYSOURCE")
+                ?: DEFAULT_RENOVATE_BINARY_SOURCE,
             renovateRedisUrl = env.nonBlank("RENOVATE_REDIS_URL") ?: renovateRedisFallback(env.nonBlank("VALKEY_URL")),
             githubToken = env.nonBlank("GITHUB_TOKEN"),
             githubEndpoint = env.nonBlank("GITHUB_API_URL"),

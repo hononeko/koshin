@@ -1,0 +1,43 @@
+# syntax=docker/dockerfile:1
+
+# Bytecode is platform-independent: build natively, even for a cross-platform image
+FROM --platform=$BUILDPLATFORM eclipse-temurin:25.0.4_7-jdk-noble AS build
+WORKDIR /src
+# Build scripts first, so dependency resolution is cached until they change
+COPY gradlew settings.gradle.kts build.gradle.kts gradle.properties .java-version ./
+COPY gradle/ gradle/
+COPY core/build.gradle.kts core/
+COPY adapters/nats/build.gradle.kts adapters/nats/
+COPY adapters/state-valkey/build.gradle.kts adapters/state-valkey/
+COPY adapters/github-app/build.gradle.kts adapters/github-app/
+COPY proxy/build.gradle.kts proxy/
+COPY worker/build.gradle.kts worker/
+RUN ./gradlew --no-daemon --quiet :worker:dependencies --configuration runtimeClasspath > /dev/null
+COPY . .
+RUN ./gradlew --no-daemon :worker:installDist
+
+FROM eclipse-temurin:25.0.4_7-jre-noble AS jre
+
+# Pinned: the image bundles Renovate and its whole toolchain (binarySource=global).
+FROM ghcr.io/renovatebot/renovate:44.178.3-full
+ARG VERSION=dev
+LABEL org.opencontainers.image.title="koshin-worker" \
+      org.opencontainers.image.source="https://github.com/hononeko/koshin" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
+      org.opencontainers.image.version="${VERSION}"
+
+# A private JRE, kept off PATH and JAVA_HOME so Renovate's own Java tooling is unaffected
+COPY --from=jre /opt/java/openjdk/ /opt/koshin/jre/
+COPY --from=build /src/worker/build/install/worker/lib/ /opt/koshin/lib/
+
+ENV RENOVATE_BINARY_SOURCE=global \
+    RENOVATE_BASE_DIR=/tmp/renovate \
+    KOSHIN_JAVA_OPTS="-Xmx256m -XX:+ExitOnOutOfMemoryError" \
+    DUMB_INIT_SETSID=0
+# DUMB_INIT_SETSID=0: dumb-init forwards SIGTERM to the JVM only. In its default mode the whole process group
+# gets it, Renovate exits first, and the job is ACKed as failed instead of NAKed by the shutdown path.
+
+EXPOSE 8080
+# containerbase's entrypoint initializes the toolchain, then execs dumb-init (PID 1, reaps orphans)
+ENTRYPOINT ["/usr/local/sbin/docker-entrypoint.sh"]
+CMD ["/bin/sh", "-c", "exec /opt/koshin/jre/bin/java $KOSHIN_JAVA_OPTS -cp '/opt/koshin/lib/*' dev.hononeko.koshin.worker.ApplicationKt"]

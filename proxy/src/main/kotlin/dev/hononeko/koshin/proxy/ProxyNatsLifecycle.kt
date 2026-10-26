@@ -3,10 +3,12 @@ package dev.hononeko.koshin.proxy
 import dev.hononeko.koshin.adapters.nats.NatsConfig
 import dev.hononeko.koshin.adapters.nats.NatsJetStreamBootstrap
 import dev.hononeko.koshin.adapters.nats.NatsJobQueuePublisher
+import dev.hononeko.koshin.adapters.nats.NatsReconnectBootstrapper
 import dev.hononeko.koshin.adapters.nats.isConnected
 import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.ports.JobQueuePublisher
 import io.nats.client.Connection
+import io.nats.client.ConnectionListener
 import io.nats.client.Nats
 import io.nats.client.Options
 import kotlinx.coroutines.CancellationException
@@ -33,10 +35,11 @@ class ProxyNatsLifecycle(
     private val natsConfig: NatsConfig,
     private val retryDelay: Duration = 2.seconds,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
-    private val connectionFactory: (String) -> Connection = { url ->
+    private val connectionFactory: (String, ConnectionListener) -> Connection = { url, listener ->
         val options = Options.Builder()
             .server(url)
             .maxReconnects(-1)
+            .connectionListener(listener)
             .build()
         Nats.connect(options)
     },
@@ -57,13 +60,14 @@ class ProxyNatsLifecycle(
     private val publisherRef = AtomicReference<JobQueuePublisher?>(null)
     private val bootstrapped = AtomicBoolean(false)
     private var initJob: Job? = null
+    private val reconnectBootstrapper = NatsReconnectBootstrapper(scope) { conn -> bootstrapStreams(conn, natsConfig) }
 
     fun startAsync() {
         initJob = scope.launch {
             while (isActive && !bootstrapped.get()) {
                 try {
                     val conn = connectionRef.get() ?: withContext(ioDispatcher) {
-                        connectionFactory(natsUrl)
+                        connectionFactory(natsUrl, reconnectBootstrapper)
                     }.also { connectionRef.set(it) }
 
                     withContext(ioDispatcher) {
