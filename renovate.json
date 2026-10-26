@@ -104,16 +104,8 @@
       "groupName": "GitHub Actions"
     },
     {
-      "description": "Internal hononeko/actions: update immediately without release age delay",
+      "description": "GitHub Actions (incl. hononeko/actions and gradle/actions): update without release age delay",
       "matchManagers": ["github-actions"],
-      "matchPackageNames": [
-        "hononeko/actions",
-        "hononeko/actions/**"
-      ],
-      "matchDepNames": [
-        "hononeko/actions",
-        "hononeko/actions/**"
-      ],
       "minimumReleaseAge": "0 days"
     }
   ]
