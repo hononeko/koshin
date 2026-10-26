@@ -38,14 +38,21 @@ spec:
                     secretKeyRef:
                       name: koshin-proxy-secrets
                       key: INTERNAL_TRIGGER_TOKEN
-              command: ["/bin/sh", "-c"]
+              command: ["curl"]
               args:
-                - >-
-                  curl -fsS --retry 5 --retry-all-errors --max-time 60
-                  -X POST http://koshin-proxy/api/v1/trigger
-                  -H "Authorization: Bearer ${INTERNAL_TRIGGER_TOKEN}"
-                  -H "Content-Type: application/json"
-                  -d '{"discover": true}'
+                - -fsS
+                - --retry=5
+                - --retry-all-errors
+                - --max-time=60
+                - -X
+                - POST
+                - http://koshin-proxy/api/v1/trigger
+                - -H
+                - "Authorization: Bearer $(INTERNAL_TRIGGER_TOKEN)"
+                - -H
+                - "Content-Type: application/json"
+                - -d
+                - '{"discover": true}'
               resources:
                 requests:
                   cpu: 10m

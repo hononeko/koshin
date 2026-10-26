@@ -114,9 +114,9 @@ kubectl apply -k k8s/overlays/minimal
 ```
 
 * **Repositories to sweep:** the `koshin-repositories` ConfigMap (`github:org/repo` per line), replaced from your overlay. Empty by default, so the sweeper enqueues nothing.
-* **Autoscaling:** one `nats-jetstream` trigger per platform consumer with `lagThreshold: "1"`; KEDA counts pending plus in-flight jobs, so workers scale one-to-one with jobs up to `maxReplicaCount`. The worker creates both platform consumers so neither trigger errors (an erroring metric blocks HPA scale-down).
+* **Autoscaling:** one `nats-jetstream` trigger per platform consumer, summed with `scalingModifiers` (`github + gitlab`, target `1`); KEDA counts pending plus in-flight jobs, so workers scale one-to-one with jobs across platforms up to `maxReplicaCount`. The worker creates both platform consumers so neither trigger errors.
 * **Scale-in:** workers annotate their own pod with `controller.kubernetes.io/pod-deletion-cost` (`1000` while running), so idle pods are removed first. If a busy pod is still picked, the SIGTERM path NAKs its job for another worker.
-* **`minimal` trade-off:** a NATS or Valkey restart loses pending jobs, locks, dirty flags and the package cache; the sweeper re-enqueues every repository within 6 hours. NATS and Valkey are infrastructure, so they're the only stateful pieces; the `ha` profile (KSH-12) gives them persistence.
+* **`minimal` trade-off:** a NATS or Valkey restart loses pending jobs, locks, dirty flags and the package cache; proxy and worker recreate the streams and consumers on reconnect, and the sweeper re-enqueues every repository within 6 hours. NATS and Valkey are infrastructure, so they're the only stateful pieces; the `ha` profile (KSH-12) gives them persistence.
 * **Edge HTTP/3:** `k8s/examples/gateway-http3.yaml` is an Envoy Gateway example that terminates TLS + HTTP/3 and exposes only `/webhooks/`.
 
 ---

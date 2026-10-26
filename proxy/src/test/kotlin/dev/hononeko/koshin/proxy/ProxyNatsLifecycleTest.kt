@@ -45,7 +45,7 @@ class ProxyNatsLifecycleTest {
             natsConfig = NatsConfig(),
             retryDelay = 1.milliseconds,
             ioDispatcher = UnconfinedTestDispatcher(testScheduler),
-            connectionFactory = {
+            connectionFactory = { _, _ ->
                 connectAttempts++
                 if (connectAttempts == 1) {
                     throw IOException("NATS not up yet")

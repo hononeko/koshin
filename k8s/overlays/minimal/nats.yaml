@@ -83,8 +83,9 @@ spec:
           configMap:
             name: koshin-nats-config
         - name: data
+          # Headroom over max_file_store for indexes and consumer state
           emptyDir:
-            sizeLimit: 1Gi
+            sizeLimit: 2Gi
 ---
 apiVersion: v1
 kind: Service

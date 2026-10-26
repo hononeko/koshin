@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
 
-FROM eclipse-temurin:25.0.4_7-jdk-noble AS build
+# Bytecode is platform-independent: build natively, even for a cross-platform image
+FROM --platform=$BUILDPLATFORM eclipse-temurin:25.0.4_7-jdk-noble AS build
 WORKDIR /src
 # Build scripts first, so dependency resolution is cached until they change
 COPY gradlew settings.gradle.kts build.gradle.kts gradle.properties .java-version ./
