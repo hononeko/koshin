@@ -18,13 +18,19 @@ services:
       interval: 5s
       retries: 10
 
+  # Coordination: locks and dirty flags must never be evicted
   valkey:
     image: valkey/valkey:9.1.2-alpine
-    command: ["valkey-server", "--save", "", "--appendonly", "no", "--maxmemory", "384mb", "--maxmemory-policy", "noeviction"]
+    command: ["valkey-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb", "--maxmemory-policy", "noeviction"]
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
       interval: 5s
       retries: 10
+
+  # Renovate's package cache, safe to evict
+  valkey-cache:
+    image: valkey/valkey:9.1.2-alpine
+    command: ["valkey-server", "--save", "", "--appendonly", "no", "--maxmemory", "384mb", "--maxmemory-policy", "allkeys-lru"]
 
   proxy:
     build:
@@ -56,6 +62,7 @@ services:
       NATS_URL: nats://nats:4222
       NATS_STREAM_REPLICAS: "1"
       VALKEY_URL: redis://valkey:6379
+      RENOVATE_REDIS_URL: redis://valkey-cache:6379
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       GITLAB_TOKEN: ${GITLAB_TOKEN:-}
     tmpfs:
@@ -66,3 +73,5 @@ services:
         condition: service_healthy
       valkey:
         condition: service_healthy
+      valkey-cache:
+        condition: service_started

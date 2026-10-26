@@ -1,6 +1,6 @@
-# Infrastructure: one Valkey on emptyDir, shared by coordination (locks, dirty flags) and Renovate's package
-# cache. `noeviction` is required for coordination keys; maxmemory leaves room for both (all Renovate cache
-# entries carry TTLs).
+# Infrastructure: coordination Valkey (locks, dirty flags) on emptyDir. `noeviction` is required: evicting a
+# lock or dirty flag breaks mutual exclusion or drops a coalesced run. The keys are tiny, so a small maxmemory
+# is plenty; Renovate's package cache lives in koshin-valkey-cache.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -38,7 +38,7 @@ spec:
             - --appendonly
             - "no"
             - --maxmemory
-            - 384mb
+            - 64mb
             - --maxmemory-policy
             - noeviction
           ports:
@@ -56,9 +56,9 @@ spec:
           resources:
             requests:
               cpu: 50m
-              memory: 128Mi
+              memory: 32Mi
             limits:
-              memory: 512Mi
+              memory: 128Mi
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
