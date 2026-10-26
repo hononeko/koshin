@@ -1,0 +1,5 @@
+# actionlint does not yet have ubuntu-26.04 in its built-in runner labels list.
+# Register it under self-hosted runner labels so actionlint accepts it.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04
