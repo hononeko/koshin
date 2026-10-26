@@ -46,7 +46,7 @@ jobs:
 
       - name: Prune koshin-proxy snapshots
         if: steps.check.outputs.proxy == 'true'
-        uses: hononeko/actions/prune-snapshots@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
+        uses: hononeko/actions/prune-snapshots@5532ca1e4b7254aed1f85fe64b6230941d6eed21 # v1.4.2
         with:
           package: koshin-proxy
           pr-number: ${{ inputs.pr-number || github.event.pull_request.number }}
@@ -54,7 +54,7 @@ jobs:
 
       - name: Prune koshin-worker snapshots
         if: always() && steps.check.outputs.worker == 'true'
-        uses: hononeko/actions/prune-snapshots@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
+        uses: hononeko/actions/prune-snapshots@5532ca1e4b7254aed1f85fe64b6230941d6eed21 # v1.4.2
         with:
           package: koshin-worker
           pr-number: ${{ inputs.pr-number || github.event.pull_request.number }}
