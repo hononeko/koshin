@@ -26,7 +26,7 @@ concurrency:
 jobs:
   plan:
     name: Plan Release
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
     outputs:
@@ -93,7 +93,7 @@ jobs:
 
   integration:
     name: Integration Tests
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
     steps:
@@ -122,7 +122,7 @@ jobs:
     name: Tag & Release
     needs: [plan, build, integration, image]
     if: needs.plan.outputs.release == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
     env:
@@ -142,7 +142,7 @@ jobs:
     name: Publish Images
     needs: [plan, image, release]
     if: needs.plan.outputs.release == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       packages: write
