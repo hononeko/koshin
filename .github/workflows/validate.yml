@@ -26,7 +26,7 @@ jobs:
           ref: ${{ inputs.ref || '' }}
 
       - name: Set up Gradle & JDK
-        uses: hononeko/actions/gradle-setup@447f70cc12b6edef1ce53187f14c01c582ed7300 # v1.4.0
+        uses: hononeko/actions/gradle-setup@5532ca1e4b7254aed1f85fe64b6230941d6eed21 # v1.4.2
 
       - name: Run build and verification
         run: ./gradlew check --no-daemon
@@ -71,7 +71,7 @@ jobs:
       - name: Upload Detekt SARIF report
         if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && hashFiles('build/reports/detekt-merged.sarif') != ''
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
         with:
           sarif_file: build/reports/detekt-merged.sarif
           checkout_path: ${{ github.workspace }}
