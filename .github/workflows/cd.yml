@@ -45,10 +45,10 @@ jobs:
 
       - name: Version
         id: version
-        uses: hononeko/actions/version@5532ca1e4b7254aed1f85fe64b6230941d6eed21 # v1.4.2
+        uses: hononeko/actions/version@e1fdec215f80fc9a1574c61b15303f6789d09b7c # v1.4.7
 
       - name: Release notes
-        uses: hononeko/actions/release-notes@5532ca1e4b7254aed1f85fe64b6230941d6eed21 # v1.4.2
+        uses: hononeko/actions/release-notes@e1fdec215f80fc9a1574c61b15303f6789d09b7c # v1.4.7
         with:
           previous-tag: ${{ steps.version.outputs.previous-tag }}
           tag: ${{ steps.version.outputs.version-tag }}
@@ -101,7 +101,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Gradle & JDK
-        uses: hononeko/actions/gradle-setup@5532ca1e4b7254aed1f85fe64b6230941d6eed21 # v1.4.2
+        uses: hononeko/actions/gradle-setup@e1fdec215f80fc9a1574c61b15303f6789d09b7c # v1.4.7
 
       - name: Run Integration Tests
         run: ./gradlew integrationTest --no-daemon
@@ -163,7 +163,7 @@ jobs:
       - name: Publish proxy image
         id: publish-proxy
         if: hashFiles('docker/Dockerfile.proxy') != ''
-        uses: hononeko/actions/publish-image@5532ca1e4b7254aed1f85fe64b6230941d6eed21 # v1.4.2
+        uses: hononeko/actions/publish-image@e1fdec215f80fc9a1574c61b15303f6789d09b7c # v1.4.7
         with:
           image: ghcr.io/${{ github.repository_owner }}/koshin-proxy
           tags: |
@@ -180,7 +180,7 @@ jobs:
       - name: Publish worker image
         id: publish-worker
         if: hashFiles('docker/Dockerfile.worker') != ''
-        uses: hononeko/actions/publish-image@5532ca1e4b7254aed1f85fe64b6230941d6eed21 # v1.4.2
+        uses: hononeko/actions/publish-image@e1fdec215f80fc9a1574c61b15303f6789d09b7c # v1.4.7
         with:
           image: ghcr.io/${{ github.repository_owner }}/koshin-worker
           tags: |
