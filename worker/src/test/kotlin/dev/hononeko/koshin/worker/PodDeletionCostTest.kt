@@ -156,6 +156,5 @@ class PodDeletionCostTest {
             httpClient = lazy { KubernetesPodDeletionCostUpdater.inClusterHttpClient(dir.resolve("missing.crt")) },
         )
         assertThrows<NoSuchFileException> { updater.update(0) }
-        Unit
     }
 }

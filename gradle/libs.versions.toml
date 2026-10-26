@@ -1,8 +1,8 @@
 [versions]
-kotlin = "2.3.21"
+kotlin = "2.4.21"
 ktor = "3.6.0"
 coroutines = "1.11.0"
-serialization = "1.11.0"
+serialization = "1.12.0"
 nats = "2.26.4"
 lettuce = "7.9.0.RELEASE"
 jwt = "4.6.2"
