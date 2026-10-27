@@ -1,0 +1,11 @@
+name: CodeQL config
+
+# The security-extended suite, as the default setup ran it.
+queries:
+  - uses: security-extended
+
+query-filters:
+  # Flags hononeko/actions@v1, a first-party major tag every release moves on purpose. zizmor (hononeko/actions'
+  # lint-actions) still requires every other action to be pinned by hash.
+  - exclude:
+      id: actions/unpinned-tag
