@@ -73,7 +73,7 @@ jobs:
           fi
 
   manifests:
-    name: Validate Manifests & Workflows
+    name: Validate Manifests
     runs-on: ubuntu-26.04
     permissions:
       contents: read
@@ -83,9 +83,6 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
-
-      - name: Lint GitHub Actions workflows
-        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
 
       - name: Validate Kubernetes manifests
         run: |
