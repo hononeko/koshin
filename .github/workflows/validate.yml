@@ -1,9 +1,9 @@
 name: Validate
 
 # Reusable workflow for building, linting, and verifying the codebase.
-# Runs check (unit tests, Detekt static analysis, Kover verification),
-# merges and uploads Detekt SARIF to CodeQL code scanning,
-# prints the Kover coverage summary to $GITHUB_STEP_SUMMARY, and uploads coverage artifacts.
+# Lints the workflows and Dockerfiles, runs check (unit tests, Detekt static analysis, Kover verification),
+# merges and uploads Detekt SARIF to CodeQL code scanning, reports Kover coverage (overall, and a pull request's
+# changed lines, which must be 80% covered), and uploads coverage artifacts.
 on:
   workflow_call:
     inputs:
@@ -23,10 +23,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          persist-credentials: false
+          # Full history: coverage finds a pull request's changed lines from where its head left the base.
+          fetch-depth: 0
           ref: ${{ inputs.ref || '' }}
 
       - name: Set up Gradle & JDK
-        uses: hononeko/actions/gradle-setup@e1fdec215f80fc9a1574c61b15303f6789d09b7c # v1.4.7
+        uses: hononeko/actions/gradle-setup@v1
+
+      - name: Lint workflows and actions
+        uses: hononeko/actions/lint-actions@v1
+
+      - name: Lint Dockerfiles
+        uses: hononeko/actions/lint-docker@v1
 
       - name: Run build and verification
         run: ./gradlew check --no-daemon
@@ -76,29 +85,11 @@ jobs:
           sarif_file: build/reports/detekt-merged.sarif
           checkout_path: ${{ github.workspace }}
 
-      - name: Summarize Kover coverage
-        if: always()
-        run: |
-          echo "### Kover Coverage Summary" >> "$GITHUB_STEP_SUMMARY"
-          if [ -f build/reports/kover/report.xml ]; then
-            python3 -c "
-          import xml.etree.ElementTree as ET
-          try:
-              tree = ET.parse('build/reports/kover/report.xml')
-              root = tree.getroot()
-              for counter in root.findall('counter'):
-                  ctype = counter.attrib.get('type')
-                  covered = int(counter.attrib.get('covered', 0))
-                  missed = int(counter.attrib.get('missed', 0))
-                  total = covered + missed
-                  pct = (covered / total * 100) if total > 0 else 0
-                  print(f'- **{ctype}**: {pct:.2f}% ({covered}/{total})')
-          except Exception as e:
-              print(f'Error reading coverage XML: {e}')
-          " >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "No Kover total report.xml found." >> "$GITHUB_STEP_SUMMARY"
-          fi
+      - name: Kover coverage
+        uses: hononeko/actions/coverage@v1
+        with:
+          files: build/reports/kover/report.xml
+          min-changed-coverage: "80"
 
       - name: Upload Kover coverage reports
         if: always()
