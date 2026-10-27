@@ -41,14 +41,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Version
         id: version
-        uses: hononeko/actions/version@e1fdec215f80fc9a1574c61b15303f6789d09b7c # v1.4.7
+        uses: hononeko/actions/version@v1
 
       - name: Release notes
-        uses: hononeko/actions/release-notes@e1fdec215f80fc9a1574c61b15303f6789d09b7c # v1.4.7
+        uses: hononeko/actions/release-notes@v1
         with:
           previous-tag: ${{ steps.version.outputs.previous-tag }}
           tag: ${{ steps.version.outputs.version-tag }}
@@ -99,9 +100,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Set up Gradle & JDK
-        uses: hononeko/actions/gradle-setup@e1fdec215f80fc9a1574c61b15303f6789d09b7c # v1.4.7
+        uses: hononeko/actions/gradle-setup@v1
 
       - name: Run Integration Tests
         run: ./gradlew integrationTest --no-daemon
@@ -151,6 +154,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Log in to GitHub Container Registry (GHCR)
         if: hashFiles('docker/Dockerfile.proxy') != '' || hashFiles('docker/Dockerfile.worker') != ''
@@ -163,7 +168,7 @@ jobs:
       - name: Publish proxy image
         id: publish-proxy
         if: hashFiles('docker/Dockerfile.proxy') != ''
-        uses: hononeko/actions/publish-image@e1fdec215f80fc9a1574c61b15303f6789d09b7c # v1.4.7
+        uses: hononeko/actions/publish-image@v1
         with:
           image: ghcr.io/${{ github.repository_owner }}/koshin-proxy
           tags: |
@@ -180,7 +185,7 @@ jobs:
       - name: Publish worker image
         id: publish-worker
         if: hashFiles('docker/Dockerfile.worker') != ''
-        uses: hononeko/actions/publish-image@e1fdec215f80fc9a1574c61b15303f6789d09b7c # v1.4.7
+        uses: hononeko/actions/publish-image@v1
         with:
           image: ghcr.io/${{ github.repository_owner }}/koshin-worker
           tags: |
