@@ -7,12 +7,15 @@ import dev.hononeko.koshin.adapters.nats.NatsJobQueueConsumer
 import dev.hononeko.koshin.adapters.nats.NatsJobQueuePublisher
 import dev.hononeko.koshin.adapters.nats.NatsReconnectBootstrapper
 import dev.hononeko.koshin.adapters.nats.isConnected
+import dev.hononeko.koshin.adapters.valkey.PlatformThrottleConfig
 import dev.hononeko.koshin.adapters.valkey.ValkeyConfig
 import dev.hononeko.koshin.adapters.valkey.ValkeyConnectionHealth
+import dev.hononeko.koshin.adapters.valkey.ValkeyPlatformThrottleAdapter
 import dev.hononeko.koshin.adapters.valkey.ValkeyRepoCoordinationAdapter
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.ports.JobQueueConsumer
 import dev.hononeko.koshin.core.ports.JobQueuePublisher
+import dev.hononeko.koshin.core.ports.PlatformThrottlePort
 import dev.hononeko.koshin.core.ports.RepoCoordinationPort
 import io.lettuce.core.ExperimentalLettuceCoroutinesApi
 import io.lettuce.core.RedisClient
@@ -49,6 +52,7 @@ class NatsBackend(
 
 class ValkeyBackend(
     val coordination: RepoCoordinationPort,
+    val throttle: PlatformThrottlePort,
     private val healthy: suspend () -> Boolean,
     private val onClose: () -> Unit = {},
 ) : AutoCloseable {
@@ -68,6 +72,7 @@ class WorkerBackends(
         val consumer: JobQueueConsumer,
         val publisher: JobQueuePublisher,
         val coordination: RepoCoordinationPort,
+        val throttle: PlatformThrottlePort,
     )
 
     private val logger = LoggerFactory.getLogger(WorkerBackends::class.java)
@@ -83,7 +88,9 @@ class WorkerBackends(
             nats.set(natsBackend)
             val valkeyBackend = retrying("Valkey") { connectValkey() }
             valkey.set(valkeyBackend)
-            ready.complete(Ports(natsBackend.consumer, natsBackend.publisher, valkeyBackend.coordination))
+            ready.complete(
+                Ports(natsBackend.consumer, natsBackend.publisher, valkeyBackend.coordination, valkeyBackend.throttle),
+            )
             logger.info("Connected to NATS and Valkey")
         }
     }
@@ -159,6 +166,7 @@ class WorkerBackends(
         @OptIn(ExperimentalLettuceCoroutinesApi::class)
         suspend fun connectValkey(
             config: ValkeyConfig,
+            throttleConfig: PlatformThrottleConfig = PlatformThrottleConfig(),
             ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
         ): ValkeyBackend {
             val client = RedisClient.create(config.toRedisUri())
@@ -166,8 +174,10 @@ class WorkerBackends(
                 val connection = withContext(ioDispatcher) { client.connect() }
                 val coordination = ValkeyRepoCoordinationAdapter(connection, config)
                 coordination.preloadScripts()
+                val throttle = ValkeyPlatformThrottleAdapter(connection, config, throttleConfig)
+                throttle.preloadScripts()
                 val health = ValkeyConnectionHealth(connection, pingTimeout = config.commandTimeout)
-                return ValkeyBackend(coordination, health::ping) {
+                return ValkeyBackend(coordination, throttle, health::ping) {
                     runCatching { connection.close() }
                     client.shutdown()
                 }

@@ -5,7 +5,6 @@ import dev.hononeko.koshin.core.model.PlatformCredentials
 import dev.hononeko.koshin.core.usecase.ProcessRenovateJobUseCase
 import dev.hononeko.koshin.worker.NoOpRepoCache
 import dev.hononeko.koshin.worker.StaticCredentialsProvider
-import dev.hononeko.koshin.worker.UnthrottledPlatformThrottle
 import dev.hononeko.koshin.worker.WorkerBackends
 import dev.hononeko.koshin.worker.WorkerDaemon
 import dev.hononeko.koshin.worker.WorkerSettings
@@ -20,31 +19,35 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 
 /** A worker wired like `worker/Application.kt`, with a fake CLI and recording decorators around its ports. */
-class TestWorker(val name: String, private val cluster: E2eCluster, runTime: Duration) : AutoCloseable {
+class TestWorker(val name: String, private val cluster: E2eCluster, runTime: Duration, platforms: Set<Platform>) :
+    AutoCloseable {
     val cli = FakeCli(name, cluster.runs, runTime)
     val stall = Stall()
 
     private val baseDir = createTempDirectory("koshin-e2e-$name-")
     private val nats = WorkerBackends.connectNats(Containers.natsUrl, cluster.natsConfig, Platform.entries)
-    private val valkey = runBlocking { WorkerBackends.connectValkey(cluster.valkeyConfig) }
+    private val valkey = runBlocking { WorkerBackends.connectValkey(cluster.valkeyConfig, cluster.throttle) }
     private val backends = WorkerBackends(connectNats = { nats }, connectValkey = { valkey })
 
     val consumer = RecordingConsumer(nats.consumer, stall)
     val coordination = RecordingCoordination(valkey.coordination, stall)
+    val throttle = RecordingThrottle(valkey.throttle)
 
     private val useCase = ProcessRenovateJobUseCase(
         queueConsumer = consumer,
         queuePublisher = nats.publisher,
         coordinationPort = coordination,
-        throttlePort = UnthrottledPlatformThrottle,
+        throttlePort = throttle,
         cachePort = NoOpRepoCache,
-        credentialsPort = StaticCredentialsProvider(mapOf(Platform.GITHUB to PlatformCredentials("e2e-token"))),
+        credentialsPort = StaticCredentialsProvider(
+            Platform.entries.associateWith { PlatformCredentials("e2e-token") },
+        ),
         cliExecutor = cli,
         workspaceCleaner = WorkspaceCleaner(baseDir),
         config = cluster.jobConfig,
     )
     private val daemon = WorkerDaemon(
-        platforms = setOf(Platform.GITHUB),
+        platforms = platforms,
         idleDelay = 100.milliseconds,
         errorDelay = 500.milliseconds,
     ) { useCase }

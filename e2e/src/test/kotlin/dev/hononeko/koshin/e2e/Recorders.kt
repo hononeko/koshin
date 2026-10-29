@@ -9,6 +9,7 @@ import dev.hononeko.koshin.core.ports.AcquireResult
 import dev.hononeko.koshin.core.ports.CliExecutorPort
 import dev.hononeko.koshin.core.ports.JobDelivery
 import dev.hononeko.koshin.core.ports.JobQueueConsumer
+import dev.hononeko.koshin.core.ports.PlatformThrottlePort
 import dev.hononeko.koshin.core.ports.ReleaseResult
 import dev.hononeko.koshin.core.ports.RepoCoordinationPort
 import kotlinx.coroutines.CancellationException
@@ -49,12 +50,17 @@ class DeliveryRecord(val event: RenovateJobEvent, val attempt: Int) {
     var settlement: Settlement? = null
 }
 
+data class Fetch(val platform: Platform, val at: TimeSource.Monotonic.ValueTimeMark)
+
 class RecordingConsumer(
     private val delegate: JobQueueConsumer,
     private val stall: Stall,
     val deliveries: MutableList<DeliveryRecord> = CopyOnWriteArrayList(),
 ) : JobQueueConsumer {
+    val fetches: MutableList<Fetch> = CopyOnWriteArrayList()
+
     override suspend fun fetchNext(platform: Platform, timeout: Duration): JobDelivery? {
+        fetches += Fetch(platform, TimeSource.Monotonic.markNow())
         val delivery = delegate.fetchNext(platform, timeout) ?: return null
         val record = DeliveryRecord(delivery.event, delivery.deliveryAttempt)
         deliveries += record
@@ -115,18 +121,40 @@ class RecordingCoordination(private val delegate: RepoCoordinationPort, private 
         delegate.releaseLock(repo, token).also { unlocks += Unlock(token, it) }
 }
 
+/** Records each platform cooldown the worker starts. */
+class RecordingThrottle(private val delegate: PlatformThrottlePort) : PlatformThrottlePort by delegate {
+    data class RateLimit(val platform: Platform, val cooldown: Duration, val at: TimeSource.Monotonic.ValueTimeMark)
+
+    val rateLimits: MutableList<RateLimit> = CopyOnWriteArrayList()
+
+    override suspend fun registerRateLimit(platform: Platform, retryAfter: Duration?): Duration {
+        val at = TimeSource.Monotonic.markNow()
+        return delegate.registerRateLimit(platform, retryAfter).also { rateLimits += RateLimit(platform, it, at) }
+    }
+}
+
 class CliRun(val worker: String, val repo: RepoRef) {
     enum class State { RUNNING, COMPLETED, KILLED }
 
+    val startedAt = TimeSource.Monotonic.markNow()
+
     @Volatile
     var state: State = State.RUNNING
+
+    @Volatile
+    var result: JobExecutionResult? = null
 }
 
-/** Stands in for Renovate: sleeps for [runTime], or until released while [hold] is in effect. */
+/**
+ * Stands in for Renovate: sleeps for [runTime], or until released while [hold] is in effect, then returns [outcome].
+ */
 class FakeCli(private val worker: String, private val runs: MutableList<CliRun>, private val runTime: Duration) :
     CliExecutorPort {
 
     private val gate = AtomicReference<CompletableDeferred<Unit>?>(null)
+
+    @Volatile
+    var outcome: (RepoRef) -> JobExecutionResult = { JobExecutionResult.Success }
 
     /** Runs started from now on block until [release]. */
     fun hold() {
@@ -146,7 +174,9 @@ class FakeCli(private val worker: String, private val runs: MutableList<CliRun>,
             run.state = CliRun.State.KILLED
             throw e
         }
-        run.state = CliRun.State.COMPLETED
-        return JobExecutionResult.Success
+        return outcome(repo).also {
+            run.result = it
+            run.state = CliRun.State.COMPLETED
+        }
     }
 }

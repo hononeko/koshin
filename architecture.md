@@ -240,7 +240,7 @@ return 0
 
 * **Prevention:** a global run-slot semaphore per platform (`MAX_CONCURRENT_RUNS_PER_PLATFORM`, a Valkey ZSET with leases renewed by the heartbeat) plus Renovate `hostRules` (`maxRequestsPerSecond`, `concurrentRequestLimit`) injected per run. API budget ≈ run slots × requests/s per run.
 * **Server-side clock:** the ZSET lease scripts read `redis.call('TIME')` inside Lua to compute "now" and expiry, never a JVM timestamp passed as an ARGV, so pod clock skew can't corrupt leases.
-* **Detection:** the CLI executor parses Renovate JSON logs for rate-limit errors (configurable patterns). Rate-limit signals for koshin's own HTTP calls: **429**, **403 + `x-ratelimit-remaining: 0`**, and GitHub secondary-limit responses.
+* **Detection:** the CLI executor parses Renovate JSON logs for rate-limit errors (configurable pattern), since Renovate exits 0 when it aborts a repository on a rate limit: `Rate limit exceeded - aborting` on GitHub, a `Host error` with `hostType` = the platform and status 429 on GitLab. `Retry-After` / `x-ratelimit-reset` come from the logged response headers when present (secondary limits, GitLab 429s). Rate-limit signals for koshin's own HTTP calls: **429**, **403 + `x-ratelimit-remaining: 0`**, and GitHub secondary-limit responses.
 * **Backoff:** a platform-wide cooldown `koshin:{throttle:<platform>}:cooldown` lasting `Retry-After`/reset time if known, otherwise `min(base × 2^n, max) ± 20% jitter`. `n` resets after a successful run. Workers stop fetching from a platform's consumer during its cooldown, so pending jobs wait without spending `MaxDeliver` attempts.
 * **Requeue cap:** a rate-limited job is republished at most `MAX_RATE_LIMIT_REQUEUES` (default 5) times, tracked in `RenovateJobEvent.rateLimitAttempt`, then dead-lettered. Without the cap, a permanent failure that matches the rate-limit pattern would loop across cooldowns forever.
 * **koshin's own HTTP calls** (GitHub App tokens, discovery) use a shared Ktor client with `HttpRequestRetry` + `exponentialDelay()` and honor `Retry-After`.
@@ -293,6 +293,7 @@ Packaged as Kustomize overlays (KSH-8 / KSH-12) and a Helm chart (KSH-13).
 | `RATE_LIMIT_BACKOFF_BASE_SECONDS` | Worker | `60` | Cooldown base |
 | `RATE_LIMIT_BACKOFF_MAX_SECONDS` | Worker | `3600` | Cooldown cap |
 | `MAX_RATE_LIMIT_REQUEUES` | Worker | `5` | Rate-limit requeues per job before it's dead-lettered |
+| `RATE_LIMIT_LOG_PATTERN` | Worker | `^Rate limit exceeded - aborting$` | Regex for the Renovate log message of a run aborted by the platform's rate limit |
 | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY_PATH` | Both | — | GitHub App auth (preferred) |
 | `GITHUB_TOKEN` | Worker | — | PAT fallback when the App isn't configured |
 | `GITHUB_API_URL` | Both | `https://api.github.com` | GHES support |

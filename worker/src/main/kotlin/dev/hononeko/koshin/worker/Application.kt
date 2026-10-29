@@ -92,6 +92,8 @@ fun main() {
         baseDir = settings.renovateBaseDir,
         binarySource = settings.renovateBinarySource,
         redisUrl = settings.renovateRedisUrl,
+        requestLimits = settings.requestLimits,
+        rateLimitPattern = Regex(settings.rateLimitLogPattern),
     )
     val cliExecutor: CliExecutorPort = if (settings.podDeletionCostEnabled) {
         PodDeletionCostCliExecutor(
@@ -105,7 +107,7 @@ fun main() {
     val backends = WorkerBackends(
         // Consumers for every platform, so KEDA's per-platform triggers never hit a missing consumer.
         connectNats = { WorkerBackends.connectNats(settings.natsUrl, natsConfig, Platform.entries) },
-        connectValkey = { WorkerBackends.connectValkey(valkeyConfig) },
+        connectValkey = { WorkerBackends.connectValkey(valkeyConfig, settings.throttle) },
     )
     backends.startAsync()
 
@@ -115,7 +117,7 @@ fun main() {
             queueConsumer = ports.consumer,
             queuePublisher = ports.publisher,
             coordinationPort = ports.coordination,
-            throttlePort = UnthrottledPlatformThrottle,
+            throttlePort = ports.throttle,
             cachePort = NoOpRepoCache,
             credentialsPort = credentials,
             cliExecutor = cliExecutor,

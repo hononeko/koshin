@@ -5,9 +5,6 @@ import dev.hononeko.koshin.core.ports.AcquireResult
 import dev.hononeko.koshin.core.ports.ReleaseResult
 import dev.hononeko.koshin.core.ports.RepoCoordinationPort
 import io.lettuce.core.ExperimentalLettuceCoroutinesApi
-import io.lettuce.core.RedisCommandExecutionException
-import io.lettuce.core.RedisNoScriptException
-import io.lettuce.core.ScriptOutputType
 import io.lettuce.core.api.StatefulRedisConnection
 import io.lettuce.core.api.coroutines
 import io.lettuce.core.api.coroutines.RedisCoroutinesCommands
@@ -15,7 +12,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration
 
 @OptIn(ExperimentalLettuceCoroutinesApi::class)
@@ -30,16 +26,16 @@ class ValkeyRepoCoordinationAdapter(
 
     private val logger = LoggerFactory.getLogger(ValkeyRepoCoordinationAdapter::class.java)
 
-    private val acquireOrMarkDirtySha = AtomicReference<String?>(null)
-    private val extendLockSha = AtomicReference<String?>(null)
-    private val releaseLockAndTakeDirtySha = AtomicReference<String?>(null)
-    private val releaseLockSha = AtomicReference<String?>(null)
+    private val acquireOrMarkDirtyScript = LuaScript(commands, ACQUIRE_OR_MARK_DIRTY_SCRIPT)
+    private val extendLockScript = LuaScript(commands, EXTEND_LOCK_SCRIPT)
+    private val releaseLockAndTakeDirtyScript = LuaScript(commands, RELEASE_LOCK_AND_TAKE_DIRTY_SCRIPT)
+    private val releaseLockScript = LuaScript(commands, RELEASE_LOCK_SCRIPT)
 
     suspend fun preloadScripts() {
-        acquireOrMarkDirtySha.set(commands.scriptLoad(ACQUIRE_OR_MARK_DIRTY_SCRIPT))
-        extendLockSha.set(commands.scriptLoad(EXTEND_LOCK_SCRIPT))
-        releaseLockAndTakeDirtySha.set(commands.scriptLoad(RELEASE_LOCK_AND_TAKE_DIRTY_SCRIPT))
-        releaseLockSha.set(commands.scriptLoad(RELEASE_LOCK_SCRIPT))
+        acquireOrMarkDirtyScript.load()
+        extendLockScript.load()
+        releaseLockAndTakeDirtyScript.load()
+        releaseLockScript.load()
     }
 
     override suspend fun acquireOrMarkDirty(
@@ -57,10 +53,8 @@ class ValkeyRepoCoordinationAdapter(
         require(dirtySeconds >= 1) { "dirtyTtl must be at least 1 second: $dirtyTtl" }
 
         val keys = arrayOf(config.lockKeyFor(repo), config.dirtyKeyFor(repo))
-        val outcome = evalIntegerScript(
-            script = ACQUIRE_OR_MARK_DIRTY_SCRIPT,
-            shaRef = acquireOrMarkDirtySha,
-            keys = keys,
+        val outcome = acquireOrMarkDirtyScript.evalLong(
+            keys,
             token,
             lockSeconds.toString(),
             dirtySeconds.toString(),
@@ -83,10 +77,8 @@ class ValkeyRepoCoordinationAdapter(
         require(ttlSeconds >= 1) { "ttl must be at least 1 second: $ttl" }
 
         val keys = arrayOf(config.lockKeyFor(repo))
-        val outcome = evalIntegerScript(
-            script = EXTEND_LOCK_SCRIPT,
-            shaRef = extendLockSha,
-            keys = keys,
+        val outcome = extendLockScript.evalLong(
+            keys,
             token,
             ttlSeconds.toString(),
         )
@@ -98,10 +90,8 @@ class ValkeyRepoCoordinationAdapter(
 
         return withContext(NonCancellable) {
             val keys = arrayOf(config.lockKeyFor(repo), config.dirtyKeyFor(repo))
-            val outcome = evalIntegerScript(
-                script = RELEASE_LOCK_AND_TAKE_DIRTY_SCRIPT,
-                shaRef = releaseLockAndTakeDirtySha,
-                keys = keys,
+            val outcome = releaseLockAndTakeDirtyScript.evalLong(
+                keys,
                 token,
             )
             when (outcome) {
@@ -118,10 +108,8 @@ class ValkeyRepoCoordinationAdapter(
 
         return withContext(NonCancellable) {
             val keys = arrayOf(config.lockKeyFor(repo))
-            val outcome = evalIntegerScript(
-                script = RELEASE_LOCK_SCRIPT,
-                shaRef = releaseLockSha,
-                keys = keys,
+            val outcome = releaseLockScript.evalLong(
+                keys,
                 token,
             )
             outcome == RELEASED_RESULT
@@ -149,35 +137,6 @@ class ValkeyRepoCoordinationAdapter(
                 e,
             )
         }
-    }
-
-    private suspend fun evalIntegerScript(
-        script: String,
-        shaRef: AtomicReference<String?>,
-        keys: Array<String>,
-        vararg values: String,
-    ): Long {
-        val sha = shaRef.get() ?: commands.scriptLoad(script)?.also { shaRef.set(it) }
-        if (sha != null) {
-            try {
-                return checkNotNull(commands.evalsha<Long>(sha, ScriptOutputType.INTEGER, keys, *values)) {
-                    "Lua script returned null"
-                }
-            } catch (e: RedisNoScriptException) {
-                logger.debug("NOSCRIPT for sha {}, falling back to EVAL", sha, e)
-            } catch (e: RedisCommandExecutionException) {
-                if (e.message?.contains("NOSCRIPT", ignoreCase = true) == true) {
-                    logger.debug("NOSCRIPT for sha {}, falling back to EVAL", sha, e)
-                } else {
-                    throw e
-                }
-            }
-        }
-        val result = checkNotNull(commands.eval<Long>(script, ScriptOutputType.INTEGER, keys, *values)) {
-            "Lua script returned null"
-        }
-        commands.scriptLoad(script)?.let { shaRef.set(it) }
-        return result
     }
 
     companion object {

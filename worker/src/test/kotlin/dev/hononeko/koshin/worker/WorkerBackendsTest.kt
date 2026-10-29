@@ -1,5 +1,7 @@
 package dev.hononeko.koshin.worker
 
+import dev.hononeko.koshin.core.ports.PlatformThrottlePort
+import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -25,6 +27,7 @@ class WorkerBackendsTest {
         val consumer = QueueConsumer()
         val publisher = RecordingPublisher()
         val coordination = InMemoryCoordination()
+        val throttle = mockk<PlatformThrottlePort>()
 
         val backends = WorkerBackends(
             connectNats = {
@@ -33,7 +36,7 @@ class WorkerBackendsTest {
             },
             connectValkey = {
                 if (valkeyAttempts.incrementAndGet() < 2) throw IOException("valkey down")
-                ValkeyBackend(coordination, valkeyHealthy::get) { closed += "valkey" }
+                ValkeyBackend(coordination, throttle, valkeyHealthy::get) { closed += "valkey" }
             },
             retryDelay = 5.milliseconds,
         )
@@ -45,6 +48,7 @@ class WorkerBackendsTest {
         assertSame(consumer, ports.consumer)
         assertSame(publisher, ports.publisher)
         assertSame(coordination, ports.coordination)
+        assertSame(throttle, ports.throttle)
         assertEquals(3, natsAttempts.get())
         assertEquals(2, valkeyAttempts.get())
         assertTrue(backends.isReady())

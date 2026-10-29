@@ -3,14 +3,19 @@ package dev.hononeko.koshin.e2e
 import dev.hononeko.koshin.adapters.nats.NatsConfig
 import dev.hononeko.koshin.adapters.nats.NatsJetStreamBootstrap
 import dev.hononeko.koshin.adapters.nats.NatsJobQueueConsumer
+import dev.hononeko.koshin.adapters.nats.NatsJobQueuePublisher
+import dev.hononeko.koshin.adapters.valkey.PlatformThrottleConfig
 import dev.hononeko.koshin.adapters.valkey.ValkeyConfig
 import dev.hononeko.koshin.adapters.valkey.ValkeyRepoCoordinationAdapter
 import dev.hononeko.koshin.core.model.Platform
+import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.model.RepoRef
 import dev.hononeko.koshin.core.usecase.WorkerConfig
 import io.lettuce.core.RedisClient
 import io.nats.client.Nats
 import io.nats.client.api.StorageType
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
 import org.testcontainers.containers.GenericContainer
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
@@ -37,7 +42,10 @@ object Containers {
 }
 
 /** One proxy and any number of workers, isolated from other tests by their own streams and key prefix. */
-class E2eCluster : AutoCloseable {
+class E2eCluster(
+    maxRateLimitRequeues: Int = WorkerConfig().maxRateLimitRequeues,
+    val throttle: PlatformThrottleConfig = PlatformThrottleConfig(),
+) : AutoCloseable {
     private val id = nextId.incrementAndGet()
 
     val jobConfig = WorkerConfig(
@@ -48,6 +56,7 @@ class E2eCluster : AutoCloseable {
         cliTimeout = 1.minutes,
         lockCollisionRetryDelay = 1.seconds,
         fetchTimeout = 1.seconds,
+        maxRateLimitRequeues = maxRateLimitRequeues,
     )
 
     val natsConfig = NatsConfig(
@@ -70,6 +79,7 @@ class E2eCluster : AutoCloseable {
 
     private val nats = Nats.connect(Containers.natsUrl)
     private val jsm = nats.jetStreamManagement()
+    private val publisher = NatsJobQueuePublisher(nats, natsConfig)
     private val redisClient = RedisClient.create(valkeyConfig.toRedisUri())
     private val redis = redisClient.connect()
 
@@ -85,11 +95,16 @@ class E2eCluster : AutoCloseable {
         it.start()
     }
 
-    fun startWorker(name: String, runTime: Duration = DEFAULT_RUN_TIME): TestWorker =
-        TestWorker(name, this, runTime).also {
-            workers += it
-            it.start()
-        }
+    fun startWorker(
+        name: String,
+        runTime: Duration = DEFAULT_RUN_TIME,
+        platforms: Set<Platform> = setOf(Platform.GITHUB),
+    ): TestWorker = TestWorker(name, this, runTime, platforms).also {
+        workers += it
+        it.start()
+    }
+
+    fun publish(event: RenovateJobEvent) = runBlocking { publisher.publish(event) }
 
     /** A consumer outside any worker, to bounce a delivery so a worker sees it as a redelivery. */
     fun consumer(): NatsJobQueueConsumer = NatsJobQueueConsumer(nats, natsConfig)
@@ -97,6 +112,18 @@ class E2eCluster : AutoCloseable {
     fun lockHolder(repo: RepoRef): String? = redis.sync().get(valkeyConfig.lockKeyFor(repo))
 
     fun isDirty(repo: RepoRef): Boolean = redis.sync().exists(valkeyConfig.dirtyKeyFor(repo)) > 0
+
+    fun hasBackoff(platform: Platform): Boolean =
+        redis.sync().exists(valkeyConfig.throttleKeyFor(platform, "backoff_n")) > 0
+
+    fun deadLetters(): List<RenovateJobEvent> {
+        val state = jsm.getStreamInfo(natsConfig.dlqStreamName).streamState
+        if (state.msgCount == 0L) return emptyList()
+        return (state.firstSequence..state.lastSequence).map { seq ->
+            val data = checkNotNull(jsm.getMessage(natsConfig.dlqStreamName, seq).data).decodeToString()
+            Json.decodeFromString(RenovateJobEvent.serializer(), data)
+        }
+    }
 
     fun publishedCount(): Long = jsm.getStreamInfo(natsConfig.jobsStreamName).streamState.lastSequence
 

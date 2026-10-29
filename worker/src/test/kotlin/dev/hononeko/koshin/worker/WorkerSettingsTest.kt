@@ -28,6 +28,44 @@ class WorkerSettingsTest {
         assertFalse(settings.podDeletionCostEnabled)
         assertEquals(45.seconds, settings.jobConfig.lockTtl)
         assertEquals(45.minutes, settings.jobConfig.cliTimeout)
+        assertEquals(3, settings.throttle.maxConcurrentRuns)
+        assertEquals(60.seconds, settings.throttle.backoffBase)
+        assertEquals(3600.seconds, settings.throttle.backoffMax)
+        assertEquals(RenovateRequestLimits(), settings.requestLimits)
+        assertEquals(RateLimitDetector.DEFAULT_ABORT_PATTERN, settings.rateLimitLogPattern)
+    }
+
+    @Test
+    fun `fromEnv parses rate-limit settings`() {
+        val settings = WorkerSettings.fromEnv(
+            mapOf(
+                "MAX_CONCURRENT_RUNS_PER_PLATFORM" to "5",
+                "RATE_LIMIT_BACKOFF_BASE_SECONDS" to "30",
+                "RATE_LIMIT_BACKOFF_MAX_SECONDS" to "600",
+                "RENOVATE_MAX_REQUESTS_PER_SECOND" to "2.5",
+                "RENOVATE_CONCURRENT_REQUEST_LIMIT" to "4",
+                "RATE_LIMIT_LOG_PATTERN" to "quota exhausted",
+            ),
+        )
+        assertEquals(5, settings.throttle.maxConcurrentRuns)
+        assertEquals(30.seconds, settings.throttle.backoffBase)
+        assertEquals(600.seconds, settings.throttle.backoffMax)
+        assertEquals(RenovateRequestLimits(2.5, 4), settings.requestLimits)
+        assertEquals("quota exhausted", settings.rateLimitLogPattern)
+    }
+
+    @Test
+    fun `invalid rate-limit settings are rejected`() {
+        listOf(
+            mapOf("MAX_CONCURRENT_RUNS_PER_PLATFORM" to "0"),
+            mapOf("RATE_LIMIT_BACKOFF_BASE_SECONDS" to "120", "RATE_LIMIT_BACKOFF_MAX_SECONDS" to "60"),
+            mapOf("RENOVATE_MAX_REQUESTS_PER_SECOND" to "fast"),
+            mapOf("RENOVATE_MAX_REQUESTS_PER_SECOND" to "0"),
+            mapOf("RENOVATE_CONCURRENT_REQUEST_LIMIT" to "-1"),
+            mapOf("RATE_LIMIT_LOG_PATTERN" to "(unclosed"),
+        ).forEach { env ->
+            assertThrows<IllegalArgumentException>(env.toString()) { WorkerSettings.fromEnv(env) }
+        }
     }
 
     @Test
