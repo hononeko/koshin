@@ -1,5 +1,6 @@
 package dev.hononeko.koshin.adapters.valkey
 
+import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RepoRef
 import io.lettuce.core.RedisURI
 import kotlin.time.Duration
@@ -36,6 +37,9 @@ data class ValkeyConfig(
     fun lockKeyFor(repo: RepoRef): String = "$keyPrefix:{${repo.platform.name.lowercase()}:${repo.repository}}:lock"
 
     fun dirtyKeyFor(repo: RepoRef): String = "$keyPrefix:{${repo.platform.name.lowercase()}:${repo.repository}}:dirty"
+
+    fun throttleKeyFor(platform: Platform, name: String): String =
+        "$keyPrefix:{throttle:${platform.name.lowercase()}}:$name"
 
     companion object {
         const val DEFAULT_VALKEY_URL = "redis://koshin-valkey:6379"

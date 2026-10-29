@@ -1,20 +1,28 @@
 package dev.hononeko.koshin.worker
 
 import dev.hononeko.koshin.core.model.JobExecutionResult
+import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.PlatformCredentials
 import dev.hononeko.koshin.core.model.RepoRef
 import dev.hononeko.koshin.core.ports.CliExecutorPort
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
 import java.io.IOException
 import java.io.InputStream
+import java.net.URI
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
 import kotlin.io.path.createDirectories
@@ -28,6 +36,8 @@ class RenovateProcessExecutor(
     private val command: List<String> = listOf("renovate"),
     private val inheritedEnv: Map<String, String> = System.getenv(),
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val requestLimits: RenovateRequestLimits = RenovateRequestLimits(),
+    private val rateLimitPattern: Regex = Regex(RateLimitDetector.DEFAULT_ABORT_PATTERN),
 ) : CliExecutorPort {
 
     private val logger = LoggerFactory.getLogger(RenovateProcessExecutor::class.java)
@@ -53,9 +63,10 @@ class RenovateProcessExecutor(
         }
         logger.info("Started renovate for {} (pid {})", repo, process.pid())
 
+        val rateLimit = RateLimitDetector(repo.platform, rateLimitPattern)
         // Not children of the caller: a blocked read must never hold up cancellation.
         val pumps = CoroutineScope(ioDispatcher).launch {
-            launch { pump(process.inputStream, repo, "stdout") }
+            launch { pump(process.inputStream, repo, "stdout", rateLimit::inspect) }
             launch { pump(process.errorStream, repo, "stderr") }
         }
 
@@ -67,14 +78,23 @@ class RenovateProcessExecutor(
             }
             val exitCode = process.exitValue()
             logger.info("Renovate for {} exited with code {}", repo, exitCode)
-            return if (exitCode == 0) JobExecutionResult.Success else JobExecutionResult.Failed(exitCode)
+            // The rate-limit verdict is in the last lines, so read them all before deciding.
+            awaitOutput(pumps, repo)
+            return rateLimit.result()
+                ?.also { logger.warn("Renovate for {} was rate-limited (retry after {})", repo, it.retryAfter) }
+                ?: if (exitCode == 0) JobExecutionResult.Success else JobExecutionResult.Failed(exitCode)
         } finally {
             withContext(NonCancellable + ioDispatcher) {
                 killProcessTree(process)
-                withTimeoutOrNull(OUTPUT_DRAIN_TIMEOUT) { pumps.join() }
-                    ?: logger.warn("Output of renovate for {} still open after exit; abandoning", repo)
+                awaitOutput(pumps, repo)
             }
         }
+    }
+
+    private suspend fun awaitOutput(pumps: Job, repo: RepoRef) {
+        if (pumps.isCompleted) return
+        withTimeoutOrNull(OUTPUT_DRAIN_TIMEOUT) { pumps.join() }
+            ?: logger.warn("Output of renovate for {} still open after exit; abandoning", repo)
     }
 
     fun buildEnvironment(repo: RepoRef, creds: PlatformCredentials): Map<String, String> = buildMap {
@@ -87,12 +107,38 @@ class RenovateProcessExecutor(
         put("RENOVATE_BINARY_SOURCE", binarySource)
         redisUrl?.let { put("RENOVATE_REDIS_URL", it) }
         put("RENOVATE_REPOSITORY_CACHE", "enabled")
+        hostRules(repo, creds, inheritedEnv["RENOVATE_HOST_RULES"])?.let { put("RENOVATE_HOST_RULES", it) }
     }
 
-    private fun pump(stream: InputStream, repo: RepoRef, name: String) {
+    /** Appends a rule with the request limits for the platform's API host to any inherited `RENOVATE_HOST_RULES`. */
+    private fun hostRules(repo: RepoRef, creds: PlatformCredentials, inherited: String?): String? {
+        if (requestLimits.isEmpty()) return inherited
+        val existing = if (inherited.isNullOrBlank()) {
+            JsonArray(emptyList())
+        } else {
+            try {
+                Json.parseToJsonElement(inherited) as? JsonArray
+            } catch (_: SerializationException) {
+                null
+            }
+        }
+        if (existing == null) {
+            logger.warn("Inherited RENOVATE_HOST_RULES is not a JSON array; request limits are not applied")
+        }
+        return existing?.let { JsonArray(it + requestLimitRule(repo, creds)).toString() } ?: inherited
+    }
+
+    private fun requestLimitRule(repo: RepoRef, creds: PlatformCredentials) = buildJsonObject {
+        put("matchHost", URI(creds.endpoint ?: defaultEndpoint(repo.platform)).host)
+        requestLimits.maxRequestsPerSecond?.let { put("maxRequestsPerSecond", it) }
+        requestLimits.concurrentRequestLimit?.let { put("concurrentRequestLimit", it) }
+    }
+
+    private fun pump(stream: InputStream, repo: RepoRef, name: String, inspect: (String) -> Unit = {}) {
         try {
             stream.bufferedReader().useLines { lines ->
                 lines.forEach { line ->
+                    inspect(line)
                     outputLogger.atInfo()
                         .addKeyValue("repo", repo.toString())
                         .addKeyValue("stream", name)
@@ -121,12 +167,39 @@ class RenovateProcessExecutor(
         private val KILL_WAIT = 5.seconds
 
         /** Worker settings and secrets that must not leak into Renovate (or repo code it runs). */
-        private val STRIPPED_ENV = setOf("GITHUB_TOKEN", "GITLAB_TOKEN", "RENOVATE_ENDPOINT", "INTERNAL_TRIGGER_TOKEN")
+        private val STRIPPED_ENV = setOf(
+            "GITHUB_TOKEN",
+            "GITLAB_TOKEN",
+            "RENOVATE_ENDPOINT",
+            "INTERNAL_TRIGGER_TOKEN",
+            // koshin settings that only look like Renovate options; they reach Renovate as RENOVATE_HOST_RULES.
+            "RENOVATE_MAX_REQUESTS_PER_SECOND",
+            "RENOVATE_CONCURRENT_REQUEST_LIMIT",
+        )
         private val STRIPPED_PREFIXES = listOf("NATS_", "VALKEY_", "GITHUB_APP_")
         private const val STRIPPED_SUFFIX = "_WEBHOOK_SECRET"
+
+        private fun defaultEndpoint(platform: Platform): String = when (platform) {
+            Platform.GITHUB -> "https://api.github.com/"
+            Platform.GITLAB -> "https://gitlab.com/api/v4/"
+        }
 
         fun isStripped(key: String): Boolean = key in STRIPPED_ENV ||
             STRIPPED_PREFIXES.any { key.startsWith(it) } ||
             key.endsWith(STRIPPED_SUFFIX)
     }
+}
+
+/** Renovate `hostRules` limits applied to the platform's API host on every run; unset values are left to Renovate. */
+data class RenovateRequestLimits(val maxRequestsPerSecond: Double? = null, val concurrentRequestLimit: Int? = null) {
+    init {
+        require(maxRequestsPerSecond == null || maxRequestsPerSecond > 0) {
+            "RENOVATE_MAX_REQUESTS_PER_SECOND must be > 0: $maxRequestsPerSecond"
+        }
+        require(concurrentRequestLimit == null || concurrentRequestLimit > 0) {
+            "RENOVATE_CONCURRENT_REQUEST_LIMIT must be > 0: $concurrentRequestLimit"
+        }
+    }
+
+    fun isEmpty(): Boolean = maxRequestsPerSecond == null && concurrentRequestLimit == null
 }

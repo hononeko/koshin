@@ -17,6 +17,7 @@ dependencies {
     implementation(libs.nats.jnats)
     implementation(libs.lettuce.core)
     implementation(libs.kotlinx.coroutines.core)
+    implementation(libs.kotlinx.serialization.json)
     implementation(libs.logback.classic)
 
     testImplementation(libs.ktor.server.test.host)

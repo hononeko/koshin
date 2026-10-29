@@ -83,7 +83,19 @@ The coordination Valkey instance (`VALKEY_URL`, supporting both standalone `redi
 * **SIGTERM:** stops fetching, kills the CLI, releases the lock (keeping the dirty flag), NAKs the delivery and releases the run slot, without waiting for the run to finish.
 * **Pod deletion cost (optional):** with `POD_DELETION_COST_ENABLED=true` (plus `POD_NAME` / `POD_NAMESPACE` from the downward API), the worker sets `controller.kubernetes.io/pod-deletion-cost` to `1000` while Renovate runs and back to `0` afterwards. Failed patches are logged and ignored.
 * **Health:** `GET /healthz` is liveness only; `GET /readyz` checks NATS and Valkey.
-* Run-slot throttling (KSH-11) and the shared repository cache (KSH-10) are no-ops for now.
+* The shared repository cache (KSH-10) is a no-op for now.
+
+---
+
+## Rate Limiting & Sizing (KSH-11)
+
+Git provider API limits cap throughput long before NATS or Valkey do (GitHub: 5,000 requests/hour per token, plus secondary limits on concurrency).
+
+* **Run slots:** at most `MAX_CONCURRENT_RUNS_PER_PLATFORM` (default `3`) Renovate runs per platform at once, **across all pods**. A worker reserves a slot before fetching a job, so waiting jobs stay pending in NATS without spending `NATS_MAX_DELIVER` attempts. Leases live in Valkey, are renewed by the job heartbeat, and expire if a worker crashes.
+* **Per-request limits:** `RENOVATE_MAX_REQUESTS_PER_SECOND` / `RENOVATE_CONCURRENT_REQUEST_LIMIT` become a Renovate `hostRules` entry for the platform's API host on every run, appended to any `RENOVATE_HOST_RULES` you set.
+* **Cooldown:** when Renovate aborts a run on the platform's rate limit (it still exits 0; the worker reads its JSON logs, matching `RATE_LIMIT_LOG_PATTERN`), every worker stops fetching that platform for the `Retry-After` / reset time if Renovate logged one, else `min(RATE_LIMIT_BACKOFF_BASE_SECONDS × 2^n, RATE_LIMIT_BACKOFF_MAX_SECONDS) ± 20%`. `n` resets after a successful run. The job is requeued up to `MAX_RATE_LIMIT_REQUEUES` times, then dead-lettered.
+
+**Sizing:** API budget ≈ run slots × requests per second per run. For example, 3 slots × 2 req/s ≈ 21,600 requests/hour, well over a 5,000/hour token, so either lower `RENOVATE_MAX_REQUESTS_PER_SECOND` (3 × 0.4 ≈ 4,300/hour) or accept occasional cooldowns. Keep the KEDA `maxReplicaCount` close to the total run slots: extra pods only wait for a slot. During a cooldown KEDA still counts the pending jobs and may scale up pods that sit idle until it ends.
 
 ---
 

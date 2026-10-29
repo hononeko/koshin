@@ -1,5 +1,6 @@
 package dev.hononeko.koshin.worker
 
+import dev.hononeko.koshin.adapters.valkey.PlatformThrottleConfig
 import dev.hononeko.koshin.adapters.valkey.ValkeyConfig
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.usecase.WorkerConfig
@@ -24,6 +25,9 @@ data class WorkerSettings(
     val podName: String? = null,
     val podNamespace: String? = null,
     val jobConfig: WorkerConfig = WorkerConfig(),
+    val throttle: PlatformThrottleConfig = PlatformThrottleConfig(),
+    val requestLimits: RenovateRequestLimits = RenovateRequestLimits(),
+    val rateLimitLogPattern: String = RateLimitDetector.DEFAULT_ABORT_PATTERN,
 ) {
     init {
         require(port in 0..MAX_PORT) { "port must be in 0..$MAX_PORT: $port" }
@@ -34,11 +38,13 @@ data class WorkerSettings(
         require(!podDeletionCostEnabled || (!podName.isNullOrBlank() && !podNamespace.isNullOrBlank())) {
             "POD_DELETION_COST_ENABLED requires POD_NAME and POD_NAMESPACE"
         }
+        Regex(rateLimitLogPattern)
     }
 
     override fun toString(): String = "WorkerSettings(port=$port, http2Enabled=$http2Enabled, platforms=$platforms, " +
         "natsUrl=${natsUrl.withoutUserInfo()}, renovateBaseDir=$renovateBaseDir, " +
-        "githubToken=${githubToken.redacted()}, gitlabToken=${gitlabToken.redacted()}, jobConfig=$jobConfig)"
+        "githubToken=${githubToken.redacted()}, gitlabToken=${gitlabToken.redacted()}, jobConfig=$jobConfig, " +
+        "throttle=$throttle, requestLimits=$requestLimits)"
 
     companion object {
         const val DEFAULT_PORT = 8080
@@ -68,7 +74,22 @@ data class WorkerSettings(
             podName = env.nonBlank("POD_NAME"),
             podNamespace = env.nonBlank("POD_NAMESPACE"),
             jobConfig = jobConfigFromEnv(env),
+            throttle = throttleFromEnv(env),
+            requestLimits = RenovateRequestLimits(
+                maxRequestsPerSecond = env.double("RENOVATE_MAX_REQUESTS_PER_SECOND"),
+                concurrentRequestLimit = env.long("RENOVATE_CONCURRENT_REQUEST_LIMIT")?.toInt(),
+            ),
+            rateLimitLogPattern = env.nonBlank("RATE_LIMIT_LOG_PATTERN") ?: RateLimitDetector.DEFAULT_ABORT_PATTERN,
         )
+
+        private fun throttleFromEnv(env: Map<String, String>): PlatformThrottleConfig {
+            val defaults = PlatformThrottleConfig()
+            return PlatformThrottleConfig(
+                maxConcurrentRuns = env.long("MAX_CONCURRENT_RUNS_PER_PLATFORM")?.toInt() ?: defaults.maxConcurrentRuns,
+                backoffBase = env.long("RATE_LIMIT_BACKOFF_BASE_SECONDS")?.seconds ?: defaults.backoffBase,
+                backoffMax = env.long("RATE_LIMIT_BACKOFF_MAX_SECONDS")?.seconds ?: defaults.backoffMax,
+            )
+        }
 
         private fun jobConfigFromEnv(env: Map<String, String>): WorkerConfig {
             val defaults = WorkerConfig()
@@ -92,6 +113,10 @@ data class WorkerSettings(
 
         private fun Map<String, String>.long(key: String): Long? = nonBlank(key)?.let { raw ->
             requireNotNull(raw.toLongOrNull()) { "Invalid integer for $key: '$raw'" }
+        }
+
+        private fun Map<String, String>.double(key: String): Double? = nonBlank(key)?.let { raw ->
+            requireNotNull(raw.toDoubleOrNull()) { "Invalid number for $key: '$raw'" }
         }
 
         private fun parsePlatforms(raw: String?): Set<Platform> {

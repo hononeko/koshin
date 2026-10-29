@@ -40,11 +40,16 @@ class RenovateProcessExecutorTest {
         "RENOVATE_ONBOARDING" to "false",
     )
 
-    private fun executor(script: String) = RenovateProcessExecutor(
+    private fun executor(
+        script: String,
+        inheritedEnv: Map<String, String> = env,
+        requestLimits: RenovateRequestLimits = RenovateRequestLimits(),
+    ) = RenovateProcessExecutor(
         baseDir = baseDir,
         redisUrl = "redis://cache:6379",
         command = listOf("sh", "-c", script, "renovate"),
-        inheritedEnv = env,
+        inheritedEnv = inheritedEnv,
+        requestLimits = requestLimits,
     )
 
     /** Spawns a child that spawns a grandchild, records both PIDs, then hangs. */
@@ -152,5 +157,57 @@ class RenovateProcessExecutorTest {
             executor("true").execute(RepoRef(Platform.GITLAB, "-g/project"), creds, 1.minutes)
         }
         Unit
+    }
+
+    @Test
+    fun `a rate-limit abort maps to RateLimited even though Renovate exits 0`() = runBlocking {
+        val script = """
+            echo '{"level":40,"msg":"GitHub failure: secondary rate limit","err":{"response":{"statusCode":403,"headers":{"retry-after":"60"}}}}'
+            echo '{"level":40,"msg":"Rate limit exceeded - aborting"}'
+            echo '{"level":30,"msg":"Repository finished","result":"rate-limit-exceeded"}'
+            exit 0
+        """.trimIndent()
+        assertEquals(JobExecutionResult.RateLimited(60.seconds), executor(script).execute(repo, creds, 1.minutes))
+    }
+
+    @Test
+    fun `request limits become a host rule for the platform API host`() {
+        val limits = RenovateRequestLimits(maxRequestsPerSecond = 2.5, concurrentRequestLimit = 4)
+        val built = executor("true", requestLimits = limits).buildEnvironment(repo, creds)
+        assertEquals(
+            """[{"matchHost":"ghe.example.com","maxRequestsPerSecond":2.5,"concurrentRequestLimit":4}]""",
+            built["RENOVATE_HOST_RULES"],
+        )
+
+        val gitlab = executor("true", requestLimits = RenovateRequestLimits(concurrentRequestLimit = 2))
+            .buildEnvironment(RepoRef(Platform.GITLAB, "group/project"), PlatformCredentials("glpat"))
+        assertEquals("""[{"matchHost":"gitlab.com","concurrentRequestLimit":2}]""", gitlab["RENOVATE_HOST_RULES"])
+    }
+
+    @Test
+    fun `request limits are appended to inherited host rules`() {
+        val inherited = env + ("RENOVATE_HOST_RULES" to """[{"matchHost":"registry.npmjs.org","token":"npm"}]""")
+        val limits = RenovateRequestLimits(maxRequestsPerSecond = 1.0)
+        val built = executor("true", inherited, limits).buildEnvironment(repo, creds)
+        assertEquals(
+            """[{"matchHost":"registry.npmjs.org","token":"npm"},""" +
+                """{"matchHost":"ghe.example.com","maxRequestsPerSecond":1.0}]""",
+            built["RENOVATE_HOST_RULES"],
+        )
+
+        val invalid = env + ("RENOVATE_HOST_RULES" to "not json")
+        assertEquals("not json", executor("true", invalid, limits).buildEnvironment(repo, creds)["RENOVATE_HOST_RULES"])
+    }
+
+    @Test
+    fun `without request limits no host rule is added and koshin-only settings are stripped`() {
+        val inherited = env + mapOf(
+            "RENOVATE_MAX_REQUESTS_PER_SECOND" to "2",
+            "RENOVATE_CONCURRENT_REQUEST_LIMIT" to "4",
+        )
+        val built = executor("true", inherited).buildEnvironment(repo, creds)
+        assertFalse(built.containsKey("RENOVATE_HOST_RULES"))
+        assertFalse(built.containsKey("RENOVATE_MAX_REQUESTS_PER_SECOND"))
+        assertFalse(built.containsKey("RENOVATE_CONCURRENT_REQUEST_LIMIT"))
     }
 }
