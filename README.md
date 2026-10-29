@@ -45,6 +45,11 @@ Run static analysis (Detekt with type resolution & ktlint formatting rules), tes
 ./gradlew check
 ```
 
+Run the integration tests (Testcontainers, needs Docker), including the end-to-end suite in `e2e/` that drives the proxy and two workers against real NATS and Valkey:
+```bash
+./gradlew integrationTest
+```
+
 Generate Kover code coverage reports (XML & HTML):
 ```bash
 ./gradlew koverHtmlReport koverXmlReport
