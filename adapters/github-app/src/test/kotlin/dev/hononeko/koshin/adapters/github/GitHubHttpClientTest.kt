@@ -12,6 +12,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 import kotlin.random.Random
 import kotlin.time.Clock
 import kotlin.time.Duration
@@ -135,5 +136,24 @@ class GitHubHttpClientTest {
         assertEquals(404, get(client(responses = arrayOf(status(404), ok))))
         assertEquals(1, attempts)
         assertTrue(sleeps.isEmpty())
+    }
+
+    @Test
+    fun `an HTTP-date Retry-After is relative to now`() = runTest {
+        val client = client(responses = arrayOf(status(503, "", "Retry-After" to "Fri, 30 Oct 2026 12:00:45 GMT"), ok))
+        assertEquals(200, get(client))
+        assertEquals(listOf(45.seconds), sleeps)
+    }
+
+    @Test
+    fun `the default client builds without network access`() {
+        gitHubHttpClient().close()
+    }
+
+    @Test
+    fun `retry config is validated`() {
+        assertThrows<IllegalArgumentException> { HttpRetryConfig(maxRetries = -1) }
+        assertThrows<IllegalArgumentException> { HttpRetryConfig(baseDelay = Duration.ZERO) }
+        assertThrows<IllegalArgumentException> { HttpRetryConfig(baseDelay = 2.seconds, maxDelay = 1.seconds) }
     }
 }
