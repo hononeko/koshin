@@ -12,6 +12,7 @@ COPY adapters/state-valkey/build.gradle.kts adapters/state-valkey/
 COPY adapters/github-app/build.gradle.kts adapters/github-app/
 COPY proxy/build.gradle.kts proxy/
 COPY worker/build.gradle.kts worker/
+COPY e2e/build.gradle.kts e2e/
 RUN ./gradlew --no-daemon --quiet :worker:dependencies --configuration runtimeClasspath > /dev/null
 COPY . .
 RUN ./gradlew --no-daemon :worker:installDist
