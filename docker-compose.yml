@@ -20,7 +20,7 @@ services:
 
   # Coordination: locks and dirty flags must never be evicted
   valkey:
-    image: valkey/valkey:9.1.2-alpine
+    image: valkey/valkey:9.1.3-alpine
     command: ["valkey-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb", "--maxmemory-policy", "noeviction"]
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
@@ -29,7 +29,7 @@ services:
 
   # Renovate's package cache, safe to evict
   valkey-cache:
-    image: valkey/valkey:9.1.2-alpine
+    image: valkey/valkey:9.1.3-alpine
     command: ["valkey-server", "--save", "", "--appendonly", "no", "--maxmemory", "384mb", "--maxmemory-policy", "allkeys-lru"]
 
   proxy:
