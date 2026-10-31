@@ -31,7 +31,7 @@
 * **State & Cache:** **Valkey** via Lettuce (coroutines), used for coordination (locks, dirty flags, run slots, cooldowns) and Renovate's package cache (`RENOVATE_REDIS_URL`). These can be separate instances.
 * **Git Provider Auth:** **GitHub App** (installation tokens minted per run) or PAT; GitLab PAT or group token.
 * **Autoscaling:** **KEDA** `ScaledObject` (`nats-jetstream` trigger per platform consumer, `lagThreshold: "1"`).
-* **Packaging:** Kustomize (base + `minimal` / `ha` overlays) and a Helm chart.
+* **Packaging:** a Helm chart with `minimal` / `ha` profiles (primary), plus a Kustomize `minimal` reference.
 * **CI/CD:** GitHub Actions using the shared composite actions in **`hononeko/actions`** (version, release notes, smoke test, publish image, snapshot pruning, and `gradle-setup`).
 * **Container Images:**
   * Proxy: `eclipse-temurin:25-jre-noble`
@@ -257,7 +257,7 @@ return 0
 
 **Autoscaling:** the KEDA `nats-jetstream` scaler computes lag as `num_pending + num_ack_pending` (verified in KEDA v2.21.0), so in-flight runs count. With 1 job per pod, `lagThreshold: "1"` scales workers one-to-one with active + pending jobs. Kubernetes picks which pod to remove on scale-in without knowing which are busy, so workers set `controller.kubernetes.io/pod-deletion-cost` while busy (KSH-8); the SIGTERM path keeps a wrong pick safe.
 
-Packaged as Kustomize overlays (KSH-8 / KSH-12) and a Helm chart (KSH-13).
+Packaged as a Helm chart (`charts/koshin`, KSH-13), the primary install path: `profile: minimal` by default, `ha` via `values-ha.yaml`, with NATS (official `nats-io` chart) and Valkey (official `valkey-io` chart, Sentinel in `ha`) as subcharts or external endpoints. The Kustomize `minimal` overlay (KSH-8) stays as a dependency-free reference; there's no Kustomize `ha` overlay.
 
 ## 9. Environment Variables Contract
 
@@ -276,6 +276,7 @@ Packaged as Kustomize overlays (KSH-8 / KSH-12) and a Helm chart (KSH-13).
 | `INTERNAL_TRIGGER_TOKEN` | Proxy | — | Bearer token for `POST /api/v1/trigger` |
 | `SWEEP_REPOSITORIES_FILE` | Proxy | — | Static repo list for discovery (when not using the GitHub App) |
 | `VALKEY_URL` | Worker | `redis://koshin-valkey:6379` | Coordination Valkey (`redis://` or `redis-sentinel://`) |
+| `VALKEY_SENTINEL_PASSWORD` | Worker | — | Sentinel's own password (the URL's password only applies to the Valkey nodes) |
 | `RENOVATE_REDIS_URL` | Worker | `$VALKEY_URL` | Renovate package cache Valkey |
 | `LOCK_TTL_SECONDS` | Worker | `45` | Per-repo lock TTL |
 | `HEARTBEAT_INTERVAL_SECONDS` | Worker | `15` | Heartbeat / lock / run-slot renewal interval |

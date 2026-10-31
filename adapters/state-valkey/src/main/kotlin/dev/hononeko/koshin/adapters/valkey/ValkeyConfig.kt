@@ -12,6 +12,8 @@ data class ValkeyConfig(
     val keyPrefix: String = DEFAULT_KEY_PREFIX,
     val lockReplicaAckTimeoutMs: Long = DEFAULT_LOCK_REPLICA_ACK_TIMEOUT_MS,
     val commandTimeout: Duration = DEFAULT_COMMAND_TIMEOUT,
+    /** Sentinel's own password: Lettuce applies a `redis-sentinel://` URL's password to the data nodes only. */
+    val sentinelPassword: String? = null,
 ) {
     init {
         require(valkeyUrl.isNotBlank()) { "valkeyUrl cannot be blank" }
@@ -23,6 +25,7 @@ data class ValkeyConfig(
         require(commandTimeout.isFinite() && commandTimeout.isPositive()) {
             "commandTimeout must be positive and finite: $commandTimeout"
         }
+        require(sentinelPassword == null || sentinelPassword.isNotEmpty()) { "sentinelPassword cannot be empty" }
         toRedisUri()
     }
 
@@ -31,8 +34,13 @@ data class ValkeyConfig(
         if (!hasExplicitTimeoutQueryParam(valkeyUrl)) {
             uri.timeout = commandTimeout.toJavaDuration()
         }
+        sentinelPassword?.let { password -> uri.sentinels.forEach { it.setAuthentication(password) } }
         return uri
     }
+
+    override fun toString(): String = "ValkeyConfig(valkeyUrl=${valkeyUrl.replace(USER_INFO, "***@")}, " +
+        "keyPrefix=$keyPrefix, lockReplicaAckTimeoutMs=$lockReplicaAckTimeoutMs, commandTimeout=$commandTimeout, " +
+        "sentinelPassword=${if (sentinelPassword == null) "null" else "***"})"
 
     fun lockKeyFor(repo: RepoRef): String = "$keyPrefix:{${repo.platform.name.lowercase()}:${repo.repository}}:lock"
 
@@ -43,6 +51,7 @@ data class ValkeyConfig(
 
     companion object {
         const val DEFAULT_VALKEY_URL = "redis://koshin-valkey:6379"
+        private val USER_INFO = Regex("(?<=://)[^@/]+@")
         const val DEFAULT_KEY_PREFIX = "koshin"
         const val DEFAULT_LOCK_REPLICA_ACK_TIMEOUT_MS = 0L
         const val DEFAULT_COMMAND_TIMEOUT_SECONDS = 5L
@@ -61,6 +70,7 @@ data class ValkeyConfig(
                 "VALKEY_COMMAND_TIMEOUT_SECONDS",
                 DEFAULT_COMMAND_TIMEOUT_SECONDS,
             ).seconds,
+            sentinelPassword = env["VALKEY_SENTINEL_PASSWORD"]?.takeIf { it.isNotEmpty() },
         )
 
         private fun parseEnvLong(env: Map<String, String>, key: String, default: Long): Long = env[key]?.let { raw ->
