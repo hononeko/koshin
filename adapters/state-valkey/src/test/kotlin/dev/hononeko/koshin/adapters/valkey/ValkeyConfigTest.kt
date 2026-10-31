@@ -144,9 +144,10 @@ class ValkeyConfigTest {
             .resolveCredentialsAsync().toCompletableFuture().get()
         assertEquals("sentinel", credentials.username)
         assertEquals("sentinel-secret", String(checkNotNull(credentials.password)))
-        assertThrows<IllegalArgumentException> {
-            ValkeyConfig(valkeyUrl = "redis://valkey:6379", sentinelUsername = "sentinel")
-        }
+        val noPassword = assertThrows<IllegalArgumentException> { ValkeyConfig(sentinelUsername = "sentinel") }
+        assertEquals("sentinelUsername needs a sentinelPassword", noPassword.message)
+        assertThrows<IllegalArgumentException> { ValkeyConfig(sentinelUsername = " ", sentinelPassword = "pw") }
+        assertNull(ValkeyConfig.fromEnv(mapOf("VALKEY_SENTINEL_USERNAME" to "")).sentinelUsername)
     }
 
     @Test

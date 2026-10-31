@@ -33,6 +33,9 @@
 {{- if le (int .Values.worker.config.dirtyTtlSeconds) (mul (int .Values.worker.config.cliTimeoutMinutes) 60) }}
 {{- fail "worker.config.dirtyTtlSeconds must exceed worker.config.cliTimeoutMinutes" }}
 {{- end }}
+{{- if and (not .Values.valkey.enabled) .Values.externalValkey.sentinelUsername (not .Values.externalValkey.sentinelPasswordSecret.name) }}
+{{- fail "externalValkey.sentinelUsername needs externalValkey.sentinelPasswordSecret" }}
+{{- end }}
 {{- if and .Values.proxy.httpRoute.enabled (empty .Values.proxy.httpRoute.parentRefs) }}
 {{- fail "proxy.httpRoute.parentRefs needs at least one Gateway when proxy.httpRoute.enabled is true" }}
 {{- end }}

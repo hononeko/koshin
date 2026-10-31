@@ -28,6 +28,7 @@ data class ValkeyConfig(
             "commandTimeout must be positive and finite: $commandTimeout"
         }
         require(sentinelPassword == null || sentinelPassword.isNotEmpty()) { "sentinelPassword cannot be empty" }
+        require(sentinelUsername == null || sentinelUsername.isNotBlank()) { "sentinelUsername cannot be blank" }
         require(sentinelUsername == null || sentinelPassword != null) { "sentinelUsername needs a sentinelPassword" }
         toRedisUri()
     }
