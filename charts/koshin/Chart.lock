@@ -1,0 +1,12 @@
+dependencies:
+- name: nats
+  repository: https://nats-io.github.io/k8s/helm/charts/
+  version: 2.15.2
+- name: valkey
+  repository: https://valkey.io/valkey-helm/
+  version: 1.0.0-rc.1
+- name: valkey
+  repository: https://valkey.io/valkey-helm/
+  version: 1.0.0-rc.1
+digest: sha256:0d3e3e470401039fb7011af40be90eb089cf5212db125636fdad3cfaf648f2e5
+generated: "2026-10-31T19:59:59.406277661+02:00"

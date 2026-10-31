@@ -1,0 +1,12 @@
+# chart-testing (ct) settings for charts/
+target-branch: main
+chart-dirs:
+  - charts
+chart-repos:
+  - nats=https://nats-io.github.io/k8s/helm/charts/
+  - valkey=https://valkey.io/valkey-helm/
+# The CD workflow sets the chart version at release, so PRs don't bump it
+check-version-increment: false
+validate-maintainers: false
+# The worker image bundles Renovate (~10 GB): leave time to pull it into kind
+helm-extra-args: --timeout 900s

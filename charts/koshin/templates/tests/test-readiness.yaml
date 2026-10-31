@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "koshin.fullname" . }}-test-readiness
+  labels:
+    {{- include "koshin.labels" (dict "ctx" . "component" "test") | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 100
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: readyz
+      image: "{{ .Values.sweeper.image.repository }}:{{ .Values.sweeper.image.tag }}"
+      # The proxy is ready once it's connected to NATS
+      command: ["curl", "-fsS", "--retry=10", "--retry-all-errors", "--max-time=10"]
+      args:
+        - http://{{ include "koshin.fullname" . }}-proxy.{{ .Release.Namespace }}.svc:{{ .Values.proxy.service.port }}/readyz
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]

@@ -1,0 +1,37 @@
+{{- if include "koshin.kedaEnabled" . }}
+# One worker per active or pending job: KEDA's nats-jetstream lag is num_pending + num_ack_pending, and each worker
+# runs exactly one job. Workers serve every platform, so the replica count follows the sum of the platform lags
+# (the HPA alone would take the max).
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "koshin.fullname" . }}-worker
+  labels:
+    {{- include "koshin.labels" (dict "ctx" . "component" "worker") | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ include "koshin.fullname" . }}-worker
+  minReplicaCount: {{ .Values.worker.autoscaling.minReplicas }}
+  maxReplicaCount: {{ include "koshin.workerMaxReplicas" . }}
+  pollingInterval: {{ .Values.worker.autoscaling.pollingInterval }}
+  advanced:
+    scalingModifiers:
+      formula: {{ join " + " .Values.platforms | quote }}
+      target: "1"
+      metricType: AverageValue
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: {{ .Values.worker.autoscaling.scaleDownStabilizationSeconds }}
+  triggers:
+    {{- range .Values.platforms }}
+    - type: nats-jetstream
+      name: {{ . }}
+      metadata:
+        natsServerMonitoringEndpoint: {{ include "koshin.natsMonitoringEndpoint" $ | quote }}
+        account: {{ $.Values.worker.autoscaling.natsAccount | quote }}
+        stream: RENOVATE_JOBS
+        consumer: koshin-workers-{{ . }}
+        lagThreshold: "1"
+    {{- end }}
+{{- end }}

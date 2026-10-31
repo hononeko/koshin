@@ -1,0 +1,154 @@
+# koshin
+
+{{ template "chart.description" . }}
+
+{{ template "chart.versionBadge" . }}{{ template "chart.typeBadge" . }}{{ template "chart.appVersionBadge" . }}
+
+This chart is the primary way to install koshin. The Kustomize manifests in `k8s/` stay as a small, dependency-free
+reference for the `minimal` profile.
+
+## Prerequisites
+
+* Kubernetes 1.29+
+* [KEDA](https://keda.sh) 2.21+ to scale workers with the job backlog. Without it the chart runs a fixed
+  `worker.replicas` (the `ScaledObject` is rendered only when the `keda.sh/v1alpha1` API exists, so pass
+  `--api-versions keda.sh/v1alpha1/ScaledObject` to `helm template`).
+* The worker image is about 10 GB uncompressed: it bundles a pinned Renovate (`renovate:<version>-full`) and its tools.
+
+## Install
+
+Create the secrets first. The chart never needs them inline:
+
+```sh
+kubectl create namespace koshin
+kubectl -n koshin create secret generic koshin-proxy \
+  --from-literal=GITHUB_WEBHOOK_SECRET=... \
+  --from-literal=INTERNAL_TRIGGER_TOKEN="$(openssl rand -hex 24)"
+kubectl -n koshin create secret generic koshin-worker --from-literal=GITHUB_TOKEN=...
+```
+
+### `minimal` profile
+
+One NATS server and one coordination Valkey on `emptyDir`, plus a separate package-cache Valkey. A restart loses
+pending jobs, locks and repo caches; the sweeper re-enqueues every repository every 6 hours.
+
+```sh
+helm install koshin oci://ghcr.io/hononeko/charts/koshin -n koshin \
+  --set proxy.existingSecret=koshin-proxy \
+  --set worker.existingSecret=koshin-worker \
+  --set 'proxy.sweepRepositories={github:my-org/my-repo}'
+```
+
+### `ha` profile
+
+Survives losing one node: a 3-node NATS cluster on PVCs (streams and the repo cache bucket at 3 replicas), Valkey as a
+primary with 2 replicas, AOF on PVCs and 3 Sentinels (workers find the primary through Sentinel), PodDisruptionBudgets
+and spread across nodes. The package-cache Valkey stays a single, disposable instance.
+
+Helm can't switch subchart defaults from a single value, so `ha` comes as a values file, `values-ha.yaml`. It sets
+`profile: ha` along with the NATS and Valkey topology, and the chart refuses to render a `profile` that doesn't match
+the topology. The official Valkey chart requires a Sentinel password:
+
+```sh
+kubectl -n koshin create secret generic koshin-valkey-sentinel --from-literal=sentinel="$(openssl rand -hex 24)"
+helm pull oci://ghcr.io/hononeko/charts/koshin --untar
+helm install koshin ./koshin -n koshin -f koshin/values-ha.yaml \
+  --set proxy.existingSecret=koshin-proxy \
+  --set worker.existingSecret=koshin-worker
+```
+
+Choose `ha` when a lost pending job or a few hours of cold repo caches matter; `minimal` is fine for small installs,
+since the sweeper recovers everything it loses.
+
+### Bring your own NATS or Valkey
+
+Disable a subchart and point koshin at an existing endpoint:
+
+```yaml
+nats:
+  enabled: false
+externalNats:
+  url: nats://nats.messaging:4222
+  # For KEDA; for a cluster, the headless Service so KEDA can reach each node
+  monitoringEndpoint: nats-headless.messaging.svc.cluster.local:8222
+valkey:
+  enabled: false
+externalValkey:
+  url: redis-sentinel://valkey-sentinel.data:26379?sentinelMasterId=mymaster
+  sentinelPasswordSecret:
+    name: valkey-sentinel
+    key: password
+valkey-cache:
+  enabled: false
+worker:
+  renovateRedisUrl: redis://renovate-cache.data:6379
+```
+
+The coordination Valkey must use `maxmemory-policy noeviction`. The package cache should be a separate instance with
+`allkeys-lru`.
+
+## Secrets
+
+| Secret | Keys | Value |
+| :--- | :--- | :--- |
+| Proxy | `GITHUB_WEBHOOK_SECRET`, `GITLAB_WEBHOOK_SECRET`, `INTERNAL_TRIGGER_TOKEN` | `proxy.existingSecret` |
+| Worker | `GITHUB_TOKEN`, `GITLAB_TOKEN` | `worker.existingSecret` |
+| GitHub App | the private key (PEM) under `github.app.privateKeyKey` | `github.app.existingSecret` |
+| S3 repo cache | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` | `worker.repoCache.s3.existingSecret` |
+| Sentinel (`ha`) | `sentinel` | `valkey.sentinel.existingSecret` (`<release>-valkey-sentinel`) |
+
+The inline `*.secrets.*` and `github.app.privateKey` values exist for testing only. Without `INTERNAL_TRIGGER_TOKEN`
+the sweeper CronJob isn't installed.
+
+## Repository cache
+
+`worker.repoCache.provider` picks where Renovate's repository cache lives between runs: `nats` (default, an Object Store
+bucket in the release's NATS, capped by `maxBytes` since it shares JetStream storage with the job streams), `s3`
+(Renovate reads and writes it itself, e.g. SeaweedFS) or `local` (pod only):
+
+```yaml
+worker:
+  repoCache:
+    provider: s3
+    s3:
+      url: s3://renovate/repo-cache/
+      endpoint: http://seaweedfs-s3.storage:8333
+      existingSecret: renovate-s3
+```
+
+## Exposing webhooks over HTTP/3
+
+Only `/webhooks/` should be public; `/api/v1/trigger` stays cluster-internal for the sweeper. With Envoy Gateway, TLS
+and HTTP/3 terminate at the edge and the gateway talks h2c to the proxy (the Service sets
+`appProtocol: kubernetes.io/h2c`):
+
+```yaml
+proxy:
+  httpRoute:
+    enabled: true
+    parentRefs:
+      - name: koshin
+    hostnames:
+      - koshin.example.com
+extraObjects:
+  - apiVersion: gateway.envoyproxy.io/v1alpha1
+    kind: ClientTrafficPolicy
+    metadata:
+      name: "{{ "{{" }} .Release.Name {{ "}}" }}-http3"
+    spec:
+      targetRefs:
+        - group: gateway.networking.k8s.io
+          kind: Gateway
+          name: koshin
+      http3: {}
+```
+
+## Sizing
+
+The API budget is roughly run slots × requests per second per run. Keep `worker.autoscaling.maxReplicas` near
+`worker.rateLimits.maxConcurrentRunsPerPlatform` × platforms (the default): extra workers only wait for a slot. During
+a rate-limit cooldown KEDA still counts the pending jobs and may scale up workers that sit idle until it ends.
+
+{{ template "chart.requirementsSection" . }}
+
+{{ template "chart.valuesSection" . }}

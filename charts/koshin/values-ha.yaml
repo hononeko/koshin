@@ -1,0 +1,55 @@
+# The `ha` profile: survives losing one node. Install with `-f values-ha.yaml`, after creating the Sentinel password:
+#
+#   kubectl create secret generic <release>-valkey-sentinel --from-literal=sentinel="$(openssl rand -hex 24)"
+#
+# Spread across at least 3 nodes; on fewer, the topology spread constraints below keep pods Pending.
+profile: ha
+
+proxy:
+  replicas: 3
+
+# 3-node JetStream cluster on PVCs; streams and the repo cache bucket get 3 replicas (NATS_STREAM_REPLICAS).
+nats:
+  config:
+    cluster:
+      enabled: true
+      replicas: 3
+    jetstream:
+      fileStore:
+        pvc:
+          enabled: true
+          size: 10Gi
+        # Headroom on the PVC for indexes and consumer state
+        maxSize: 8Gi
+  container:
+    patch: []
+  podTemplate:
+    patch: []
+    topologySpreadConstraints:
+      kubernetes.io/hostname:
+        maxSkew: 1
+        whenUnsatisfiable: DoNotSchedule
+
+# Primary + 2 replicas with AOF on PVCs, and 3 Sentinels. Workers find the primary through Sentinel.
+valkey:
+  replica:
+    enabled: true
+    replicas: 3
+  persistence:
+    enabled: true
+    size: 1Gi
+  extraConfig: |-
+    maxmemory 64mb
+    maxmemory-policy noeviction
+    appendonly yes
+    appendfsync everysec
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+  sentinel:
+    enabled: true
+    existingSecret: "{{ .Release.Name }}-valkey-sentinel"
+    passwordKey: sentinel
+    podDisruptionBudget:
+      enabled: true
+      maxUnavailable: 1

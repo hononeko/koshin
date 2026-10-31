@@ -1,5 +1,6 @@
 # Single NATS, coordination Valkey and package-cache Valkey, all on emptyDir. A restart loses pending jobs, locks,
-# dirty flags, repo caches or the package cache; the 6-hourly sweeper re-enqueues every repository. See KSH-12 for `ha`.
+# dirty flags, repo caches or the package cache; the 6-hourly sweeper re-enqueues every repository. For `ha`, use the Helm
+# chart (charts/koshin).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 

@@ -1,0 +1,65 @@
+{{- if include "koshin.sweeperEnabled" . }}
+# Enqueues a SCHEDULE run for every discovered repository. Also recovers jobs lost when NATS restarts in `minimal`.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "koshin.fullname" . }}-sweeper
+  labels:
+    {{- include "koshin.labels" (dict "ctx" . "component" "sweeper") | nindent 4 }}
+spec:
+  schedule: {{ .Values.sweeper.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          labels:
+            {{- include "koshin.labels" (dict "ctx" . "component" "sweeper") | nindent 12 }}
+        spec:
+          restartPolicy: OnFailure
+          automountServiceAccountToken: false
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 100
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: sweeper
+              image: "{{ .Values.sweeper.image.repository }}:{{ .Values.sweeper.image.tag }}"
+              env:
+                - name: INTERNAL_TRIGGER_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "koshin.proxySecretName" . }}
+                      key: INTERNAL_TRIGGER_TOKEN
+              command: ["curl"]
+              args:
+                - -fsS
+                - --retry=5
+                - --retry-all-errors
+                - --max-time=60
+                - -X
+                - POST
+                - http://{{ include "koshin.fullname" . }}-proxy.{{ .Release.Namespace }}.svc:{{ .Values.proxy.service.port }}/api/v1/trigger
+                - -H
+                - "Authorization: Bearer $(INTERNAL_TRIGGER_TOKEN)"
+                - -H
+                - "Content-Type: application/json"
+                - -d
+                - '{"discover": true}'
+              resources:
+                {{- toYaml .Values.sweeper.resources | nindent 16 }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+{{- end }}

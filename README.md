@@ -19,6 +19,7 @@ Stateless, horizontally scalable Renovate CLI orchestrator built with Kotlin, Kt
 * **`:adapters:github-app`**: GitHub App authentication, JWT signing, and installation access token rotation.
 * **`:proxy`**: Stateless Ktor HTTP server receiving webhooks (GitHub/GitLab) and internal cron trigger schedules.
 * **`:worker`**: Autonomous coroutine daemon that pulls jobs from NATS, acquires repo mutexes, runs Renovate CLI subprocesses, deletes each repo workspace after the run, and handles heartbeats & dirty catch-ups.
+* **`charts/koshin`**: Helm chart with the `minimal` and `ha` profiles, the primary install path.
 
 ---
 
@@ -128,9 +129,21 @@ curl -X POST localhost:8080/api/v1/trigger -H "Authorization: Bearer dev-trigger
 
 ---
 
-## Kubernetes Deployment (Kustomize)
+## Kubernetes Deployment (Helm)
 
-`k8s/base` holds the proxy (2 replicas, `appProtocol: kubernetes.io/h2c`), the worker, its KEDA `ScaledObject`, the 6-hourly sweeper `CronJob`, and the worker's RBAC. `k8s/overlays/minimal` adds the `koshin` namespace plus a single NATS, a coordination Valkey (`noeviction`) and a package-cache Valkey (`allkeys-lru`), all on `emptyDir`. Requires [KEDA](https://keda.sh) 2.21+.
+The Helm chart in [`charts/koshin`](charts/koshin/README.md) is the primary install path, published as `oci://ghcr.io/hononeko/charts/koshin` with every release. It deploys the proxy, the KEDA-scaled workers and the sweeper, plus NATS (official `nats-io` chart) and Valkey (official `valkey-io` chart), or connects to existing ones (`external*` values). Every env contract variable is a value; secrets come from existing Secrets.
+
+* **`minimal`** (default): one NATS and one coordination Valkey on `emptyDir`, and a separate package-cache Valkey.
+* **`ha`** (`-f values-ha.yaml`): a 3-node NATS cluster on PVCs with streams at R3, Valkey primary + 2 replicas with AOF and 3 Sentinels, PodDisruptionBudgets and node spread.
+
+```bash
+helm install koshin oci://ghcr.io/hononeko/charts/koshin -n koshin --create-namespace \
+  --set proxy.existingSecret=koshin-proxy --set worker.existingSecret=koshin-worker
+```
+
+## Kubernetes Deployment (Kustomize reference)
+
+The Kustomize manifests stay as a small, dependency-free reference for the `minimal` profile; `ha` is Helm-only. `k8s/base` holds the proxy (2 replicas, `appProtocol: kubernetes.io/h2c`), the worker, its KEDA `ScaledObject`, the 6-hourly sweeper `CronJob`, and the worker's RBAC. `k8s/overlays/minimal` adds the `koshin` namespace plus a single NATS, a coordination Valkey (`noeviction`) and a package-cache Valkey (`allkeys-lru`), all on `emptyDir`. Requires [KEDA](https://keda.sh) 2.21+.
 
 ```bash
 kubectl -n koshin create secret generic koshin-proxy-secrets \
@@ -142,7 +155,7 @@ kubectl apply -k k8s/overlays/minimal
 * **Repositories to sweep:** the `koshin-repositories` ConfigMap (`github:org/repo` per line), replaced from your overlay. Empty by default, so the sweeper enqueues nothing.
 * **Autoscaling:** one `nats-jetstream` trigger per platform consumer, summed with `scalingModifiers` (`github + gitlab`, target `1`); KEDA counts pending plus in-flight jobs, so workers scale one-to-one with jobs across platforms up to `maxReplicaCount`. The worker creates both platform consumers so neither trigger errors.
 * **Scale-in:** workers annotate their own pod with `controller.kubernetes.io/pod-deletion-cost` (`1000` while running), so idle pods are removed first. If a busy pod is still picked, the SIGTERM path NAKs its job for another worker.
-* **`minimal` trade-off:** a NATS or Valkey restart loses pending jobs, locks, dirty flags and the package cache; proxy and worker recreate the streams and consumers on reconnect, and the sweeper re-enqueues every repository within 6 hours. NATS and Valkey are infrastructure, so they're the only stateful pieces; the `ha` profile (KSH-12) gives them persistence.
+* **`minimal` trade-off:** a NATS or Valkey restart loses pending jobs, locks, dirty flags and the package cache; proxy and worker recreate the streams and consumers on reconnect, and the sweeper re-enqueues every repository within 6 hours. NATS and Valkey are infrastructure, so they're the only stateful pieces; the Helm chart's `ha` profile gives them persistence.
 * **Edge HTTP/3:** `k8s/examples/gateway-http3.yaml` is an Envoy Gateway example that terminates TLS + HTTP/3 and exposes only `/webhooks/`.
 
 ---
