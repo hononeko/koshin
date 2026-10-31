@@ -57,8 +57,7 @@ helm install koshin ./koshin -n koshin -f koshin/values-ha.yaml \
   --set worker.existingSecret=koshin-worker
 ```
 
-Choose `ha` when a lost pending job or a few hours of cold repo caches matter; `minimal` is fine for small installs,
-since the sweeper recovers everything it loses.
+See [Choosing a profile](#choosing-a-profile).
 
 ### Bring your own NATS or Valkey
 
@@ -88,6 +87,27 @@ worker:
 
 The coordination Valkey must use `maxmemory-policy noeviction`. The package cache should be a separate instance with
 `allkeys-lru`.
+
+## Choosing a profile
+
+| | `minimal` | `ha` |
+| :--- | :--- | :--- |
+| Nodes | any | 3 or more (NATS spreads one pod per node) |
+| Storage | `emptyDir` only | a `ReadWriteOnce` storage class: 3 × 10 Gi for NATS, 3 × 1 Gi for Valkey |
+| Before installing | the proxy and worker Secrets | also the Sentinel password Secret (`<release>-valkey-sentinel`) |
+| NATS restarts | pending jobs and repo caches are lost | nothing is lost: another node leads the streams |
+| Valkey restarts | locks, dirty flags and cooldowns are lost | Sentinel promotes a replica if the primary went down; see below for what that can lose |
+| A node is drained | same as a restart | PodDisruptionBudgets keep 2 of 3 NATS, Valkey and Sentinel pods up |
+
+`minimal` suits small installs: what it loses is recovered by the sweeper within 6 hours (it needs
+`INTERNAL_TRIGGER_TOKEN` and `proxy.sweepRepositories`) or rebuilt by the next run. Pick `ha` when webhooks must not
+wait that long after an outage, or when cold repo caches after every restart cost too much API budget.
+
+During a Valkey failover Sentinel promotes a replica within about 15 seconds, and the workers reconnect through
+Sentinel. Replication is asynchronous, so a lock or dirty flag written just before the failover can be lost. A lost
+lock is caught by the holder's next heartbeat, which kills its Renovate run and NAKs the job for a retry. A lost dirty
+flag means a coalesced webhook gets no follow-up run until the next webhook or sweep. A NATS leader election pauses
+publishing for a few seconds; the proxy retries, so webhooks are still accepted.
 
 ## Secrets
 
@@ -147,9 +167,66 @@ extraObjects:
 
 ## Sizing
 
+Resource requests with the defaults:
+
+| Component | Pods (`minimal` / `ha`) | Requests per pod | Limits per pod | Storage per pod |
+| :--- | :--- | :--- | :--- | :--- |
+| Proxy | 2 / 3 | 100m CPU, 256 Mi | 512 Mi | — |
+| Worker | 1 to `autoscaling.maxReplicas` | 500m CPU, 1 Gi | 4 Gi | 10 Gi `emptyDir`, plus the ~10 GB image on each node |
+| NATS | 1 / 3 | 50m CPU, 64 Mi | 256 Mi | 2 Gi `emptyDir` / 10 Gi PVC |
+| Valkey (coordination) | 1 / 3 | 50m CPU, 32 Mi | 128 Mi | `emptyDir` / 1 Gi PVC |
+| Sentinel | — / 3 | unset (`valkey.sentinel.resources`) | unset | memory-backed `emptyDir` |
+| Valkey (package cache) | 1 / 1 | 50m CPU, 128 Mi | 512 Mi | `emptyDir` |
+| Sweeper (CronJob) | 1 every 6 hours | 10m CPU, 16 Mi | 64 Mi | — |
+
+Workers dominate: each runs one Renovate process, and large repositories (monorepos, many package managers) may need
+more than 4 Gi. Keep the worker image on nodes that run workers (e.g. with an image cache or Spegel), since pulling
+10 GB delays every scale-up.
+
+JetStream storage is mostly the repo cache: jobs are small and leave the stream once acknowledged. Keep
+`worker.repoCache.maxBytes` well below `nats.config.jetstream.fileStore.maxSize` (1 Gi in `minimal`, 8 Gi in `ha`) so
+the job streams always have room. With `ha` you can raise it to a few Gi. When you raise `fileStore.maxSize`, raise
+`fileStore.pvc.size` with it: the PVC needs about 20% headroom for indexes and consumer state.
+
 The API budget is roughly run slots × requests per second per run. Keep `worker.autoscaling.maxReplicas` near
 `worker.rateLimits.maxConcurrentRunsPerPlatform` × platforms (the default): extra workers only wait for a slot. During
 a rate-limit cooldown KEDA still counts the pending jobs and may scale up workers that sit idle until it ends.
+
+## Backups and recovery
+
+koshin keeps no state that has to be backed up; after a total loss, reinstall and the sweeper re-enqueues every
+repository.
+
+* **Coordination Valkey:** locks and run slots expire within 45 seconds, dirty flags and cooldowns within an hour, and
+  the rate-limit backoff counter resets after the next successful run. In `ha` the AOF (`appendfsync everysec`) on the PVCs carries
+  them across restarts. Don't restore an old copy: stale locks and cooldowns would only delay runs.
+* **NATS:** pending jobs are worth keeping across restarts (`ha` replicates them 3 ways), but not in a backup: by the
+  time you restore, the sweeper has re-enqueued them. The repo cache bucket is a cache that rebuilds on the next
+  successful run of each repository. Back up the dead-letter stream if you want to keep failed jobs for inspection, and
+  restore it into a NATS without that stream:
+
+  ```sh
+  nats backup stream RENOVATE_DLQ ./koshin-dlq
+  nats backup restore stream ./koshin-dlq
+  ```
+
+  Prefer this to volume snapshots: snapshots of the 3 `ha` nodes taken independently don't make a consistent cluster.
+* **Package-cache Valkey:** a cache; nothing to back up.
+* **Secrets:** keep the webhook secrets, the trigger token, the platform tokens or GitHub App key, the S3 credentials (if
+  any) and the Sentinel password in your secret manager.
+
+## Uninstall
+
+`helm uninstall` leaves the PersistentVolumeClaims of the NATS and Valkey StatefulSets behind (`ha` only; `minimal` has
+none), so a reinstall finds its data again. To remove them as well (here for a release named `koshin`):
+
+```sh
+helm uninstall koshin -n koshin
+kubectl -n koshin delete pvc -l app.kubernetes.io/instance=koshin
+```
+
+With a `Retain` storage class, the PersistentVolumes stay until you delete them too. The Secrets you created for the
+chart are yours to delete.
 
 ## Requirements
 
