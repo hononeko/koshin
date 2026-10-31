@@ -233,5 +233,6 @@ jobs:
           REGISTRY_USER: ${{ github.actor }}
         run: |
           echo "$REGISTRY_TOKEN" | helm registry login ghcr.io --username "$REGISTRY_USER" --password-stdin
-          helm push "dist/koshin-$VERSION.tgz" "$REGISTRY"
+          # OCI repository paths must be lowercase
+          helm push "dist/koshin-$VERSION.tgz" "${REGISTRY,,}"
           echo "### Chart Published: \`$REGISTRY/koshin:$VERSION\`" >> "$GITHUB_STEP_SUMMARY"

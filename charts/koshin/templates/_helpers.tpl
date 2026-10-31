@@ -177,9 +177,13 @@ app.kubernetes.io/component: {{ . }}
 {{- end }}
 {{- end }}
 
-{{/* Whether the sweeper has a trigger token to use */}}
+{{/* Whether there's an INTERNAL_TRIGGER_TOKEN (an existing proxy Secret must hold one) */}}
+{{- define "koshin.triggerToken" -}}
+{{- if or .Values.proxy.existingSecret .Values.proxy.secrets.internalTriggerToken }}true{{ end }}
+{{- end }}
+
 {{- define "koshin.sweeperEnabled" -}}
-{{- if and .Values.sweeper.enabled (or .Values.proxy.existingSecret .Values.proxy.secrets.internalTriggerToken) }}true{{ end }}
+{{- if and .Values.sweeper.enabled (include "koshin.triggerToken" .) }}true{{ end }}
 {{- end }}
 
 {{- define "koshin.githubAppSecretName" -}}

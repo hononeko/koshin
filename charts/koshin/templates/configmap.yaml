@@ -8,6 +8,7 @@ data:
   PLATFORMS: {{ join "," .Values.platforms | quote }}
   HTTP2_ENABLED: {{ .Values.http2Enabled | quote }}
   NATS_URL: {{ include "koshin.natsUrl" . | quote }}
+  NATS_STREAM_NAME: {{ .Values.natsSettings.streamName | quote }}
   NATS_STREAM_REPLICAS: {{ include "koshin.natsStreamReplicas" . | quote }}
   NATS_ACK_WAIT_SECONDS: {{ .Values.natsSettings.ackWaitSeconds | quote }}
   NATS_MAX_DELIVER: {{ .Values.natsSettings.maxDeliver | quote }}

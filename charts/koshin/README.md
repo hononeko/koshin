@@ -214,6 +214,7 @@ Kubernetes: `>=1.29.0-0`
 | nats.podTemplate.patch[0].value.name | string | `"js-data"` |  |
 | natsSettings.ackWaitSeconds | int | `60` | `NATS_ACK_WAIT_SECONDS`; must be greater than `worker.config.lockTtlSeconds` |
 | natsSettings.maxDeliver | int | `5` | `NATS_MAX_DELIVER`: deliveries of a job before it's dead-lettered |
+| natsSettings.streamName | string | `"RENOVATE_JOBS"` | `NATS_STREAM_NAME`: the job stream (WorkQueue) |
 | natsSettings.streamReplicas | string | `nil` | `NATS_STREAM_REPLICAS` for the job and DLQ streams and the repo cache bucket. Default: the NATS cluster size (`nats.config.cluster.replicas` when clustered), else 1. |
 | networkPolicy.enabled | bool | `false` | Create NetworkPolicies: the proxy accepts webhooks from anywhere, and NATS/Valkey accept only this release's pods (plus KEDA on the NATS monitoring port) |
 | networkPolicy.kedaNamespaceSelector | object | `{"matchLabels":{"kubernetes.io/metadata.name":"keda"}}` | Namespace selector of the KEDA operator, allowed to reach NATS monitoring |
@@ -221,7 +222,7 @@ Kubernetes: `>=1.29.0-0`
 | platforms | list | `["github"]` | Enabled platforms (`github`, `gitlab`). Each gets a KEDA trigger and its own NATS consumer. |
 | profile | string | `"minimal"` | Deployment profile: `minimal` (single NATS and Valkey on `emptyDir`) or `ha` (3-node NATS on PVCs, Valkey with Sentinel). Install `ha` with `-f values-ha.yaml`: Helm can't switch subchart defaults from a single value, so the file sets both this and the NATS/Valkey topology, and the chart refuses to render a profile that doesn't match them. |
 | proxy.affinity | object | `{}` | Proxy affinity |
-| proxy.existingSecret | string | `""` | Existing Secret with any of `GITHUB_WEBHOOK_SECRET`, `GITLAB_WEBHOOK_SECRET` and `INTERNAL_TRIGGER_TOKEN` |
+| proxy.existingSecret | string | `""` | Existing Secret with any of `GITHUB_WEBHOOK_SECRET`, `GITLAB_WEBHOOK_SECRET` and `INTERNAL_TRIGGER_TOKEN`. With it set, the sweeper (and `tests.jobProcessing`) expect `INTERNAL_TRIGGER_TOKEN` in it. |
 | proxy.extraEnv | list | `[]` | Extra environment variables for the proxy |
 | proxy.httpRoute.annotations | object | `{}` | HTTPRoute annotations |
 | proxy.httpRoute.enabled | bool | `false` | Expose the webhook endpoints through a Gateway API HTTPRoute |

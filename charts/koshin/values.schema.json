@@ -129,6 +129,10 @@
         "maxDeliver": {
           "type": "integer",
           "minimum": 1
+        },
+        "streamName": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$"
         }
       },
       "additionalProperties": false

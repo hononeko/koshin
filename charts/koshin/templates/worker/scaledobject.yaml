@@ -30,7 +30,7 @@ spec:
       metadata:
         natsServerMonitoringEndpoint: {{ include "koshin.natsMonitoringEndpoint" $ | quote }}
         account: {{ $.Values.worker.autoscaling.natsAccount | quote }}
-        stream: RENOVATE_JOBS
+        stream: {{ $.Values.natsSettings.streamName | quote }}
         consumer: koshin-workers-{{ . }}
         lagThreshold: "1"
     {{- end }}
