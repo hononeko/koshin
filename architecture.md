@@ -286,7 +286,10 @@ Packaged as Kustomize overlays (KSH-8 / KSH-12) and a Helm chart (KSH-13).
 | `RENOVATE_BINARYSOURCE` | Worker | `global` | Tools come from the `full` image |
 | `REPO_CACHE_PROVIDER` | Worker | `nats` | `nats` (Object Store sync), `s3` (native Renovate, e.g. SeaweedFS), `local` |
 | `REPO_CACHE_BUCKET` | Worker | `koshin-repo-cache` | Object Store bucket |
-| `RENOVATE_REPOSITORY_CACHE_TYPE` / `RENOVATE_X_S3_ENDPOINT` / `RENOVATE_X_S3_PATH_STYLE` | Worker | — | Used when `REPO_CACHE_PROVIDER=s3` |
+| `REPO_CACHE_MAX_BYTES` | Worker | — (unlimited) | Bucket size cap; uploads are skipped while it's full |
+| `REPO_CACHE_TTL_DAYS` | Worker | — (forever) | Drops caches of repos without a successful run for this long |
+| `RENOVATE_CACHE_DIR` | Worker | `$RENOVATE_BASE_DIR/cache` | Renovate's cache dir; the repo cache file is `renovate/repository/<platform>/<repo>.json` under it |
+| `RENOVATE_REPOSITORY_CACHE_TYPE` / `RENOVATE_S3_ENDPOINT` / `RENOVATE_S3_PATH_STYLE` | Worker | — / — / `true` | Used when `REPO_CACHE_PROVIDER=s3` (`s3://<bucket>/<prefix>/`); the legacy `RENOVATE_X_S3_*` names are accepted |
 | `MAX_CONCURRENT_RUNS_PER_PLATFORM` | Worker | `3` | Global run-slot cap per platform |
 | `RENOVATE_MAX_REQUESTS_PER_SECOND` | Worker | — | Injected into Renovate `hostRules` |
 | `RENOVATE_CONCURRENT_REQUEST_LIMIT` | Worker | — | Injected into Renovate `hostRules` |

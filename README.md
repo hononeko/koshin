@@ -77,13 +77,22 @@ The coordination Valkey instance (`VALKEY_URL`, supporting both standalone `redi
 
 ## Worker Runtime (KSH-7)
 
-* **1 job per pod.** The daemon polls the enabled `PLATFORMS` and runs one `renovate <repository>` at a time. Each run gets `RENOVATE_PLATFORM`, `RENOVATE_ENDPOINT` and `RENOVATE_TOKEN` for the job's platform (`GITHUB_TOKEN`/`GITHUB_API_URL`, `GITLAB_TOKEN`/`GITLAB_ENDPOINT`), plus `LOG_FORMAT=json`, `RENOVATE_BASE_DIR`, `RENOVATE_BINARY_SOURCE`, `RENOVATE_REDIS_URL` and `RENOVATE_REPOSITORY_CACHE=enabled`. Other `RENOVATE_*` variables on the worker are passed through; worker secrets (`GITHUB_TOKEN`, `GITLAB_TOKEN`, `VALKEY_URL`, …) are not.
+* **1 job per pod.** The daemon polls the enabled `PLATFORMS` and runs one `renovate <repository>` at a time. Each run gets `RENOVATE_PLATFORM`, `RENOVATE_ENDPOINT` and `RENOVATE_TOKEN` for the job's platform (`GITHUB_TOKEN`/`GITHUB_API_URL`, `GITLAB_TOKEN`/`GITLAB_ENDPOINT`), plus `LOG_FORMAT=json`, `RENOVATE_BASE_DIR`, `RENOVATE_BINARY_SOURCE`, `RENOVATE_REDIS_URL` and the repository cache settings below. Other `RENOVATE_*` variables on the worker are passed through; worker secrets (`GITHUB_TOKEN`, `GITLAB_TOKEN`, `VALKEY_URL`, …) are not.
 * **Timeouts and cancellation** (`CLI_TIMEOUT_MINUTES`, lost lock, shutdown) forcibly kill the whole CLI process tree.
 * **Workspaces:** `$RENOVATE_BASE_DIR/repos/<platform>/<repo>` is deleted after every run; everything under `$RENOVATE_BASE_DIR` is purged at startup.
 * **SIGTERM:** stops fetching, kills the CLI, releases the lock (keeping the dirty flag), NAKs the delivery and releases the run slot, without waiting for the run to finish.
 * **Pod deletion cost (optional):** with `POD_DELETION_COST_ENABLED=true` (plus `POD_NAME` / `POD_NAMESPACE` from the downward API), the worker sets `controller.kubernetes.io/pod-deletion-cost` to `1000` while Renovate runs and back to `0` afterwards. Failed patches are logged and ignored.
 * **Health:** `GET /healthz` is liveness only; `GET /readyz` checks NATS and Valkey.
-* The shared repository cache (KSH-10) is a no-op for now.
+
+## Shared Repository Cache (KSH-10)
+
+Renovate's repository cache (`RENOVATE_REPOSITORY_CACHE=enabled`) speeds up runs a lot, but each job lands on a random, short-lived pod. `REPO_CACHE_PROVIDER` picks where the cache lives between runs:
+
+* **`nats` (default):** before a run the worker downloads `<platform>/<repo>.json` from the JetStream Object Store bucket `REPO_CACHE_BUCKET` (`koshin-repo-cache`, `NATS_STREAM_REPLICAS` replicas) into Renovate's local cache file (`$RENOVATE_CACHE_DIR/renovate/repository/<platform>/<repo>.json`, `RENOVATE_CACHE_DIR` defaulting to `$RENOVATE_BASE_DIR/cache`). It uploads the file again after a **successful** run only, never after a failure, timeout, rate limit or lost lock. Both happen under the repo lock. A missing object or a NATS error only means a cold run. `REPO_CACHE_MAX_BYTES` caps the bucket (once it's full, uploads are skipped until old caches expire) and `REPO_CACHE_TTL_DAYS` drops caches of repos without a successful run for that long. The bucket shares JetStream storage with the job streams, so size it well below the server's `max_file_store`.
+* **`s3`:** Renovate reads and writes the cache in S3 itself (e.g. SeaweedFS on the LAN); koshin does no sync. Set `RENOVATE_REPOSITORY_CACHE_TYPE=s3://<bucket>/<prefix>/`, `RENOVATE_S3_ENDPOINT` (or the legacy `RENOVATE_X_S3_ENDPOINT`) and the usual `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION`. `RENOVATE_S3_PATH_STYLE` defaults to `true`.
+* **`local`:** the cache stays in the pod's `emptyDir`, so it only helps when a pod runs the same repo again.
+
+The cache is checked against the repo's commit SHAs on every run, so it never needs invalidating. Restores and uploads are logged with `cache` (`hit` / `miss` / `persisted` / `error`), `bytes` and `durationMs` fields.
 
 ---
 

@@ -38,6 +38,8 @@ class RenovateProcessExecutor(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val requestLimits: RenovateRequestLimits = RenovateRequestLimits(),
     private val rateLimitPattern: Regex = Regex(RateLimitDetector.DEFAULT_ABORT_PATTERN),
+    private val repoCache: RepoCacheSettings = RepoCacheSettings(),
+    private val cacheDir: Path = baseDir.resolve(WorkerSettings.RENOVATE_CACHE_SUBDIR),
 ) : CliExecutorPort {
 
     private val logger = LoggerFactory.getLogger(RenovateProcessExecutor::class.java)
@@ -106,7 +108,7 @@ class RenovateProcessExecutor(
         put("RENOVATE_BASE_DIR", baseDir.toString())
         put("RENOVATE_BINARY_SOURCE", binarySource)
         redisUrl?.let { put("RENOVATE_REDIS_URL", it) }
-        put("RENOVATE_REPOSITORY_CACHE", "enabled")
+        putAll(repoCache.renovateEnv(cacheDir))
         hostRules(repo, creds, inheritedEnv["RENOVATE_HOST_RULES"])?.let { put("RENOVATE_HOST_RULES", it) }
     }
 
@@ -175,6 +177,9 @@ class RenovateProcessExecutor(
             // koshin settings that only look like Renovate options; they reach Renovate as RENOVATE_HOST_RULES.
             "RENOVATE_MAX_REQUESTS_PER_SECOND",
             "RENOVATE_CONCURRENT_REQUEST_LIMIT",
+            // Legacy aliases of RENOVATE_S3_*, which koshin sets itself; Renovate lets an alias override them.
+            "RENOVATE_X_S3_ENDPOINT",
+            "RENOVATE_X_S3_PATH_STYLE",
         )
         private val STRIPPED_PREFIXES = listOf("NATS_", "VALKEY_", "GITHUB_APP_")
         private const val STRIPPED_SUFFIX = "_WEBHOOK_SECRET"
