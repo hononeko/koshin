@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "koshin.fullname" . }}-proxy
+  labels:
+    {{- include "koshin.labels" (dict "ctx" . "component" "proxy") | nindent 4 }}
+  {{- with .Values.proxy.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.proxy.service.type }}
+  selector:
+    {{- include "koshin.selectorLabels" (dict "ctx" . "component" "proxy") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.proxy.service.port }}
+      targetPort: http
+      # Ingress controllers that support it talk cleartext HTTP/2 to the proxy
+      appProtocol: kubernetes.io/h2c

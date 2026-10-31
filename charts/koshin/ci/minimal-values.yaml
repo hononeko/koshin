@@ -1,0 +1,24 @@
+# `ct install` on kind: the minimal profile with test-only inline secrets
+proxy:
+  replicas: 1
+  secrets:
+    githubWebhookSecret: ci-webhook-secret
+    internalTriggerToken: ci-trigger-token
+  sweepRepositories:
+    - github:hononeko/koshin
+worker:
+  secrets:
+    # Rejected by GitHub: Renovate fails at its first API call and the worker ACKs the job
+    githubToken: ci-invalid-token
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+  workspaceSizeLimit: 2Gi
+# proxy -> NATS -> worker -> Renovate -> ACK, on a run Renovate fails fast
+tests:
+  jobProcessing:
+    enabled: true
+    timeoutSeconds: 300

@@ -1,0 +1,470 @@
+# -- Deployment profile: `minimal` (single NATS and Valkey on `emptyDir`) or `ha` (3-node NATS on PVCs, Valkey with
+# Sentinel). Install `ha` with `-f values-ha.yaml`: Helm can't switch subchart defaults from a single value, so the file
+# sets both this and the NATS/Valkey topology, and the chart refuses to render a profile that doesn't match them.
+profile: minimal
+
+# -- Enabled platforms (`github`, `gitlab`). Each gets a KEDA trigger and its own NATS consumer.
+platforms:
+  - github
+
+image:
+  # -- Registry of the koshin images
+  registry: ghcr.io
+  # -- Pull policy of the koshin images
+  pullPolicy: IfNotPresent
+
+# -- Image pull secrets for koshin's own pods
+imagePullSecrets: []
+# -- Overrides the chart name in resource names
+nameOverride: ""
+# -- Overrides the full resource name prefix (default: the release name, plus `-koshin` unless it contains it)
+fullnameOverride: ""
+# -- Kubernetes cluster domain, used for the KEDA monitoring endpoint
+clusterDomain: cluster.local
+
+# -- Labels added to every koshin resource
+commonLabels: {}
+
+github:
+  # -- `GITHUB_API_URL` for GitHub Enterprise Server (default `https://api.github.com`)
+  apiUrl: ""
+  # -- `GITHUB_BOT_LOGIN`: webhooks sent by this login are ignored, so Renovate's own pushes don't re-trigger it
+  botLogin: ""
+  # GitHub App credentials, preferred over a PAT (used once the App support of KSH-14 lands)
+  app:
+    # -- `GITHUB_APP_ID`
+    id: ""
+    # -- Existing Secret holding the App's private key (PEM), mounted for both the proxy and the worker
+    existingSecret: ""
+    # -- Key of the private key in `existingSecret`
+    privateKeyKey: private-key.pem
+    # -- Inline private key, for testing only; ignored when `existingSecret` is set
+    privateKey: ""
+
+gitlab:
+  # -- `GITLAB_ENDPOINT`, e.g. `https://gitlab.example.com/api/v4/`
+  endpoint: ""
+  # -- `GITLAB_BOT_LOGIN`: webhooks sent by this login are ignored
+  botLogin: ""
+
+# -- `RENOVATE_BOT_LOGINS`: more bot logins whose webhooks are ignored
+renovateBotLogins: []
+
+# -- `HTTP2_ENABLED`: cleartext HTTP/2 (h2c) next to HTTP/1.1 on the proxy and worker
+http2Enabled: true
+
+natsSettings:
+  # -- `NATS_STREAM_NAME`: the job stream (WorkQueue)
+  streamName: RENOVATE_JOBS
+  # -- `NATS_STREAM_REPLICAS` for the job and DLQ streams and the repo cache bucket. Default: the NATS cluster size
+  # (`nats.config.cluster.replicas` when clustered), else 1.
+  streamReplicas: null
+  # -- `NATS_ACK_WAIT_SECONDS`; must be greater than `worker.config.lockTtlSeconds`
+  ackWaitSeconds: 60
+  # -- `NATS_MAX_DELIVER`: deliveries of a job before it's dead-lettered
+  maxDeliver: 5
+
+valkeySettings:
+  # -- `VALKEY_KEY_PREFIX` for koshin's coordination keys
+  keyPrefix: koshin
+  # -- `LOCK_REPLICA_ACK_TIMEOUT_MS`: after acquiring a lock, wait this long for a replica to acknowledge it (`WAIT 1`).
+  # 0 disables it.
+  lockReplicaAckTimeoutMs: 0
+  # -- `VALKEY_COMMAND_TIMEOUT_SECONDS`
+  commandTimeoutSeconds: 5
+
+proxy:
+  image:
+    # -- Proxy image repository
+    repository: hononeko/koshin-proxy
+    # -- Proxy image tag (default: the chart's `appVersion`)
+    tag: ""
+    # -- Proxy image digest; takes precedence over the tag
+    digest: ""
+  # -- Proxy replicas
+  replicas: 2
+  # -- Existing Secret with any of `GITHUB_WEBHOOK_SECRET`, `GITLAB_WEBHOOK_SECRET` and `INTERNAL_TRIGGER_TOKEN`. With
+  # it set, the sweeper (and `tests.jobProcessing`) expect `INTERNAL_TRIGGER_TOKEN` in it.
+  existingSecret: ""
+  # Inline secrets, for testing only. Ignored when `existingSecret` is set; when any is set, the chart creates a Secret.
+  secrets:
+    # -- `GITHUB_WEBHOOK_SECRET`
+    githubWebhookSecret: ""
+    # -- `GITLAB_WEBHOOK_SECRET`
+    gitlabWebhookSecret: ""
+    # -- `INTERNAL_TRIGGER_TOKEN`, the bearer token of `POST /api/v1/trigger` (required by the sweeper)
+    internalTriggerToken: ""
+  # -- Repositories the sweeper schedules (`github:org/repo` or `gitlab:group/project`), served to the proxy as
+  # `SWEEP_REPOSITORIES_FILE`
+  sweepRepositories: []
+  service:
+    # -- Proxy Service type
+    type: ClusterIP
+    # -- Proxy Service port
+    port: 80
+    # -- Proxy Service annotations
+    annotations: {}
+  ingress:
+    # -- Expose the webhook endpoints through an Ingress
+    enabled: false
+    # -- Ingress class
+    className: ""
+    # -- Ingress annotations
+    annotations: {}
+    # -- Hosts and paths. Only `/webhooks/` is exposed by default: `/api/v1/trigger` stays cluster-internal.
+    hosts:
+      - host: koshin.example.com
+        paths:
+          - path: /webhooks/
+            pathType: Prefix
+    # -- Ingress TLS
+    tls: []
+  httpRoute:
+    # -- Expose the webhook endpoints through a Gateway API HTTPRoute
+    enabled: false
+    # -- HTTPRoute annotations
+    annotations: {}
+    # -- Gateways to attach to
+    parentRefs: []
+    # -- Hostnames of the route
+    hostnames: []
+    # -- Path prefixes routed to the proxy
+    pathPrefixes:
+      - /webhooks/
+  podDisruptionBudget:
+    # -- Create a PodDisruptionBudget for the proxy
+    enabled: true
+    # -- Minimum available proxy pods
+    minAvailable: 1
+  # -- Proxy resources
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+  # -- Proxy pod security context
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  # -- Proxy container security context
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+  # -- Extra environment variables for the proxy
+  extraEnv: []
+  # -- Proxy pod annotations
+  podAnnotations: {}
+  # -- Proxy pod labels
+  podLabels: {}
+  # -- Proxy node selector
+  nodeSelector: {}
+  # -- Proxy tolerations
+  tolerations: []
+  # -- Proxy affinity
+  affinity: {}
+  # -- Proxy topology spread constraints (default: spread across nodes)
+  topologySpreadConstraints: []
+  serviceAccount:
+    # -- Proxy ServiceAccount annotations
+    annotations: {}
+
+worker:
+  image:
+    # -- Worker image repository. The image bundles a pinned Renovate (`renovate:<version>-full`).
+    repository: hononeko/koshin-worker
+    # -- Worker image tag (default: the chart's `appVersion`)
+    tag: ""
+    # -- Worker image digest; takes precedence over the tag
+    digest: ""
+  # -- Worker replicas when KEDA isn't installed or `autoscaling.enabled` is false
+  replicas: 1
+  # -- Existing Secret with `GITHUB_TOKEN` and/or `GITLAB_TOKEN` (PAT fallback when the GitHub App isn't configured)
+  existingSecret: ""
+  # Inline secrets, for testing only. Ignored when `existingSecret` is set; when any is set, the chart creates a Secret.
+  secrets:
+    # -- `GITHUB_TOKEN`
+    githubToken: ""
+    # -- `GITLAB_TOKEN`
+    gitlabToken: ""
+  config:
+    # -- `LOCK_TTL_SECONDS`: per-repo lock TTL
+    lockTtlSeconds: 45
+    # -- `HEARTBEAT_INTERVAL_SECONDS`: heartbeat, lock and run-slot renewal interval
+    heartbeatIntervalSeconds: 15
+    # -- `DIRTY_TTL_SECONDS`; must exceed `cliTimeoutMinutes`
+    dirtyTtlSeconds: 3600
+    # -- `LOCK_COLLISION_RETRY_SECONDS`: NAK delay for a redelivered job that hits a held lock
+    lockCollisionRetrySeconds: 30
+    # -- `CLI_TIMEOUT_MINUTES`: hard cap per Renovate run (`+ 5` must stay below 60 for GitHub App tokens)
+    cliTimeoutMinutes: 45
+    # -- `RENOVATE_BINARY_SOURCE` (tools come from the `full` image)
+    renovateBinarySource: global
+  rateLimits:
+    # -- `MAX_CONCURRENT_RUNS_PER_PLATFORM`: Renovate runs per platform across all workers
+    maxConcurrentRunsPerPlatform: 3
+    # -- `RENOVATE_MAX_REQUESTS_PER_SECOND`, injected into Renovate's `hostRules` for the platform API
+    maxRequestsPerSecond: null
+    # -- `RENOVATE_CONCURRENT_REQUEST_LIMIT`, injected into Renovate's `hostRules` for the platform API
+    concurrentRequestLimit: null
+    # -- `RATE_LIMIT_BACKOFF_BASE_SECONDS`: platform cooldown base
+    backoffBaseSeconds: 60
+    # -- `RATE_LIMIT_BACKOFF_MAX_SECONDS`: platform cooldown cap
+    backoffMaxSeconds: 3600
+    # -- `MAX_RATE_LIMIT_REQUEUES` before a rate-limited job is dead-lettered
+    maxRequeues: 5
+    # -- `RATE_LIMIT_LOG_PATTERN`: regex for Renovate's rate-limit abort message (default `^Rate limit exceeded - aborting$`)
+    logPattern: ""
+  repoCache:
+    # -- `REPO_CACHE_PROVIDER`: `nats` (Object Store sync), `s3` (native Renovate S3) or `local` (pod only)
+    provider: nats
+    # -- `REPO_CACHE_BUCKET`: Object Store bucket
+    bucket: koshin-repo-cache
+    # -- `REPO_CACHE_MAX_BYTES`: bucket size cap; it shares JetStream storage with the job streams
+    maxBytes: 536870912
+    # -- `REPO_CACHE_TTL_DAYS`: drops caches of repos without a successful run for this long
+    ttlDays: 30
+    s3:
+      # -- `RENOVATE_REPOSITORY_CACHE_TYPE`, e.g. `s3://renovate/repo-cache/`
+      url: ""
+      # -- `RENOVATE_S3_ENDPOINT`, e.g. `http://seaweedfs-s3:8333`
+      endpoint: ""
+      # -- `RENOVATE_S3_PATH_STYLE`
+      pathStyle: true
+      # -- Existing Secret with `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (and optionally `AWS_REGION`)
+      existingSecret: ""
+  # -- `RENOVATE_REDIS_URL`: Renovate's package cache. Default: the `valkey-cache` subchart, else the coordination
+  # Valkey when it's a plain `redis://` URL.
+  renovateRedisUrl: ""
+  podDeletionCost:
+    # -- `POD_DELETION_COST_ENABLED`: mark busy workers expensive to delete, so KEDA scale-in removes idle ones
+    enabled: true
+  autoscaling:
+    # -- Scale workers with KEDA (one per active or pending job). Rendered only when the `keda.sh/v1alpha1` API exists.
+    enabled: true
+    # -- Minimum workers
+    minReplicas: 1
+    # -- Maximum workers (default: `maxConcurrentRunsPerPlatform` × enabled platforms; more would only wait for a slot)
+    maxReplicas: null
+    # -- KEDA polling interval (seconds)
+    pollingInterval: 15
+    # -- Scale-down stabilization window (seconds)
+    scaleDownStabilizationSeconds: 60
+    # -- KEDA trigger `account` (`$G` without NATS accounts)
+    natsAccount: $G
+  podDisruptionBudget:
+    # -- Create a PodDisruptionBudget for the workers (`maxUnavailable: 1`, for node drains). Default: on in `ha`.
+    enabled: null
+  # -- Grace period covering the SIGTERM path (kill the CLI, release the lock, NAK), not a full run
+  terminationGracePeriodSeconds: 30
+  # -- Size of the `emptyDir` holding per-run workspaces and Renovate's caches
+  workspaceSizeLimit: 10Gi
+  # -- Worker resources
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      memory: 4Gi
+  # -- Worker pod security context (Renovate's `full` image runs as uid 12021)
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 12021
+    runAsGroup: 0
+    seccompProfile:
+      type: RuntimeDefault
+  # -- Worker container security context
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+  # -- Extra environment variables for the worker (passed on to Renovate unless they're koshin secrets)
+  extraEnv: []
+  # -- Worker pod annotations
+  podAnnotations: {}
+  # -- Worker pod labels
+  podLabels: {}
+  # -- Worker node selector
+  nodeSelector: {}
+  # -- Worker tolerations
+  tolerations: []
+  # -- Worker affinity
+  affinity: {}
+  # -- Worker topology spread constraints
+  topologySpreadConstraints: []
+  serviceAccount:
+    # -- Worker ServiceAccount annotations
+    annotations: {}
+
+sweeper:
+  # -- Schedule a run of every discovered repository on `schedule`. Needs `INTERNAL_TRIGGER_TOKEN`; without one the
+  # CronJob isn't rendered.
+  enabled: true
+  # -- Cron schedule
+  schedule: "0 */6 * * *"
+  image:
+    # -- Sweeper image (any image with curl)
+    repository: docker.io/curlimages/curl
+    # -- Sweeper image tag
+    tag: "8.23.0"
+  # -- Sweeper resources
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      memory: 64Mi
+
+tests:
+  jobProcessing:
+    # -- `helm test` also triggers a Renovate run of `repository` and waits until a worker acknowledges it. Off by
+    # default because it starts a real run; needs `INTERNAL_TRIGGER_TOKEN`.
+    enabled: false
+    # -- Platform of the test repository
+    platform: github
+    # -- Repository the test triggers
+    repository: hononeko/koshin
+    # -- How long to wait for the run to finish
+    timeoutSeconds: 600
+
+networkPolicy:
+  # -- Create NetworkPolicies: the proxy accepts webhooks from anywhere, and NATS/Valkey accept only this release's pods
+  # (plus KEDA on the NATS monitoring port)
+  enabled: false
+  # -- Namespace selector of the KEDA operator, allowed to reach NATS monitoring
+  kedaNamespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: keda
+  # -- Sources allowed to reach the proxy (default: anywhere)
+  proxyFrom: []
+
+# -- Extra manifests rendered with the release (templated), e.g. an Envoy Gateway `ClientTrafficPolicy` for HTTP/3
+extraObjects: []
+
+# -- NATS server used when `nats.enabled` is false
+externalNats:
+  # -- NATS URL, e.g. `nats://nats.messaging:4222`
+  url: ""
+  # -- NATS monitoring endpoint (`host:8222`) for the KEDA scaler; for a cluster, the headless Service so KEDA can reach
+  # each node, e.g. `nats-headless.messaging.svc.cluster.local:8222`
+  monitoringEndpoint: ""
+
+# -- Coordination Valkey used when `valkey.enabled` is false
+externalValkey:
+  # -- `VALKEY_URL`: `redis://host:6379` or `redis-sentinel://host:26379?sentinelMasterId=mymaster`
+  url: ""
+  # -- Secret with Sentinel's own password (`VALKEY_SENTINEL_PASSWORD`), if Sentinel requires one
+  sentinelPasswordSecret:
+    name: ""
+    key: ""
+
+# Official NATS chart (https://github.com/nats-io/k8s). `minimal`: one JetStream server on emptyDir.
+nats:
+  # -- Deploy NATS with the release; set false and configure `externalNats` to bring your own
+  enabled: true
+  config:
+    cluster:
+      # -- Run a NATS cluster (`ha`)
+      enabled: false
+      # -- Cluster size
+      replicas: 3
+    jetstream:
+      enabled: true
+      fileStore:
+        enabled: true
+        dir: /data
+        pvc:
+          # -- Keep JetStream on PVCs (`ha`); `minimal` uses an emptyDir
+          enabled: false
+          size: 10Gi
+        # -- JetStream file storage limit (streams and the repo cache bucket)
+        maxSize: 1Gi
+      memoryStore:
+        enabled: true
+        maxSize: 64Mi
+    monitor:
+      enabled: true
+      port: 8222
+    nats:
+      port: 4222
+  container:
+    merge:
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          memory: 256Mi
+    # The JetStream directory on an emptyDir (`minimal`). `values-ha.yaml` clears this for the PVC.
+    patch:
+      - op: add
+        path: /volumeMounts/-
+        value:
+          name: js-data
+          mountPath: /data
+  podTemplate:
+    patch:
+      - op: add
+        path: /spec/volumes/-
+        value:
+          name: js-data
+          emptyDir:
+            sizeLimit: 2Gi
+  natsBox:
+    enabled: false
+
+# Official Valkey chart (https://github.com/valkey-io/valkey-helm) for coordination. `noeviction` is required: evicting
+# a lock or dirty flag breaks mutual exclusion or drops a coalesced run.
+valkey:
+  # -- Deploy the coordination Valkey with the release; set false and configure `externalValkey` to bring your own
+  enabled: true
+  service:
+    port: 6379
+  # -- valkey.conf additions
+  extraConfig: |-
+    maxmemory 64mb
+    maxmemory-policy noeviction
+    save ""
+    appendonly no
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+  sentinel:
+    # -- Sentinel failover (`ha`)
+    enabled: false
+    port: 26379
+    masterSet: mymaster
+    # -- Secret with Sentinel's password (templated), required by the chart with Sentinel
+    existingSecret: ""
+    # -- Key of the password in `existingSecret`
+    passwordKey: sentinel
+    service:
+      port: 26379
+
+# Official Valkey chart for Renovate's package cache (`RENOVATE_REDIS_URL`). It's only a cache: `allkeys-lru`, no
+# persistence, no HA.
+valkey-cache:
+  # -- Deploy the package-cache Valkey with the release
+  enabled: true
+  service:
+    port: 6379
+  # -- valkey.conf additions
+  extraConfig: |-
+    maxmemory 384mb
+    maxmemory-policy allkeys-lru
+    save ""
+    appendonly no
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi

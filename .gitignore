@@ -13,3 +13,6 @@ out/
 # OS
 .DS_Store
 Thumbs.db
+
+# Helm chart dependencies (built from Chart.lock)
+charts/*/charts/

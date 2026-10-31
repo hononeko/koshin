@@ -1,0 +1,13 @@
+{{- if .Values.proxy.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "koshin.fullname" . }}-proxy
+  labels:
+    {{- include "koshin.labels" (dict "ctx" . "component" "proxy") | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.proxy.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "koshin.selectorLabels" (dict "ctx" . "component" "proxy") | nindent 6 }}
+{{- end }}

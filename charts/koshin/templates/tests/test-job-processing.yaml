@@ -1,0 +1,91 @@
+{{- if and .Values.tests.jobProcessing.enabled (include "koshin.triggerToken" .) }}
+# Triggers one Renovate run through the proxy and waits until a worker settles it: the WorkQueue stream only drops a
+# job once a worker ACKs it, or once it's dead-lettered, which fails the test. A run that Renovate itself fails (e.g.
+# on a token the platform rejects) is still ACKed, so CI exercises the whole path without real credentials.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "koshin.fullname" . }}-test-job-processing
+  labels:
+    {{- include "koshin.labels" (dict "ctx" . "component" "test") | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 100
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: job-processing
+      image: "{{ .Values.sweeper.image.repository }}:{{ .Values.sweeper.image.tag }}"
+      env:
+        - name: INTERNAL_TRIGGER_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "koshin.proxySecretName" . }}
+              key: INTERNAL_TRIGGER_TOKEN
+        - name: PROXY
+          value: {{ printf "%s-proxy.%s.svc:%v" (include "koshin.fullname" .) .Release.Namespace .Values.proxy.service.port | quote }}
+        - name: JOBS_STREAM
+          value: {{ .Values.natsSettings.streamName | quote }}
+        - name: NATS_MONITOR
+          value: {{ include "koshin.natsMonitoringEndpoint" . | quote }}
+        - name: PLATFORM
+          value: {{ .Values.tests.jobProcessing.platform | quote }}
+        - name: REPOSITORY
+          value: {{ .Values.tests.jobProcessing.repository | quote }}
+        - name: TIMEOUT
+          value: {{ .Values.tests.jobProcessing.timeoutSeconds | quote }}
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          set -eu
+          # Prints "<messages> <last_seq>" of a stream
+          stream() {
+            curl -fsS --retry 5 --retry-all-errors "http://$NATS_MONITOR/jsz?streams=true" | tr -d ' \t\r\n' | tr '{},' '\n\n\n' \
+              | awk -F: -v name="\"name\":\"$1\"" '
+                $0 == name { found = 1 }
+                found && /^"messages":/ { messages = $2 }
+                found && /^"last_seq":/ { print messages, $2; exit }'
+          }
+          jobs=$(stream "$JOBS_STREAM")
+          if [ -z "$jobs" ]; then
+            echo "Can't read stream $JOBS_STREAM from $NATS_MONITOR"
+            exit 1
+          fi
+          set -- $jobs
+          jobs_before=$2
+          set -- $(stream RENOVATE_DLQ) 0 0
+          dlq_before=$2
+          curl -fsS --retry 10 --retry-all-errors -X POST "http://$PROXY/api/v1/trigger" \
+            -H "Authorization: Bearer $INTERNAL_TRIGGER_TOKEN" -H "Content-Type: application/json" \
+            -d "{\"repositories\":[{\"platform\":\"$PLATFORM\",\"repository\":\"$REPOSITORY\"}]}"
+          echo
+          deadline=$(( $(date +%s) + TIMEOUT ))
+          while :; do
+            set -- $(stream "$JOBS_STREAM") 0 0
+            if [ "$2" -gt "$jobs_before" ] && [ "$1" -eq 0 ]; then
+              set -- $(stream RENOVATE_DLQ) 0 0
+              if [ "$2" -gt "$dlq_before" ]; then
+                echo "The job was dead-lettered instead of processed"
+                exit 1
+              fi
+              echo "The job was processed and acknowledged"
+              exit 0
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "Timed out: $1 job(s) in the stream, last sequence $2 (was $jobs_before)"
+              exit 1
+            fi
+            sleep 5
+          done
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+{{- end }}

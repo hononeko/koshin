@@ -1,0 +1,38 @@
+apiVersion: v2
+name: koshin
+description: Distributed Renovate orchestrator - a stateless webhook proxy and KEDA-scaled workers on NATS JetStream and Valkey
+type: application
+# Set to the release version by the CD workflow when the chart is published
+version: 0.8.0
+appVersion: "0.8.0"
+kubeVersion: ">=1.29.0-0"
+home: https://github.com/hononeko/koshin
+sources:
+  - https://github.com/hononeko/koshin
+keywords:
+  - renovate
+  - dependency-updates
+  - nats
+  - valkey
+  - keda
+maintainers:
+  - name: hononeko
+    url: https://github.com/hononeko
+annotations:
+  artifacthub.io/license: AGPL-3.0-only
+dependencies:
+  - name: nats
+    version: 2.15.2
+    repository: https://nats-io.github.io/k8s/helm/charts/
+    condition: nats.enabled
+  # Coordination (locks, dirty flags, run slots): standalone in `minimal`, primary + replicas + Sentinel in `ha`
+  - name: valkey
+    version: 1.0.0-rc.1
+    repository: https://valkey.io/valkey-helm/
+    condition: valkey.enabled
+  # Renovate's package cache, kept apart from coordination so a full cache can't block lock writes
+  - name: valkey
+    alias: valkey-cache
+    version: 1.0.0-rc.1
+    repository: https://valkey.io/valkey-helm/
+    condition: valkey-cache.enabled

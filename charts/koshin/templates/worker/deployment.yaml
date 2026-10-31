@@ -1,0 +1,114 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "koshin.fullname" . }}-worker
+  labels:
+    {{- include "koshin.labels" (dict "ctx" . "component" "worker") | nindent 4 }}
+spec:
+  {{- if not (include "koshin.kedaEnabled" .) }}
+  replicas: {{ .Values.worker.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "koshin.selectorLabels" (dict "ctx" . "component" "worker") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "koshin.labels" (dict "ctx" . "component" "worker") | nindent 8 }}
+        {{- with .Values.worker.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secrets: {{ include (print $.Template.BasePath "/secrets.yaml") . | sha256sum }}
+        {{- with .Values.worker.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "koshin.fullname" . }}-worker
+      automountServiceAccountToken: {{ .Values.worker.podDeletionCost.enabled }}
+      terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.worker.podSecurityContext | nindent 8 }}
+      {{- with .Values.worker.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: worker
+          image: {{ include "koshin.image" (dict "ctx" . "image" .Values.worker.image) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: {{ include "koshin.fullname" . }}-config
+            {{- with include "koshin.workerSecretName" . }}
+            # GITHUB_TOKEN, GITLAB_TOKEN
+            - secretRef:
+                name: {{ . }}
+            {{- end }}
+            {{- if and (eq .Values.worker.repoCache.provider "s3") .Values.worker.repoCache.s3.existingSecret }}
+            # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION for Renovate's S3 repository cache
+            - secretRef:
+                name: {{ .Values.worker.repoCache.s3.existingSecret }}
+            {{- end }}
+          env:
+            - name: RENOVATE_BASE_DIR
+              value: /tmp/renovate
+            - name: POD_DELETION_COST_ENABLED
+              value: {{ .Values.worker.podDeletionCost.enabled | quote }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- with include "koshin.sentinelPasswordEnv" . }}{{ . | nindent 12 }}{{- end }}
+            {{- with .Values.worker.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.worker.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: renovate
+              mountPath: /tmp/renovate
+            {{- with include "koshin.githubAppVolumeMount" . }}{{ . | nindent 12 }}{{- end }}
+      volumes:
+        # Per-run workspaces, deleted after each run and purged at startup
+        - name: renovate
+          emptyDir:
+            sizeLimit: {{ .Values.worker.workspaceSizeLimit }}
+        {{- with include "koshin.githubAppVolume" . }}{{ . | nindent 8 }}{{- end }}

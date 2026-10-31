@@ -1,0 +1,46 @@
+{{- /* Renders nothing: fails early on inconsistent values */}}
+{{- if not (has .Values.profile (list "minimal" "ha")) }}
+{{- fail (printf "profile must be minimal or ha, not %q" .Values.profile) }}
+{{- end }}
+{{- range .Values.platforms }}
+{{- if not (has . (list "github" "gitlab")) }}
+{{- fail (printf "platforms: unknown platform %q (github, gitlab)" .) }}
+{{- end }}
+{{- end }}
+{{- if not .Values.platforms }}
+{{- fail "platforms cannot be empty" }}
+{{- end }}
+{{- $ha := eq .Values.profile "ha" }}
+{{- if .Values.nats.enabled }}
+{{- if and $ha (not .Values.nats.config.cluster.enabled) }}
+{{- fail "profile=ha needs a NATS cluster: install with -f values-ha.yaml (or set nats.config.cluster.enabled=true)" }}
+{{- end }}
+{{- if and (not $ha) .Values.nats.config.cluster.enabled }}
+{{- fail "nats.config.cluster.enabled=true is the ha topology: set profile=ha (see values-ha.yaml)" }}
+{{- end }}
+{{- end }}
+{{- if .Values.valkey.enabled }}
+{{- if and $ha (not .Values.valkey.sentinel.enabled) }}
+{{- fail "profile=ha needs Valkey Sentinel: install with -f values-ha.yaml (or set valkey.sentinel.enabled=true)" }}
+{{- end }}
+{{- if and (not $ha) .Values.valkey.sentinel.enabled }}
+{{- fail "valkey.sentinel.enabled=true is the ha topology: set profile=ha (see values-ha.yaml)" }}
+{{- end }}
+{{- end }}
+{{- if le (int .Values.natsSettings.ackWaitSeconds) (int .Values.worker.config.lockTtlSeconds) }}
+{{- fail "natsSettings.ackWaitSeconds must be greater than worker.config.lockTtlSeconds" }}
+{{- end }}
+{{- if le (int .Values.worker.config.dirtyTtlSeconds) (mul (int .Values.worker.config.cliTimeoutMinutes) 60) }}
+{{- fail "worker.config.dirtyTtlSeconds must exceed worker.config.cliTimeoutMinutes" }}
+{{- end }}
+{{- if and .Values.proxy.httpRoute.enabled (empty .Values.proxy.httpRoute.parentRefs) }}
+{{- fail "proxy.httpRoute.parentRefs needs at least one Gateway when proxy.httpRoute.enabled is true" }}
+{{- end }}
+{{- with .Values.worker.repoCache }}
+{{- if not (has .provider (list "nats" "s3" "local")) }}
+{{- fail (printf "worker.repoCache.provider must be nats, s3 or local, not %q" .provider) }}
+{{- end }}
+{{- if and (eq .provider "s3") (not (hasPrefix "s3://" .s3.url)) }}
+{{- fail "worker.repoCache.provider=s3 needs worker.repoCache.s3.url=s3://<bucket>/<prefix>/" }}
+{{- end }}
+{{- end }}

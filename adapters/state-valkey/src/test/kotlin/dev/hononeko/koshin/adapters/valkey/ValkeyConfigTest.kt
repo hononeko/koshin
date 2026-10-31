@@ -2,7 +2,10 @@ package dev.hononeko.koshin.adapters.valkey
 
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RepoRef
+import io.lettuce.core.RedisURI
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import kotlin.time.Duration
@@ -109,4 +112,30 @@ class ValkeyConfigTest {
             ValkeyConfig(valkeyUrl = "invalid://uri")
         }
     }
+
+    @Test
+    fun `sentinel password authenticates the sentinel nodes, not the data nodes`() {
+        val config = ValkeyConfig.fromEnv(
+            mapOf(
+                "VALKEY_URL" to "redis-sentinel://s-0:26379,s-1:26379?sentinelMasterId=mymaster",
+                "VALKEY_SENTINEL_PASSWORD" to "sentinel-secret",
+            ),
+        )
+
+        val uri = config.toRedisUri()
+        assertEquals(2, uri.sentinels.size)
+        uri.sentinels.forEach { assertEquals("sentinel-secret", String(checkNotNull(it.resolvedPassword()))) }
+        assertNull(uri.resolvedPassword())
+        assertFalse(config.toString().contains("sentinel-secret"))
+        assertNull(ValkeyConfig.fromEnv(mapOf("VALKEY_SENTINEL_PASSWORD" to "")).sentinelPassword)
+    }
+
+    @Test
+    fun `toString hides credentials`() {
+        val config = ValkeyConfig(valkeyUrl = "redis://:data-secret@valkey:6379")
+        assertFalse(config.toString().contains("data-secret"))
+    }
+
+    private fun RedisURI.resolvedPassword(): CharArray? =
+        credentialsProviderAsync?.resolveCredentialsAsync()?.toCompletableFuture()?.get()?.password
 }

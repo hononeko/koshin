@@ -1,0 +1,19 @@
+koshin {{ .Chart.AppVersion }} ({{ .Values.profile }} profile) is installed in {{ .Release.Namespace }}.
+
+Webhooks: http://{{ include "koshin.fullname" . }}-proxy.{{ .Release.Namespace }}.svc:{{ .Values.proxy.service.port }}/webhooks/{github,gitlab}
+{{- if not (include "koshin.proxySecretName" .) }}
+
+WARNING: no proxy Secret (proxy.existingSecret): every webhook and trigger call is rejected until one is set.
+{{- end }}
+{{- if not (include "koshin.workerSecretName" .) }}
+
+WARNING: no worker Secret (worker.existingSecret): Renovate runs have no platform token and will fail.
+{{- end }}
+{{- if and .Values.sweeper.enabled (not (include "koshin.sweeperEnabled" .)) }}
+
+NOTE: the sweeper CronJob isn't installed: it needs INTERNAL_TRIGGER_TOKEN in proxy.existingSecret.
+{{- end }}
+{{- if and .Values.worker.autoscaling.enabled (not (include "koshin.kedaEnabled" .)) }}
+
+NOTE: KEDA (keda.sh/v1alpha1) isn't installed, so workers run at a fixed {{ .Values.worker.replicas }} replica(s).
+{{- end }}

@@ -1,0 +1,16 @@
+{{- $enabled := .Values.worker.podDisruptionBudget.enabled }}
+{{- if kindIs "invalid" $enabled }}{{ $enabled = eq .Values.profile "ha" }}{{ end }}
+{{- if $enabled }}
+# For node drains; KEDA scale-in isn't an eviction and ignores it
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "koshin.fullname" . }}-worker
+  labels:
+    {{- include "koshin.labels" (dict "ctx" . "component" "worker") | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "koshin.selectorLabels" (dict "ctx" . "component" "worker") | nindent 6 }}
+{{- end }}

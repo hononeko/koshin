@@ -1,0 +1,118 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "koshin.fullname" . }}-proxy
+  labels:
+    {{- include "koshin.labels" (dict "ctx" . "component" "proxy") | nindent 4 }}
+  {{- with .Values.proxy.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "koshin.fullname" . }}-proxy
+  labels:
+    {{- include "koshin.labels" (dict "ctx" . "component" "proxy") | nindent 4 }}
+spec:
+  replicas: {{ .Values.proxy.replicas }}
+  selector:
+    matchLabels:
+      {{- include "koshin.selectorLabels" (dict "ctx" . "component" "proxy") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "koshin.labels" (dict "ctx" . "component" "proxy") | nindent 8 }}
+        {{- with .Values.proxy.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secrets: {{ include (print $.Template.BasePath "/secrets.yaml") . | sha256sum }}
+        {{- with .Values.proxy.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "koshin.fullname" . }}-proxy
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.proxy.podSecurityContext | nindent 8 }}
+      topologySpreadConstraints:
+        {{- if .Values.proxy.topologySpreadConstraints }}
+        {{- toYaml .Values.proxy.topologySpreadConstraints | nindent 8 }}
+        {{- else }}
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "koshin.selectorLabels" (dict "ctx" . "component" "proxy") | nindent 14 }}
+        {{- end }}
+      {{- with .Values.proxy.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.proxy.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.proxy.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: proxy
+          image: {{ include "koshin.image" (dict "ctx" . "image" .Values.proxy.image) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: {{ include "koshin.fullname" . }}-config
+            {{- with include "koshin.proxySecretName" . }}
+            # GITHUB_WEBHOOK_SECRET, GITLAB_WEBHOOK_SECRET, INTERNAL_TRIGGER_TOKEN
+            - secretRef:
+                name: {{ . }}
+            {{- end }}
+          env:
+            - name: SWEEP_REPOSITORIES_FILE
+              value: /etc/koshin/repositories/repositories.txt
+            {{- with .Values.proxy.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.proxy.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.proxy.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: repositories
+              mountPath: /etc/koshin/repositories
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- with include "koshin.githubAppVolumeMount" . }}{{ . | nindent 12 }}{{- end }}
+      volumes:
+        - name: repositories
+          configMap:
+            name: {{ include "koshin.fullname" . }}-repositories
+        - name: tmp
+          emptyDir: {}
+        {{- with include "koshin.githubAppVolume" . }}{{ . | nindent 8 }}{{- end }}
