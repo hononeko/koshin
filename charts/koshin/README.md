@@ -75,6 +75,8 @@ valkey:
   enabled: false
 externalValkey:
   url: redis-sentinel://valkey-sentinel.data:26379?sentinelMasterId=mymaster
+  # Only if Sentinel uses an ACL user instead of the default one
+  sentinelUsername: sentinel
   sentinelPasswordSecret:
     name: valkey-sentinel
     key: password
@@ -168,8 +170,9 @@ Kubernetes: `>=1.29.0-0`
 | externalNats | object | `{"monitoringEndpoint":"","url":""}` | NATS server used when `nats.enabled` is false |
 | externalNats.monitoringEndpoint | string | `""` | NATS monitoring endpoint (`host:8222`) for the KEDA scaler; for a cluster, the headless Service so KEDA can reach each node, e.g. `nats-headless.messaging.svc.cluster.local:8222` |
 | externalNats.url | string | `""` | NATS URL, e.g. `nats://nats.messaging:4222` |
-| externalValkey | object | `{"sentinelPasswordSecret":{"key":"","name":""},"url":""}` | Coordination Valkey used when `valkey.enabled` is false |
+| externalValkey | object | `{"sentinelPasswordSecret":{"key":"","name":""},"sentinelUsername":"","url":""}` | Coordination Valkey used when `valkey.enabled` is false |
 | externalValkey.sentinelPasswordSecret | object | `{"key":"","name":""}` | Secret with Sentinel's own password (`VALKEY_SENTINEL_PASSWORD`), if Sentinel requires one |
+| externalValkey.sentinelUsername | string | `""` | `VALKEY_SENTINEL_USERNAME`: Sentinel's ACL user, if it has one (empty: the default user) |
 | externalValkey.url | string | `""` | `VALKEY_URL`: `redis://host:6379` or `redis-sentinel://host:26379?sentinelMasterId=mymaster` |
 | extraObjects | list | `[]` | Extra manifests rendered with the release (templated), e.g. an Envoy Gateway `ClientTrafficPolicy` for HTTP/3 |
 | fullnameOverride | string | `""` | Overrides the full resource name prefix (default: the release name, plus `-koshin` unless it contains it) |
@@ -202,16 +205,27 @@ Kubernetes: `>=1.29.0-0`
 | nats.container.merge.resources.limits.memory | string | `"256Mi"` |  |
 | nats.container.merge.resources.requests.cpu | string | `"50m"` |  |
 | nats.container.merge.resources.requests.memory | string | `"64Mi"` |  |
+| nats.container.merge.securityContext.allowPrivilegeEscalation | bool | `false` |  |
+| nats.container.merge.securityContext.capabilities.drop[0] | string | `"ALL"` |  |
+| nats.container.merge.securityContext.readOnlyRootFilesystem | bool | `true` |  |
 | nats.container.patch[0].op | string | `"add"` |  |
 | nats.container.patch[0].path | string | `"/volumeMounts/-"` |  |
 | nats.container.patch[0].value.mountPath | string | `"/data"` |  |
 | nats.container.patch[0].value.name | string | `"js-data"` |  |
 | nats.enabled | bool | `true` | Deploy NATS with the release; set false and configure `externalNats` to bring your own |
 | nats.natsBox.enabled | bool | `false` |  |
+| nats.podTemplate.merge.spec.securityContext.fsGroup | int | `1000` |  |
+| nats.podTemplate.merge.spec.securityContext.runAsGroup | int | `1000` |  |
+| nats.podTemplate.merge.spec.securityContext.runAsNonRoot | bool | `true` |  |
+| nats.podTemplate.merge.spec.securityContext.runAsUser | int | `1000` |  |
+| nats.podTemplate.merge.spec.securityContext.seccompProfile.type | string | `"RuntimeDefault"` |  |
 | nats.podTemplate.patch[0].op | string | `"add"` |  |
 | nats.podTemplate.patch[0].path | string | `"/spec/volumes/-"` |  |
 | nats.podTemplate.patch[0].value.emptyDir.sizeLimit | string | `"2Gi"` |  |
 | nats.podTemplate.patch[0].value.name | string | `"js-data"` |  |
+| nats.reloader.merge.securityContext.allowPrivilegeEscalation | bool | `false` |  |
+| nats.reloader.merge.securityContext.capabilities.drop[0] | string | `"ALL"` |  |
+| nats.reloader.merge.securityContext.readOnlyRootFilesystem | bool | `true` |  |
 | natsSettings.ackWaitSeconds | int | `60` | `NATS_ACK_WAIT_SECONDS`; must be greater than `worker.config.lockTtlSeconds` |
 | natsSettings.maxDeliver | int | `5` | `NATS_MAX_DELIVER`: deliveries of a job before it's dead-lettered |
 | natsSettings.streamName | string | `"RENOVATE_JOBS"` | `NATS_STREAM_NAME`: the job stream (WorkQueue) |
