@@ -136,6 +136,8 @@ The Helm chart in [`charts/koshin`](charts/koshin/README.md) is the primary inst
 * **`minimal`** (default): one NATS and one coordination Valkey on `emptyDir`, and a separate package-cache Valkey.
 * **`ha`** (`-f values-ha.yaml`): a 3-node NATS cluster on PVCs with streams at R3, Valkey primary + 2 replicas with AOF and 3 Sentinels, PodDisruptionBudgets and node spread.
 
+The [chart README](charts/koshin/README.md) covers [choosing a profile](charts/koshin/README.md#choosing-a-profile), [sizing](charts/koshin/README.md#sizing), [backups and recovery](charts/koshin/README.md#backups-and-recovery) and [uninstalling](charts/koshin/README.md#uninstall).
+
 ```bash
 helm install koshin oci://ghcr.io/hononeko/charts/koshin -n koshin --create-namespace \
   --set proxy.existingSecret=koshin-proxy --set worker.existingSecret=koshin-worker
