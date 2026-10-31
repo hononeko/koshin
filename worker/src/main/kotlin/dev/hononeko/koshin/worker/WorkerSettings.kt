@@ -15,6 +15,7 @@ data class WorkerSettings(
     val platforms: Set<Platform> = DEFAULT_PLATFORMS,
     val natsUrl: String = DEFAULT_NATS_URL,
     val renovateBaseDir: Path = Path(DEFAULT_RENOVATE_BASE_DIR),
+    val renovateCacheDir: Path = renovateBaseDir.resolve(RENOVATE_CACHE_SUBDIR),
     val renovateBinarySource: String = DEFAULT_RENOVATE_BINARY_SOURCE,
     val renovateRedisUrl: String? = null,
     val githubToken: String? = null,
@@ -28,12 +29,14 @@ data class WorkerSettings(
     val throttle: PlatformThrottleConfig = PlatformThrottleConfig(),
     val requestLimits: RenovateRequestLimits = RenovateRequestLimits(),
     val rateLimitLogPattern: String = RateLimitDetector.DEFAULT_ABORT_PATTERN,
+    val repoCache: RepoCacheSettings = RepoCacheSettings(),
 ) {
     init {
         require(port in 0..MAX_PORT) { "port must be in 0..$MAX_PORT: $port" }
         require(platforms.isNotEmpty()) { "platforms cannot be empty" }
         require(natsUrl.isNotBlank()) { "natsUrl cannot be blank" }
         require(renovateBaseDir.isAbsolute) { "RENOVATE_BASE_DIR must be absolute: $renovateBaseDir" }
+        require(renovateCacheDir.isAbsolute) { "RENOVATE_CACHE_DIR must be absolute: $renovateCacheDir" }
         require(renovateBinarySource.isNotBlank()) { "renovateBinarySource cannot be blank" }
         require(!podDeletionCostEnabled || (!podName.isNullOrBlank() && !podNamespace.isNullOrBlank())) {
             "POD_DELETION_COST_ENABLED requires POD_NAME and POD_NAMESPACE"
@@ -44,7 +47,7 @@ data class WorkerSettings(
     override fun toString(): String = "WorkerSettings(port=$port, http2Enabled=$http2Enabled, platforms=$platforms, " +
         "natsUrl=${natsUrl.withoutUserInfo()}, renovateBaseDir=$renovateBaseDir, " +
         "githubToken=${githubToken.redacted()}, gitlabToken=${gitlabToken.redacted()}, jobConfig=$jobConfig, " +
-        "throttle=$throttle, requestLimits=$requestLimits)"
+        "throttle=$throttle, requestLimits=$requestLimits, repoCache=$repoCache)"
 
     companion object {
         const val DEFAULT_PORT = 8080
@@ -53,14 +56,24 @@ data class WorkerSettings(
         const val DEFAULT_NATS_URL = "nats://koshin-nats:4222"
         const val DEFAULT_RENOVATE_BASE_DIR = "/tmp/renovate"
         const val DEFAULT_RENOVATE_BINARY_SOURCE = "global"
+
+        /** Renovate's default `cacheDir` under `baseDir`. */
+        const val RENOVATE_CACHE_SUBDIR = "cache"
         val DEFAULT_PLATFORMS: Set<Platform> = setOf(Platform.GITHUB)
 
-        fun fromEnv(env: Map<String, String> = System.getenv()): WorkerSettings = WorkerSettings(
+        fun fromEnv(env: Map<String, String> = System.getenv()): WorkerSettings {
+            val baseDir = Path(env.nonBlank("RENOVATE_BASE_DIR") ?: DEFAULT_RENOVATE_BASE_DIR)
+            return fromEnv(env, baseDir)
+        }
+
+        private fun fromEnv(env: Map<String, String>, baseDir: Path) = WorkerSettings(
             port = env.long("PORT")?.toInt() ?: DEFAULT_PORT,
             http2Enabled = env.boolean("HTTP2_ENABLED") ?: DEFAULT_HTTP2_ENABLED,
             platforms = parsePlatforms(env["PLATFORMS"]),
             natsUrl = env.nonBlank("NATS_URL") ?: DEFAULT_NATS_URL,
-            renovateBaseDir = Path(env.nonBlank("RENOVATE_BASE_DIR") ?: DEFAULT_RENOVATE_BASE_DIR),
+            renovateBaseDir = baseDir,
+            renovateCacheDir = env.nonBlank("RENOVATE_CACHE_DIR")?.let { Path(it) }
+                ?: baseDir.resolve(RENOVATE_CACHE_SUBDIR),
             // Renovate reads RENOVATE_BINARY_SOURCE; RENOVATE_BINARYSOURCE is the older koshin spelling.
             renovateBinarySource = env.nonBlank("RENOVATE_BINARY_SOURCE")
                 ?: env.nonBlank("RENOVATE_BINARYSOURCE")
@@ -80,6 +93,7 @@ data class WorkerSettings(
                 concurrentRequestLimit = env.long("RENOVATE_CONCURRENT_REQUEST_LIMIT")?.toInt(),
             ),
             rateLimitLogPattern = env.nonBlank("RATE_LIMIT_LOG_PATTERN") ?: RateLimitDetector.DEFAULT_ABORT_PATTERN,
+            repoCache = RepoCacheSettings.fromEnv(env),
         )
 
         private fun throttleFromEnv(env: Map<String, String>): PlatformThrottleConfig {
@@ -103,20 +117,6 @@ data class WorkerSettings(
                     ?: defaults.lockCollisionRetryDelay,
                 maxRateLimitRequeues = env.long("MAX_RATE_LIMIT_REQUEUES")?.toInt() ?: defaults.maxRateLimitRequeues,
             )
-        }
-
-        private fun Map<String, String>.nonBlank(key: String): String? = this[key]?.trim()?.takeIf { it.isNotEmpty() }
-
-        private fun Map<String, String>.boolean(key: String): Boolean? = nonBlank(key)?.let { raw ->
-            requireNotNull(raw.lowercase().toBooleanStrictOrNull()) { "Invalid boolean for $key: '$raw'" }
-        }
-
-        private fun Map<String, String>.long(key: String): Long? = nonBlank(key)?.let { raw ->
-            requireNotNull(raw.toLongOrNull()) { "Invalid integer for $key: '$raw'" }
-        }
-
-        private fun Map<String, String>.double(key: String): Double? = nonBlank(key)?.let { raw ->
-            requireNotNull(raw.toDoubleOrNull()) { "Invalid number for $key: '$raw'" }
         }
 
         private fun parsePlatforms(raw: String?): Set<Platform> {

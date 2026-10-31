@@ -4,6 +4,7 @@ import dev.hononeko.koshin.adapters.nats.NatsConfig
 import dev.hononeko.koshin.adapters.nats.NatsJetStreamBootstrap
 import dev.hononeko.koshin.adapters.nats.NatsJobQueueConsumer
 import dev.hononeko.koshin.adapters.nats.NatsJobQueuePublisher
+import dev.hononeko.koshin.adapters.nats.NatsRepoCacheConfig
 import dev.hononeko.koshin.adapters.valkey.PlatformThrottleConfig
 import dev.hononeko.koshin.adapters.valkey.ValkeyConfig
 import dev.hononeko.koshin.adapters.valkey.ValkeyRepoCoordinationAdapter
@@ -17,6 +18,7 @@ import io.nats.client.api.StorageType
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.testcontainers.containers.GenericContainer
+import java.io.ByteArrayOutputStream
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.time.Duration
@@ -71,6 +73,8 @@ class E2eCluster(
 
     val valkeyConfig = ValkeyConfig(valkeyUrl = Containers.valkeyUrl, keyPrefix = "e2e-$id")
 
+    val repoCacheConfig = NatsRepoCacheConfig(bucket = "e2e-$id-repo-cache", storageType = StorageType.Memory)
+
     /** Every CLI run of every worker, in start order. */
     val runs: MutableList<CliRun> = CopyOnWriteArrayList()
 
@@ -123,6 +127,14 @@ class E2eCluster(
             val data = checkNotNull(jsm.getMessage(natsConfig.dlqStreamName, seq).data).decodeToString()
             Json.decodeFromString(RenovateJobEvent.serializer(), data)
         }
+    }
+
+    /** The repo's cache as stored in the Object Store bucket, or `null` if none was persisted. */
+    fun storedCache(repo: RepoRef): String? {
+        val store = nats.objectStore(repoCacheConfig.bucket)
+        val name = "${repo.platform.name.lowercase()}/${repo.repository}.json"
+        if (store.getInfo(name) == null) return null
+        return ByteArrayOutputStream().also { store.get(name, it) }.toString(Charsets.UTF_8)
     }
 
     fun publishedCount(): Long = jsm.getStreamInfo(natsConfig.jobsStreamName).streamState.lastSequence

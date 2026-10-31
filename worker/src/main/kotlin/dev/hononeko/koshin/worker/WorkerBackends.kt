@@ -5,7 +5,9 @@ import dev.hononeko.koshin.adapters.nats.NatsConfig
 import dev.hononeko.koshin.adapters.nats.NatsJetStreamBootstrap
 import dev.hononeko.koshin.adapters.nats.NatsJobQueueConsumer
 import dev.hononeko.koshin.adapters.nats.NatsJobQueuePublisher
+import dev.hononeko.koshin.adapters.nats.NatsObjectStoreRepoCache
 import dev.hononeko.koshin.adapters.nats.NatsReconnectBootstrapper
+import dev.hononeko.koshin.adapters.nats.NatsRepoCacheConfig
 import dev.hononeko.koshin.adapters.nats.isConnected
 import dev.hononeko.koshin.adapters.valkey.PlatformThrottleConfig
 import dev.hononeko.koshin.adapters.valkey.ValkeyConfig
@@ -16,6 +18,7 @@ import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.ports.JobQueueConsumer
 import dev.hononeko.koshin.core.ports.JobQueuePublisher
 import dev.hononeko.koshin.core.ports.PlatformThrottlePort
+import dev.hononeko.koshin.core.ports.RepoCachePort
 import dev.hononeko.koshin.core.ports.RepoCoordinationPort
 import io.lettuce.core.ExperimentalLettuceCoroutinesApi
 import io.lettuce.core.RedisClient
@@ -36,6 +39,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
+import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -44,6 +48,7 @@ class NatsBackend(
     val consumer: JobQueueConsumer,
     val publisher: JobQueuePublisher,
     private val healthy: () -> Boolean,
+    val repoCache: RepoCachePort = NoOpRepoCache,
     private val onClose: () -> Unit = {},
 ) : AutoCloseable {
     fun isHealthy(): Boolean = healthy()
@@ -73,6 +78,7 @@ class WorkerBackends(
         val publisher: JobQueuePublisher,
         val coordination: RepoCoordinationPort,
         val throttle: PlatformThrottlePort,
+        val repoCache: RepoCachePort,
     )
 
     private val logger = LoggerFactory.getLogger(WorkerBackends::class.java)
@@ -89,7 +95,13 @@ class WorkerBackends(
             val valkeyBackend = retrying("Valkey") { connectValkey() }
             valkey.set(valkeyBackend)
             ready.complete(
-                Ports(natsBackend.consumer, natsBackend.publisher, valkeyBackend.coordination, valkeyBackend.throttle),
+                Ports(
+                    consumer = natsBackend.consumer,
+                    publisher = natsBackend.publisher,
+                    coordination = valkeyBackend.coordination,
+                    throttle = valkeyBackend.throttle,
+                    repoCache = natsBackend.repoCache,
+                ),
             )
             logger.info("Connected to NATS and Valkey")
         }
@@ -128,14 +140,24 @@ class WorkerBackends(
     }
 
     companion object {
+        /** With [repoCache] set, Renovate's repository caches under [cacheDir] are synced with that bucket. */
+        @Suppress("LongParameterList")
         fun connectNats(
             url: String,
             config: NatsConfig,
             platforms: Collection<Platform>,
+            repoCache: NatsRepoCacheConfig? = null,
+            cacheDir: Path? = null,
             ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
         ): NatsBackend {
+            require(repoCache == null || cacheDir != null) { "cacheDir is required with a repo cache bucket" }
             val reconnectScope = CoroutineScope(SupervisorJob() + ioDispatcher)
-            val bootstrap = { conn: Connection -> NatsJetStreamBootstrap(conn, config).bootstrap(platforms) }
+            val cacheRef = AtomicReference<NatsObjectStoreRepoCache?>(null)
+            val bootstrap = { conn: Connection ->
+                NatsJetStreamBootstrap(conn, config).bootstrap(platforms)
+                cacheRef.get()?.ensureBucket()
+                Unit
+            }
             val options = Options.Builder()
                 .server(url)
                 .maxReconnects(-1)
@@ -143,6 +165,9 @@ class WorkerBackends(
                 .build()
             val connection = Nats.connect(options)
             try {
+                repoCache?.let {
+                    cacheRef.set(NatsObjectStoreRepoCache(connection, it, checkNotNull(cacheDir), ioDispatcher))
+                }
                 bootstrap(connection)
                 val forwarder = MaxDeliverDlqForwarder(connection, config)
                 val consumer = NatsJobQueueConsumer(connection, config)
@@ -150,6 +175,7 @@ class WorkerBackends(
                     consumer = consumer,
                     publisher = NatsJobQueuePublisher(connection, config),
                     healthy = connection::isConnected,
+                    repoCache = cacheRef.get() ?: NoOpRepoCache,
                 ) {
                     reconnectScope.cancel()
                     runCatching { consumer.close() }

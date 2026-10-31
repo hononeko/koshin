@@ -74,6 +74,26 @@ fun createWorkerServer(
     },
 )
 
+internal fun cliExecutor(settings: WorkerSettings): CliExecutorPort {
+    val processExecutor = RenovateProcessExecutor(
+        baseDir = settings.renovateBaseDir,
+        binarySource = settings.renovateBinarySource,
+        redisUrl = settings.renovateRedisUrl,
+        requestLimits = settings.requestLimits,
+        rateLimitPattern = Regex(settings.rateLimitLogPattern),
+        repoCache = settings.repoCache,
+        cacheDir = settings.renovateCacheDir,
+    )
+    return if (settings.podDeletionCostEnabled) {
+        PodDeletionCostCliExecutor(
+            processExecutor,
+            KubernetesPodDeletionCostUpdater(checkNotNull(settings.podName), checkNotNull(settings.podNamespace)),
+        )
+    } else {
+        processExecutor
+    }
+}
+
 fun main() {
     val settings = WorkerSettings.fromEnv()
     val natsConfig = NatsConfig.fromEnv()
@@ -88,25 +108,19 @@ fun main() {
     val workspaceCleaner = WorkspaceCleaner(settings.renovateBaseDir)
     runBlocking { workspaceCleaner.purgeAll() }
 
-    val processExecutor = RenovateProcessExecutor(
-        baseDir = settings.renovateBaseDir,
-        binarySource = settings.renovateBinarySource,
-        redisUrl = settings.renovateRedisUrl,
-        requestLimits = settings.requestLimits,
-        rateLimitPattern = Regex(settings.rateLimitLogPattern),
-    )
-    val cliExecutor: CliExecutorPort = if (settings.podDeletionCostEnabled) {
-        PodDeletionCostCliExecutor(
-            processExecutor,
-            KubernetesPodDeletionCostUpdater(checkNotNull(settings.podName), checkNotNull(settings.podNamespace)),
-        )
-    } else {
-        processExecutor
-    }
+    val cliExecutor = cliExecutor(settings)
 
     val backends = WorkerBackends(
         // Consumers for every platform, so KEDA's per-platform triggers never hit a missing consumer.
-        connectNats = { WorkerBackends.connectNats(settings.natsUrl, natsConfig, Platform.entries) },
+        connectNats = {
+            WorkerBackends.connectNats(
+                url = settings.natsUrl,
+                config = natsConfig,
+                platforms = Platform.entries,
+                repoCache = settings.repoCache.natsConfig(natsConfig),
+                cacheDir = settings.renovateCacheDir,
+            )
+        },
         connectValkey = { WorkerBackends.connectValkey(valkeyConfig, settings.throttle) },
     )
     backends.startAsync()
@@ -118,7 +132,7 @@ fun main() {
             queuePublisher = ports.publisher,
             coordinationPort = ports.coordination,
             throttlePort = ports.throttle,
-            cachePort = NoOpRepoCache,
+            cachePort = ports.repoCache,
             credentialsPort = credentials,
             cliExecutor = cliExecutor,
             workspaceCleaner = workspaceCleaner,

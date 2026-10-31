@@ -2,8 +2,8 @@ package dev.hononeko.koshin.e2e
 
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.PlatformCredentials
+import dev.hononeko.koshin.core.model.RepoRef
 import dev.hononeko.koshin.core.usecase.ProcessRenovateJobUseCase
-import dev.hononeko.koshin.worker.NoOpRepoCache
 import dev.hononeko.koshin.worker.StaticCredentialsProvider
 import dev.hononeko.koshin.worker.WorkerBackends
 import dev.hononeko.koshin.worker.WorkerDaemon
@@ -11,6 +11,7 @@ import dev.hononeko.koshin.worker.WorkerSettings
 import dev.hononeko.koshin.worker.WorkspaceCleaner
 import dev.hononeko.koshin.worker.createWorkerServer
 import kotlinx.coroutines.runBlocking
+import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.io.path.ExperimentalPathApi
 import kotlin.io.path.createTempDirectory
@@ -25,7 +26,14 @@ class TestWorker(val name: String, private val cluster: E2eCluster, runTime: Dur
     val stall = Stall()
 
     private val baseDir = createTempDirectory("koshin-e2e-$name-")
-    private val nats = WorkerBackends.connectNats(Containers.natsUrl, cluster.natsConfig, Platform.entries)
+    private val cacheDir = baseDir.resolve(WorkerSettings.RENOVATE_CACHE_SUBDIR)
+    private val nats = WorkerBackends.connectNats(
+        url = Containers.natsUrl,
+        config = cluster.natsConfig,
+        platforms = Platform.entries,
+        repoCache = cluster.repoCacheConfig,
+        cacheDir = cacheDir,
+    )
     private val valkey = runBlocking { WorkerBackends.connectValkey(cluster.valkeyConfig, cluster.throttle) }
     private val backends = WorkerBackends(connectNats = { nats }, connectValkey = { valkey })
 
@@ -38,7 +46,7 @@ class TestWorker(val name: String, private val cluster: E2eCluster, runTime: Dur
         queuePublisher = nats.publisher,
         coordinationPort = coordination,
         throttlePort = throttle,
-        cachePort = NoOpRepoCache,
+        cachePort = nats.repoCache,
         credentialsPort = StaticCredentialsProvider(
             Platform.entries.associateWith { PlatformCredentials("e2e-token") },
         ),
@@ -63,6 +71,10 @@ class TestWorker(val name: String, private val cluster: E2eCluster, runTime: Dur
         get() = consumer.deliveries
 
     fun runs(): List<CliRun> = cluster.runs.filter { it.worker == name }
+
+    /** Where Renovate (`repositoryCacheType=local`) keeps [repo]'s cache on this worker. */
+    fun cacheFile(repo: RepoRef): Path =
+        cacheDir.resolve("renovate/repository/${repo.platform.name.lowercase()}/${repo.repository}.json")
 
     fun start() {
         backends.startAsync()

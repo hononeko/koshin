@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import kotlin.io.path.Path
+import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
@@ -33,6 +34,66 @@ class WorkerSettingsTest {
         assertEquals(3600.seconds, settings.throttle.backoffMax)
         assertEquals(RenovateRequestLimits(), settings.requestLimits)
         assertEquals(RateLimitDetector.DEFAULT_ABORT_PATTERN, settings.rateLimitLogPattern)
+        assertEquals(Path("/tmp/renovate/cache"), settings.renovateCacheDir)
+        assertEquals(RepoCacheSettings(), settings.repoCache)
+        assertEquals(RepoCacheProvider.NATS, settings.repoCache.provider)
+        assertEquals("koshin-repo-cache", settings.repoCache.bucket)
+    }
+
+    @Test
+    fun `fromEnv parses repo cache settings`() {
+        val settings = WorkerSettings.fromEnv(
+            mapOf(
+                "RENOVATE_BASE_DIR" to "/work",
+                "REPO_CACHE_PROVIDER" to "NATS",
+                "REPO_CACHE_BUCKET" to "caches",
+                "REPO_CACHE_MAX_BYTES" to "1073741824",
+                "REPO_CACHE_TTL_DAYS" to "30",
+            ),
+        )
+        assertEquals(Path("/work/cache"), settings.renovateCacheDir)
+        assertEquals(
+            RepoCacheSettings(bucket = "caches", maxBytes = 1_073_741_824, ttl = 30.days),
+            settings.repoCache,
+        )
+        assertEquals(Path("/cache"), WorkerSettings.fromEnv(mapOf("RENOVATE_CACHE_DIR" to "/cache")).renovateCacheDir)
+    }
+
+    @Test
+    fun `fromEnv parses s3 repo cache settings, accepting Renovate's legacy names`() {
+        val s3 = mapOf(
+            "REPO_CACHE_PROVIDER" to "s3",
+            "RENOVATE_REPOSITORY_CACHE_TYPE" to "s3://renovate/repo-cache/",
+            "RENOVATE_X_S3_ENDPOINT" to "http://seaweedfs:8333",
+        )
+        assertEquals(
+            RepoCacheSettings(
+                provider = RepoCacheProvider.S3,
+                s3Url = "s3://renovate/repo-cache/",
+                s3Endpoint = "http://seaweedfs:8333",
+                s3PathStyle = true,
+            ),
+            WorkerSettings.fromEnv(s3).repoCache,
+        )
+        val canonical = WorkerSettings.fromEnv(
+            s3 + mapOf("RENOVATE_S3_ENDPOINT" to "http://s3:9000", "RENOVATE_S3_PATH_STYLE" to "false"),
+        ).repoCache
+        assertEquals("http://s3:9000", canonical.s3Endpoint)
+        assertFalse(canonical.s3PathStyle)
+    }
+
+    @Test
+    fun `fromEnv rejects invalid repo cache settings`() {
+        assertThrows<IllegalArgumentException> { WorkerSettings.fromEnv(mapOf("REPO_CACHE_PROVIDER" to "redis")) }
+        assertThrows<IllegalArgumentException> { WorkerSettings.fromEnv(mapOf("REPO_CACHE_PROVIDER" to "s3")) }
+        assertThrows<IllegalArgumentException> {
+            WorkerSettings.fromEnv(
+                mapOf("REPO_CACHE_PROVIDER" to "s3", "RENOVATE_REPOSITORY_CACHE_TYPE" to "local"),
+            )
+        }
+        assertThrows<IllegalArgumentException> { WorkerSettings.fromEnv(mapOf("REPO_CACHE_BUCKET" to "a.b")) }
+        assertThrows<IllegalArgumentException> { WorkerSettings.fromEnv(mapOf("REPO_CACHE_MAX_BYTES" to "0")) }
+        assertThrows<IllegalArgumentException> { WorkerSettings.fromEnv(mapOf("RENOVATE_CACHE_DIR" to "cache")) }
     }
 
     @Test

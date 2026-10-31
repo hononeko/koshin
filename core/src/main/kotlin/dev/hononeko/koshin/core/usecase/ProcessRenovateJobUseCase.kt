@@ -179,7 +179,7 @@ class ProcessRenovateJobUseCase(
         val event = delivery.event
         val repo = event.repo
 
-        cachePort.restore(repo)
+        restoreCache(repo)
         val creds = credentialsPort.credentialsFor(repo)
         val result = cliExecutor.execute(repo, creds, config.cliTimeout)
 
@@ -194,6 +194,28 @@ class ProcessRenovateJobUseCase(
             is JobExecutionResult.RateLimited -> {
                 handleRateLimited(delivery, lockToken, result, heartbeatJob)
             }
+        }
+    }
+
+    /** A failed upload only means a colder next run. */
+    private suspend fun persistCache(repo: RepoRef) {
+        try {
+            cachePort.persist(repo)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (@Suppress("TooGenericExceptionCaught", "SwallowedException") _: Exception) {
+            // Keep the successful result
+        }
+    }
+
+    /** A missing or unreadable cache only means a cold run. */
+    private suspend fun restoreCache(repo: RepoRef) {
+        try {
+            cachePort.restore(repo)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (@Suppress("TooGenericExceptionCaught", "SwallowedException") _: Exception) {
+            // Run cold
         }
     }
 
@@ -265,7 +287,7 @@ class ProcessRenovateJobUseCase(
         val repo = delivery.event.repo
 
         if (result is JobExecutionResult.Success) {
-            runCatching { cachePort.persist(repo) }
+            persistCache(repo)
         }
 
         heartbeatJob.cancelAndJoin()

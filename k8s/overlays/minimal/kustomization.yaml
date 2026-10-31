@@ -1,5 +1,5 @@
 # Single NATS, coordination Valkey and package-cache Valkey, all on emptyDir. A restart loses pending jobs, locks,
-# dirty flags or the package cache; the 6-hourly sweeper re-enqueues every repository. See KSH-12 for `ha`.
+# dirty flags, repo caches or the package cache; the 6-hourly sweeper re-enqueues every repository. See KSH-12 for `ha`.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
@@ -18,6 +18,9 @@ configMapGenerator:
     literals:
       - NATS_STREAM_REPLICAS=1
       - RENOVATE_REDIS_URL=redis://koshin-valkey-cache:6379
+      # Repo caches share NATS's 1GB max_file_store with the job streams: keep them well below it.
+      - REPO_CACHE_MAX_BYTES=536870912
+      - REPO_CACHE_TTL_DAYS=30
 
 # KEDA resolves the NATS monitoring endpoint from its own namespace: fill in ours.
 replacements:

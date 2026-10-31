@@ -689,4 +689,28 @@ class ProcessRenovateJobUseCaseTest {
         coVerify(exactly = 1) { throttlePort.resetBackoff(testRepo.platform) }
         coVerify(exactly = 1) { throttlePort.releaseRunSlot(testRepo.platform, "token-1") }
     }
+
+    @Test
+    fun `cache restore failure runs the job cold`() = runTest {
+        coEvery { cachePort.restore(testRepo) } throws IllegalStateException("Object store unreachable")
+
+        useCase.processDelivery(delivery, "token-1")
+
+        coVerify(exactly = 1) { cliExecutor.execute(testRepo, any(), any()) }
+        coVerify(exactly = 1) { cachePort.persist(testRepo) }
+        coVerify(exactly = 1) { delivery.ack() }
+        coVerify(exactly = 0) { delivery.nack(any()) }
+    }
+
+    @Test
+    fun `cancellation during cache persist is not swallowed`() = runTest {
+        coEvery { cachePort.persist(testRepo) } throws CancellationException("SIGTERM")
+
+        val thrown = runCatching { useCase.processDelivery(delivery, "token-1") }.exceptionOrNull()
+
+        assertTrue(thrown is CancellationException, "got $thrown")
+        coVerify(exactly = 0) { delivery.ack() }
+        coVerify(exactly = 1) { delivery.nack(Duration.ZERO) }
+        coVerify(exactly = 1) { coordinationPort.releaseLock(testRepo, "token-1") }
+    }
 }
