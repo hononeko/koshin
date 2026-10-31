@@ -74,7 +74,7 @@ fun createWorkerServer(
     },
 )
 
-private fun cliExecutor(settings: WorkerSettings): CliExecutorPort {
+internal fun cliExecutor(settings: WorkerSettings): CliExecutorPort {
     val processExecutor = RenovateProcessExecutor(
         baseDir = settings.renovateBaseDir,
         binarySource = settings.renovateBinarySource,
