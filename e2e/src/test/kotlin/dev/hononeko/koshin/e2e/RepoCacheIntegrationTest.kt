@@ -83,12 +83,12 @@ class RepoCacheIntegrationTest {
     }
 
     @Test
-    fun `without a stored cache the run proceeds cold`() {
-        cluster.startWorker("worker-a").renovate("cache-v1", JobExecutionResult.Failed(1))
+    fun `without a stored cache the run proceeds cold, ignoring what a failed run left on the worker`() {
+        cluster.startWorker("worker-a").renovate("from-failed-run", JobExecutionResult.Failed(1))
+        run()
         run()
 
-        assertEquals(listOf(COLD), seen)
-        assertEquals(1, cluster.runs.size)
+        assertEquals(listOf(COLD, COLD), seen)
         assertNull(cluster.storedCache(repo))
     }
 

@@ -17,8 +17,10 @@ import java.nio.file.StandardCopyOption
 import kotlin.io.path.createDirectories
 import kotlin.io.path.createTempFile
 import kotlin.io.path.deleteIfExists
+import kotlin.io.path.exists
 import kotlin.io.path.inputStream
 import kotlin.io.path.isRegularFile
+import kotlin.io.path.isSymbolicLink
 import kotlin.io.path.moveTo
 import kotlin.io.path.outputStream
 import kotlin.time.TimeSource
@@ -28,9 +30,10 @@ import kotlin.time.toJavaDuration
  * Keeps Renovate's local repository cache in a JetStream Object Store bucket, so it follows the repo across pods.
  *
  * Renovate (`repositoryCacheType=local`) reads and writes `<cacheDir>/renovate/repository/<platform>/<repo>.json`.
- * [restore] downloads `<platform>/<repo>.json` there before a run, [persist] uploads it after a successful one. Both
- * run under the repo lock, so there's a single writer. Cache errors never fail a run: they're logged and the run goes
- * ahead cold, or the upload is skipped.
+ * [restore] replaces that file with `<platform>/<repo>.json` before a run (or deletes it, so a leftover from an
+ * unpersisted run is never used), and [persist] uploads it after a successful one. Both run under the repo lock, so
+ * there's a single writer. Cache errors never fail a run: they're logged and the run goes ahead cold, or the upload is
+ * skipped. Renovate can run repo code, so no path below `cacheDir` may be a symlink.
  */
 class NatsObjectStoreRepoCache(
     private val connection: Connection,
@@ -40,7 +43,8 @@ class NatsObjectStoreRepoCache(
 ) : RepoCachePort {
 
     private val logger = LoggerFactory.getLogger(NatsObjectStoreRepoCache::class.java)
-    private val repoCacheDir: Path = cacheDir.toAbsolutePath().normalize().resolve(RENOVATE_REPO_CACHE_DIR)
+    private val cacheRoot: Path = cacheDir.toAbsolutePath().normalize()
+    private val repoCacheDir: Path = cacheRoot.resolve(RENOVATE_REPO_CACHE_DIR)
 
     /** Creates the bucket, or updates its replicas / size cap / TTL. Run on every (re)connect. */
     fun ensureBucket() {
@@ -59,10 +63,20 @@ class NatsObjectStoreRepoCache(
             jsm.getStreamInfo(backing.name)
             true
         } catch (e: JetStreamApiException) {
-            if (e.apiErrorCode != STREAM_NOT_FOUND_ERROR_CODE) throw e
+            if (!e.hasCode(STREAM_NOT_FOUND_ERROR_CODE)) throw e
             false
         }
-        if (exists) jsm.updateStream(backing) else jsm.addStream(backing)
+        if (exists) {
+            jsm.updateStream(backing)
+        } else {
+            try {
+                jsm.addStream(backing)
+            } catch (e: JetStreamApiException) {
+                // Another worker created it first, with a different config
+                if (!e.hasCode(STREAM_NAME_IN_USE_ERROR_CODE)) throw e
+                jsm.updateStream(backing)
+            }
+        }
         logger.info("Ensured repo cache bucket {} (replicas: {})", config.bucket, config.replicas)
     }
 
@@ -77,6 +91,10 @@ class NatsObjectStoreRepoCache(
     override suspend fun restore(repo: RepoRef): Boolean = withContext(ioDispatcher) {
         val started = TimeSource.Monotonic.markNow()
         try {
+            val target = localFile(repo)
+            requireNoSymlinks(target.parent)
+            // The bucket is the only source: never run on what a failed or timed-out run left behind.
+            target.deleteIfExists()
             val store = connection.objectStore(config.bucket)
             val name = objectName(repo)
             val info = store.getInfo(name)
@@ -85,10 +103,9 @@ class NatsObjectStoreRepoCache(
                     .log("No shared repo cache for {}; running cold", repo)
                 return@withContext false
             }
-            val target = localFile(repo)
             target.parent.createDirectories()
             // Download beside the target and rename, so Renovate never sees a partial file.
-            val partial = createTempFile(target.parent, ".${target.fileName}", ".part")
+            val partial = createTempFile(target.parent, ".koshin-", ".part")
             try {
                 partial.outputStream().use { store.get(name, it) }
                 partial.moveTo(target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
@@ -112,6 +129,7 @@ class NatsObjectStoreRepoCache(
         val started = TimeSource.Monotonic.markNow()
         try {
             val source = localFile(repo)
+            requireNoSymlinks(source.parent)
             if (!source.isRegularFile(LinkOption.NOFOLLOW_LINKS)) {
                 logger.debug("Renovate wrote no repo cache for {}; nothing to persist", repo)
                 return@withContext
@@ -129,9 +147,22 @@ class NatsObjectStoreRepoCache(
         }
     }
 
+    /** Fails if any existing path from below `cacheDir` down to [dir] is a symlink. */
+    private fun requireNoSymlinks(dir: Path) {
+        var current = cacheRoot
+        for (segment in cacheRoot.relativize(dir)) {
+            current = current.resolve(segment)
+            if (!current.exists(LinkOption.NOFOLLOW_LINKS)) return
+            check(!current.isSymbolicLink()) { "Refusing to follow symlink $current in the repo cache dir" }
+        }
+    }
+
+    private fun JetStreamApiException.hasCode(code: Int) = apiErrorCode == code || errorCode == code
+
     companion object {
         /** Renovate's local repository cache layout under `cacheDir` (verified against Renovate 44.178.3). */
         const val RENOVATE_REPO_CACHE_DIR = "renovate/repository"
         private const val STREAM_NOT_FOUND_ERROR_CODE = 10059
+        private const val STREAM_NAME_IN_USE_ERROR_CODE = 10058
     }
 }

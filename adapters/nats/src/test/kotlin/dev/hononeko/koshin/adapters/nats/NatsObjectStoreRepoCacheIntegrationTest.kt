@@ -19,9 +19,11 @@ import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.io.path.createDirectories
+import kotlin.io.path.createSymbolicLinkPointingTo
 import kotlin.io.path.exists
 import kotlin.io.path.listDirectoryEntries
 import kotlin.io.path.readBytes
+import kotlin.io.path.readText
 import kotlin.io.path.writeBytes
 import kotlin.io.path.writeText
 import kotlin.random.Random
@@ -104,11 +106,31 @@ class NatsObjectStoreRepoCacheIntegrationTest {
     }
 
     @Test
-    fun `missing object restores nothing so the run proceeds cold`() = runBlocking {
+    fun `missing object restores nothing and drops a leftover local file so the run proceeds cold`() = runBlocking {
         val b = cache(workerB)
+        b.localFile(repo).apply { parent.createDirectories() }.writeText("left by a failed run")
 
         assertFalse(b.restore(repo))
         assertFalse(b.localFile(repo).exists())
+    }
+
+    @Test
+    fun `symlinks in the cache dir are never followed`() = runBlocking {
+        val a = cache(workerA)
+        a.localFile(repo).apply { parent.createDirectories() }.writeText("v1")
+        a.persist(repo)
+        val outside = workerB.resolve("outside").createDirectories()
+        outside.resolve("koshin.json").writeText("secret")
+        val b = cache(workerB.resolve("cache"))
+        val ownerDir = b.localFile(repo).parent
+        ownerDir.parent.createDirectories()
+        ownerDir.createSymbolicLinkPointingTo(outside)
+
+        assertFalse(b.restore(repo))
+        assertEquals("secret", outside.resolve("koshin.json").readText())
+        b.persist(repo)
+        assertTrue(a.restore(repo))
+        assertEquals("v1", a.localFile(repo).readText())
     }
 
     @Test

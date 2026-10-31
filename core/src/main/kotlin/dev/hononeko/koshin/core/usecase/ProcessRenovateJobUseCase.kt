@@ -197,6 +197,17 @@ class ProcessRenovateJobUseCase(
         }
     }
 
+    /** A failed upload only means a colder next run. */
+    private suspend fun persistCache(repo: RepoRef) {
+        try {
+            cachePort.persist(repo)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (@Suppress("TooGenericExceptionCaught", "SwallowedException") _: Exception) {
+            // Keep the successful result
+        }
+    }
+
     /** A missing or unreadable cache only means a cold run. */
     private suspend fun restoreCache(repo: RepoRef) {
         try {
@@ -276,7 +287,7 @@ class ProcessRenovateJobUseCase(
         val repo = delivery.event.repo
 
         if (result is JobExecutionResult.Success) {
-            runCatching { cachePort.persist(repo) }
+            persistCache(repo)
         }
 
         heartbeatJob.cancelAndJoin()
