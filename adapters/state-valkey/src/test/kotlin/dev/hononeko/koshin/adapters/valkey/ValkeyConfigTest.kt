@@ -131,6 +131,26 @@ class ValkeyConfigTest {
     }
 
     @Test
+    fun `sentinel username authenticates the sentinel nodes as that ACL user`() {
+        val config = ValkeyConfig.fromEnv(
+            mapOf(
+                "VALKEY_URL" to "redis-sentinel://s-0:26379?sentinelMasterId=mymaster",
+                "VALKEY_SENTINEL_USERNAME" to "sentinel",
+                "VALKEY_SENTINEL_PASSWORD" to "sentinel-secret",
+            ),
+        )
+
+        val credentials = config.toRedisUri().sentinels.single().credentialsProviderAsync
+            .resolveCredentialsAsync().toCompletableFuture().get()
+        assertEquals("sentinel", credentials.username)
+        assertEquals("sentinel-secret", String(checkNotNull(credentials.password)))
+        val noPassword = assertThrows<IllegalArgumentException> { ValkeyConfig(sentinelUsername = "sentinel") }
+        assertEquals("sentinelUsername needs a sentinelPassword", noPassword.message)
+        assertThrows<IllegalArgumentException> { ValkeyConfig(sentinelUsername = " ", sentinelPassword = "pw") }
+        assertNull(ValkeyConfig.fromEnv(mapOf("VALKEY_SENTINEL_USERNAME" to "")).sentinelUsername)
+    }
+
+    @Test
     fun `toString hides credentials`() {
         val config = ValkeyConfig(valkeyUrl = "redis://:data-secret@valkey:6379")
         assertFalse(config.toString().contains("data-secret"))

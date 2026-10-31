@@ -673,6 +673,9 @@
             }
           },
           "additionalProperties": false
+        },
+        "sentinelUsername": {
+          "type": "string"
         }
       },
       "additionalProperties": false

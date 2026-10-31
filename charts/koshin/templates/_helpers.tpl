@@ -125,10 +125,13 @@ app.kubernetes.io/component: {{ . }}
 {{- end }}
 {{- end }}
 
-{{/* VALKEY_SENTINEL_PASSWORD env entry, if Sentinel needs one */}}
+{{/* Sentinel credentials (VALKEY_SENTINEL_USERNAME / VALKEY_SENTINEL_PASSWORD), if Sentinel needs them */}}
 {{- define "koshin.sentinelPasswordEnv" -}}
 {{- if include "koshin.valkeySentinelEnabled" . }}
 {{- $sentinel := .Values.valkey.sentinel }}
+# The official chart turns Sentinel's default user off: clients authenticate as `sentinel`
+- name: VALKEY_SENTINEL_USERNAME
+  value: sentinel
 - name: VALKEY_SENTINEL_PASSWORD
   valueFrom:
     secretKeyRef:
@@ -140,6 +143,10 @@ app.kubernetes.io/component: {{ . }}
       key: sentinel-password
       {{- end }}
 {{- else if and (not .Values.valkey.enabled) .Values.externalValkey.sentinelPasswordSecret.name }}
+{{- with .Values.externalValkey.sentinelUsername }}
+- name: VALKEY_SENTINEL_USERNAME
+  value: {{ . | quote }}
+{{- end }}
 - name: VALKEY_SENTINEL_PASSWORD
   valueFrom:
     secretKeyRef:

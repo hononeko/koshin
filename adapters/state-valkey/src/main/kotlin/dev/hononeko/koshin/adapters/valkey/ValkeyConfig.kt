@@ -14,6 +14,8 @@ data class ValkeyConfig(
     val commandTimeout: Duration = DEFAULT_COMMAND_TIMEOUT,
     /** Sentinel's own password: Lettuce applies a `redis-sentinel://` URL's password to the data nodes only. */
     val sentinelPassword: String? = null,
+    /** ACL user for Sentinel (the official Valkey chart's is `sentinel`); the default user when null. */
+    val sentinelUsername: String? = null,
 ) {
     init {
         require(valkeyUrl.isNotBlank()) { "valkeyUrl cannot be blank" }
@@ -26,6 +28,8 @@ data class ValkeyConfig(
             "commandTimeout must be positive and finite: $commandTimeout"
         }
         require(sentinelPassword == null || sentinelPassword.isNotEmpty()) { "sentinelPassword cannot be empty" }
+        require(sentinelUsername == null || sentinelUsername.isNotBlank()) { "sentinelUsername cannot be blank" }
+        require(sentinelUsername == null || sentinelPassword != null) { "sentinelUsername needs a sentinelPassword" }
         toRedisUri()
     }
 
@@ -34,13 +38,21 @@ data class ValkeyConfig(
         if (!hasExplicitTimeoutQueryParam(valkeyUrl)) {
             uri.timeout = commandTimeout.toJavaDuration()
         }
-        sentinelPassword?.let { password -> uri.sentinels.forEach { it.setAuthentication(password) } }
+        sentinelPassword?.let { password ->
+            uri.sentinels.forEach { sentinel ->
+                if (sentinelUsername == null) {
+                    sentinel.setAuthentication(password)
+                } else {
+                    sentinel.setAuthentication(sentinelUsername, password)
+                }
+            }
+        }
         return uri
     }
 
     override fun toString(): String = "ValkeyConfig(valkeyUrl=${valkeyUrl.replace(USER_INFO, "***@")}, " +
         "keyPrefix=$keyPrefix, lockReplicaAckTimeoutMs=$lockReplicaAckTimeoutMs, commandTimeout=$commandTimeout, " +
-        "sentinelPassword=${if (sentinelPassword == null) "null" else "***"})"
+        "sentinelUsername=$sentinelUsername, sentinelPassword=${if (sentinelPassword == null) "null" else "***"})"
 
     fun lockKeyFor(repo: RepoRef): String = "$keyPrefix:{${repo.platform.name.lowercase()}:${repo.repository}}:lock"
 
@@ -71,6 +83,7 @@ data class ValkeyConfig(
                 DEFAULT_COMMAND_TIMEOUT_SECONDS,
             ).seconds,
             sentinelPassword = env["VALKEY_SENTINEL_PASSWORD"]?.takeIf { it.isNotEmpty() },
+            sentinelUsername = env["VALKEY_SENTINEL_USERNAME"]?.takeIf { it.isNotBlank() },
         )
 
         private fun parseEnvLong(env: Map<String, String>, key: String, default: Long): Long = env[key]?.let { raw ->

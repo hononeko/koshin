@@ -277,6 +277,7 @@ Packaged as a Helm chart (`charts/koshin`, KSH-13), the primary install path: `p
 | `SWEEP_REPOSITORIES_FILE` | Proxy | — | Static repo list for discovery (when not using the GitHub App) |
 | `VALKEY_URL` | Worker | `redis://koshin-valkey:6379` | Coordination Valkey (`redis://` or `redis-sentinel://`) |
 | `VALKEY_SENTINEL_PASSWORD` | Worker | — | Sentinel's own password (the URL's password only applies to the Valkey nodes) |
+| `VALKEY_SENTINEL_USERNAME` | Worker | — | Sentinel's ACL user (`sentinel` with the official Valkey chart, which turns the default user off) |
 | `RENOVATE_REDIS_URL` | Worker | `$VALKEY_URL` | Renovate package cache Valkey |
 | `LOCK_TTL_SECONDS` | Worker | `45` | Per-repo lock TTL |
 | `HEARTBEAT_INTERVAL_SECONDS` | Worker | `15` | Heartbeat / lock / run-slot renewal interval |

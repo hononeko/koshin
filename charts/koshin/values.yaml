@@ -358,6 +358,8 @@ externalNats:
 externalValkey:
   # -- `VALKEY_URL`: `redis://host:6379` or `redis-sentinel://host:26379?sentinelMasterId=mymaster`
   url: ""
+  # -- `VALKEY_SENTINEL_USERNAME`: Sentinel's ACL user, if it has one (empty: the default user)
+  sentinelUsername: ""
   # -- Secret with Sentinel's own password (`VALKEY_SENTINEL_PASSWORD`), if Sentinel requires one
   sentinelPasswordSecret:
     name: ""
@@ -400,6 +402,11 @@ nats:
           memory: 64Mi
         limits:
           memory: 256Mi
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
     # The JetStream directory on an emptyDir (`minimal`). `values-ha.yaml` clears this for the PVC.
     patch:
       - op: add
@@ -407,7 +414,24 @@ nats:
         value:
           name: js-data
           mountPath: /data
+  reloader:
+    merge:
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
   podTemplate:
+    # Meets the `restricted` Pod Security Standard; the server and its config reloader share the uid to signal it
+    merge:
+      spec:
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          fsGroup: 1000
+          seccompProfile:
+            type: RuntimeDefault
     patch:
       - op: add
         path: /spec/volumes/-

@@ -13,8 +13,9 @@ import org.testcontainers.containers.Network
 import org.testcontainers.containers.wait.strategy.Wait
 
 /**
- * A password-protected Sentinel, as the official Valkey chart deploys it. Sentinel hands out the master's container IP,
- * which the test JVM can only reach on a Linux Docker host.
+ * A Sentinel set up like the official Valkey chart's: the default user is off and clients authenticate as the
+ * `sentinel` ACL user. Sentinel hands out the master's container IP, which the test JVM can only reach on a Linux
+ * Docker host.
  */
 class ValkeySentinelIntegrationTest {
     companion object {
@@ -30,7 +31,9 @@ class ValkeySentinelIntegrationTest {
                 "sh",
                 "-c",
                 "printf 'port 26379\\nsentinel resolve-hostnames yes\\nsentinel monitor mymaster valkey 6379 1\\n" +
-                    "requirepass $SENTINEL_PASSWORD\\n' > /tmp/sentinel.conf && " +
+                    "user default off\\nuser sentinel on >$SENTINEL_PASSWORD ~* &* +@all\\n" +
+                    "sentinel sentinel-user sentinel\\nsentinel sentinel-pass $SENTINEL_PASSWORD\\n' " +
+                    "> /tmp/sentinel.conf && " +
                     "exec valkey-sentinel /tmp/sentinel.conf",
             )
             .waitingFor(Wait.forLogMessage(".*\\+monitor master mymaster.*", 1))
@@ -56,8 +59,12 @@ class ValkeySentinelIntegrationTest {
     }
 
     @Test
-    fun `connects to the master through a password-protected Sentinel`() {
-        val config = ValkeyConfig(valkeyUrl = sentinelUrl, sentinelPassword = SENTINEL_PASSWORD)
+    fun `connects to the master through Sentinel as its ACL user`() {
+        val config = ValkeyConfig(
+            valkeyUrl = sentinelUrl,
+            sentinelUsername = "sentinel",
+            sentinelPassword = SENTINEL_PASSWORD,
+        )
         val client = RedisClient.create(config.toRedisUri())
         try {
             client.connect().use { connection ->
@@ -70,12 +77,18 @@ class ValkeySentinelIntegrationTest {
     }
 
     @Test
-    fun `fails without the Sentinel password`() {
-        val client = RedisClient.create(ValkeyConfig(valkeyUrl = sentinelUrl).toRedisUri())
-        try {
-            assertThrows<RedisConnectionException> { client.connect().close() }
-        } finally {
-            client.shutdown()
+    fun `fails without the Sentinel credentials`() {
+        listOf(
+            ValkeyConfig(valkeyUrl = sentinelUrl),
+            // The default user is off, so the password alone is rejected
+            ValkeyConfig(valkeyUrl = sentinelUrl, sentinelPassword = SENTINEL_PASSWORD),
+        ).forEach { config ->
+            val client = RedisClient.create(config.toRedisUri())
+            try {
+                assertThrows<RedisConnectionException> { client.connect().close() }
+            } finally {
+                client.shutdown()
+            }
         }
     }
 }

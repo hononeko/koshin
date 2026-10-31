@@ -75,6 +75,8 @@ valkey:
   enabled: false
 externalValkey:
   url: redis-sentinel://valkey-sentinel.data:26379?sentinelMasterId=mymaster
+  # Only if Sentinel uses an ACL user instead of the default one
+  sentinelUsername: sentinel
   sentinelPasswordSecret:
     name: valkey-sentinel
     key: password
