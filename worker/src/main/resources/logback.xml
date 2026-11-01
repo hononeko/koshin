@@ -1,11 +1,27 @@
 <configuration>
+    <!-- java.util.logging, bridged to SLF4J at startup, follows the levels below -->
+    <contextListener class="ch.qos.logback.classic.jul.LevelChangePropagator">
+        <resetJUL>true</resetJUL>
+    </contextListener>
+
     <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder class="ch.qos.logback.classic.encoder.JsonEncoder">
-            <withFormattedMessage>true</withFormattedMessage>
+        <!-- One JSON object per line: message, level, logger_name, MDC and key-value fields at the top level -->
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <fieldNames>
+                <version>[ignore]</version>
+                <levelValue>[ignore]</levelValue>
+            </fieldNames>
+            <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
+                <maxDepthPerThrowable>30</maxDepthPerThrowable>
+                <rootCauseFirst>true</rootCauseFirst>
+            </throwableConverter>
         </encoder>
     </appender>
-    <root level="INFO">
+
+    <root level="${ROOT_LOG_LEVEL:-INFO}">
         <appender-ref ref="STDOUT" />
     </root>
-    <logger name="dev.hononeko.koshin" level="INFO" />
+    <logger name="dev.hononeko.koshin" level="${LOG_LEVEL:-INFO}" />
+    <!-- Renovate output: its own level is RENOVATE_LOG_LEVEL, so pass on everything it prints -->
+    <logger name="renovate" level="TRACE" />
 </configuration>

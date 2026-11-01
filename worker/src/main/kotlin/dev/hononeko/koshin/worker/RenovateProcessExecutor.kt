@@ -12,6 +12,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.slf4j.MDCContext
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.SerializationException
@@ -43,7 +44,7 @@ class RenovateProcessExecutor(
 ) : CliExecutorPort {
 
     private val logger = LoggerFactory.getLogger(RenovateProcessExecutor::class.java)
-    private val outputLogger = LoggerFactory.getLogger("renovate")
+    private val outputLogger = RenovateOutputLogger()
 
     init {
         require(command.isNotEmpty()) { "command cannot be empty" }
@@ -66,10 +67,10 @@ class RenovateProcessExecutor(
         logger.info("Started renovate for {} (pid {})", repo, process.pid())
 
         val rateLimit = RateLimitDetector(repo.platform, rateLimitPattern)
-        // Not children of the caller: a blocked read must never hold up cancellation.
-        val pumps = CoroutineScope(ioDispatcher).launch {
-            launch { pump(process.inputStream, repo, "stdout", rateLimit::inspect) }
-            launch { pump(process.errorStream, repo, "stderr") }
+        // Not children of the caller: a blocked read must never hold up cancellation. They keep the job's MDC.
+        val pumps = CoroutineScope(ioDispatcher + MDCContext()).launch {
+            launch { pump(process.inputStream, "stdout", rateLimit::inspect) }
+            launch { pump(process.errorStream, "stderr") }
         }
 
         try {
@@ -136,15 +137,12 @@ class RenovateProcessExecutor(
         requestLimits.concurrentRequestLimit?.let { put("concurrentRequestLimit", it) }
     }
 
-    private fun pump(stream: InputStream, repo: RepoRef, name: String, inspect: (String) -> Unit = {}) {
+    private fun pump(stream: InputStream, name: String, inspect: (String) -> Unit = {}) {
         try {
             stream.bufferedReader().useLines { lines ->
                 lines.forEach { line ->
                     inspect(line)
-                    outputLogger.atInfo()
-                        .addKeyValue("repo", repo.toString())
-                        .addKeyValue("stream", name)
-                        .log(line)
+                    outputLogger.log(line, name)
                 }
             }
         } catch (@Suppress("SwallowedException") _: IOException) {
@@ -177,6 +175,9 @@ class RenovateProcessExecutor(
             // koshin settings that only look like Renovate options; they reach Renovate as RENOVATE_HOST_RULES.
             "RENOVATE_MAX_REQUESTS_PER_SECOND",
             "RENOVATE_CONCURRENT_REQUEST_LIMIT",
+            // koshin's own log levels; Renovate's is RENOVATE_LOG_LEVEL, which it reads before LOG_LEVEL
+            "LOG_LEVEL",
+            "ROOT_LOG_LEVEL",
             // Legacy aliases of RENOVATE_S3_*, which koshin sets itself; Renovate lets an alias override them.
             "RENOVATE_X_S3_ENDPOINT",
             "RENOVATE_X_S3_PATH_STYLE",

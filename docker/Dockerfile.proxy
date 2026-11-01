@@ -31,4 +31,4 @@ COPY --from=build /src/proxy/build/install/proxy/lib/ /opt/koshin/lib/
 ENV KOSHIN_JAVA_OPTS="-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
 USER 10001:10001
 EXPOSE 8080
-ENTRYPOINT ["/bin/sh", "-c", "exec java $KOSHIN_JAVA_OPTS -cp '/opt/koshin/lib/*' dev.hononeko.koshin.proxy.ApplicationKt"]
+ENTRYPOINT ["/bin/sh", "-c", "exec java --enable-native-access=ALL-UNNAMED $KOSHIN_JAVA_OPTS -cp '/opt/koshin/lib/*' dev.hononeko.koshin.proxy.ApplicationKt"]

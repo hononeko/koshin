@@ -7,6 +7,7 @@ import dev.hononeko.koshin.core.model.RepoRef
 import dev.hononeko.koshin.core.model.TriggerReason
 import dev.hononeko.koshin.core.ports.AcquireResult
 import dev.hononeko.koshin.core.ports.CliExecutorPort
+import dev.hononeko.koshin.core.ports.JobContextPort
 import dev.hononeko.koshin.core.ports.JobDelivery
 import dev.hononeko.koshin.core.ports.JobQueueConsumer
 import dev.hononeko.koshin.core.ports.JobQueuePublisher
@@ -41,6 +42,7 @@ class ProcessRenovateJobUseCase(
     private val config: WorkerConfig = WorkerConfig(),
     private val uuidGenerator: () -> String = { UUID.randomUUID().toString() },
     private val timeSource: TimeSource = TimeSource.Monotonic,
+    private val jobContext: JobContextPort = JobContextPort.None,
 ) {
 
     suspend fun processNext(platforms: Collection<Platform> = Platform.entries): Boolean {
@@ -82,6 +84,10 @@ class ProcessRenovateJobUseCase(
     }
 
     suspend fun processDelivery(delivery: JobDelivery, lockToken: String = uuidGenerator()) {
+        jobContext.within(delivery.event, delivery.deliveryAttempt) { process(delivery, lockToken) }
+    }
+
+    private suspend fun process(delivery: JobDelivery, lockToken: String) {
         val event = delivery.event
         val repo = event.repo
 

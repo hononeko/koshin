@@ -5,6 +5,7 @@ import dev.hononeko.koshin.adapters.nats.NatsJetStreamBootstrap
 import dev.hononeko.koshin.adapters.nats.NatsJobQueuePublisher
 import dev.hononeko.koshin.adapters.nats.NatsReconnectBootstrapper
 import dev.hononeko.koshin.adapters.nats.isConnected
+import dev.hononeko.koshin.adapters.nats.slf4jLogging
 import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.ports.JobQueuePublisher
 import io.nats.client.Connection
@@ -39,7 +40,7 @@ class ProxyNatsLifecycle(
         val options = Options.Builder()
             .server(url)
             .maxReconnects(-1)
-            .connectionListener(listener)
+            .slf4jLogging(listener)
             .build()
         Nats.connect(options)
     },

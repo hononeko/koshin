@@ -9,6 +9,7 @@ import dev.hononeko.koshin.adapters.nats.NatsObjectStoreRepoCache
 import dev.hononeko.koshin.adapters.nats.NatsReconnectBootstrapper
 import dev.hononeko.koshin.adapters.nats.NatsRepoCacheConfig
 import dev.hononeko.koshin.adapters.nats.isConnected
+import dev.hononeko.koshin.adapters.nats.slf4jLogging
 import dev.hononeko.koshin.adapters.valkey.PlatformThrottleConfig
 import dev.hononeko.koshin.adapters.valkey.ValkeyConfig
 import dev.hononeko.koshin.adapters.valkey.ValkeyConnectionHealth
@@ -161,7 +162,7 @@ class WorkerBackends(
             val options = Options.Builder()
                 .server(url)
                 .maxReconnects(-1)
-                .connectionListener(NatsReconnectBootstrapper(reconnectScope, bootstrap = bootstrap))
+                .slf4jLogging(NatsReconnectBootstrapper(reconnectScope, bootstrap = bootstrap))
                 .build()
             val connection = Nats.connect(options)
             try {

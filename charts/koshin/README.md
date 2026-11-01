@@ -265,6 +265,9 @@ Kubernetes: `>=1.29.0-0`
 | image.pullPolicy | string | `"IfNotPresent"` | Pull policy of the koshin images |
 | image.registry | string | `"ghcr.io"` | Registry of the koshin images |
 | imagePullSecrets | list | `[]` | Image pull secrets for koshin's own pods |
+| logging.level | string | `"info"` | `LOG_LEVEL`: koshin's own log level (`trace`, `debug`, `info`, `warn`, `error`) |
+| logging.renovateLevel | string | `"info"` | `RENOVATE_LOG_LEVEL`: Renovate's own log level (`trace`, `debug`, `info`, `warn`, `error`, `fatal`) |
+| logging.rootLevel | string | `"info"` | `ROOT_LOG_LEVEL`: the level of the libraries koshin uses (NATS, Valkey, Ktor, ...) |
 | nameOverride | string | `""` | Overrides the chart name in resource names |
 | nats.config.cluster.enabled | bool | `false` | Run a NATS cluster (`ha`) |
 | nats.config.cluster.replicas | int | `3` | Cluster size |

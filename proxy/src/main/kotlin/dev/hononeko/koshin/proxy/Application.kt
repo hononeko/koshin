@@ -27,6 +27,7 @@ import kotlinx.io.readByteArray
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
+import org.slf4j.bridge.SLF4JBridgeHandler
 
 private val logger = LoggerFactory.getLogger("dev.hononeko.koshin.proxy.Application")
 
@@ -155,6 +156,9 @@ fun createProxyServer(
 )
 
 fun main() {
+    // Libraries logging through java.util.logging end up in the JSON log too
+    SLF4JBridgeHandler.removeHandlersForRootLogger()
+    SLF4JBridgeHandler.install()
     val proxyConfig = ProxyConfig.fromEnv()
     val natsConfig = NatsConfig.fromEnv()
 

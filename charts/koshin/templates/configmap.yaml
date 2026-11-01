@@ -6,6 +6,9 @@ metadata:
     {{- include "koshin.labels" (dict "ctx" .) | nindent 4 }}
 data:
   PLATFORMS: {{ join "," .Values.platforms | quote }}
+  LOG_LEVEL: {{ .Values.logging.level | quote }}
+  ROOT_LOG_LEVEL: {{ .Values.logging.rootLevel | quote }}
+  RENOVATE_LOG_LEVEL: {{ .Values.logging.renovateLevel | quote }}
   HTTP2_ENABLED: {{ .Values.http2Enabled | quote }}
   NATS_URL: {{ include "koshin.natsUrl" . | quote }}
   NATS_STREAM_NAME: {{ .Values.natsSettings.streamName | quote }}
