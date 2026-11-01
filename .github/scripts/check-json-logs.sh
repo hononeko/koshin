@@ -18,8 +18,8 @@ while IFS= read -r line; do
   fi
 done <<<"$logs"
 
-total=$(wc -l <<<"$logs")
-nats=$(jq -c 'select(.logger_name == "dev.hononeko.koshin.nats")' <<<"$logs" 2>/dev/null | wc -l)
+total=$(printf '%s' "$logs" | grep -c '' || true)
+nats=$(jq -R -c 'fromjson? | select(.logger_name == "dev.hononeko.koshin.nats")' <<<"$logs" | grep -c '' || true)
 echo "$total lines, $nats from the NATS client"
 if [ "$nats" -eq 0 ]; then
   echo "::error::No NATS client errors were logged; is NATS really unreachable?"

@@ -80,7 +80,7 @@ class RenovateOutputLoggerTest {
             appender.list.map { it.level },
         )
         assertEquals(
-            listOf("DEBUG: plain text", "Error: boom", "{not json", ""),
+            listOf("DEBUG: plain text", "Error: boom", "{not json", """{"level":"warn","msg":42}"""),
             appender.list.map { it.formattedMessage },
         )
     }

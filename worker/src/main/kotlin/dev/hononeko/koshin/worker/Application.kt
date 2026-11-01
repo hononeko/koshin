@@ -99,6 +99,7 @@ fun main() {
     // Libraries logging through java.util.logging end up in the JSON log too
     SLF4JBridgeHandler.removeHandlersForRootLogger()
     SLF4JBridgeHandler.install()
+    checkLogLevels()
     val settings = WorkerSettings.fromEnv()
     val natsConfig = NatsConfig.fromEnv()
     val valkeyConfig = ValkeyConfig.fromEnv()

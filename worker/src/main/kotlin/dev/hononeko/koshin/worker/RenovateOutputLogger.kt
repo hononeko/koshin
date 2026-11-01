@@ -11,9 +11,9 @@ import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
 
 /**
- * Logs Renovate's output (`LOG_FORMAT=json`). Each JSON line is logged at its Renovate level, with `msg` as the message
- * and the whole line embedded as the `renovate` field, so its fields (`level`, `msg`, `repository`, `err`, ...) stay
- * queryable. Other lines are logged as they are.
+ * Logs Renovate's output (`LOG_FORMAT=json`). Each JSON line is logged at its Renovate level, with `msg` (or the whole
+ * line, without one) as the message and the line embedded as the `renovate` field, so its fields (`level`, `msg`,
+ * `repository`, `err`, ...) stay queryable. Other lines are logged as they are.
  */
 class RenovateOutputLogger(private val logger: Logger = LoggerFactory.getLogger(LOGGER_NAME)) {
 
@@ -26,7 +26,7 @@ class RenovateOutputLogger(private val logger: Logger = LoggerFactory.getLogger(
             return
         }
         val renovateLevel = (json["level"] as? JsonPrimitive)?.intOrNull
-        val message = (json["msg"] as? JsonPrimitive)?.takeIf { it.isString }?.content.orEmpty()
+        val message = (json["msg"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: line
         logger.atLevel(levelOf(renovateLevel))
             .addMarker(Markers.appendRaw(RENOVATE_FIELD, line))
             .addKeyValue("stream", stream)
