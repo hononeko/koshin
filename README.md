@@ -84,6 +84,7 @@ The coordination Valkey instance (`VALKEY_URL`, supporting both standalone `redi
 * **SIGTERM:** stops fetching, kills the CLI, releases the lock (keeping the dirty flag), NAKs the delivery and releases the run slot, without waiting for the run to finish.
 * **Pod deletion cost (optional):** with `POD_DELETION_COST_ENABLED=true` (plus `POD_NAME` / `POD_NAMESPACE` from the downward API), the worker sets `controller.kubernetes.io/pod-deletion-cost` to `1000` while Renovate runs and back to `0` afterwards. Failed patches are logged and ignored.
 * **Health:** `GET /healthz` is liveness only; `GET /readyz` checks NATS and Valkey.
+* **Dead-lettering:** a job that uses up its `NATS_MAX_DELIVER` deliveries is moved to `renovate.dlq.<platform>` when NATS announces it (the MaxDeliver advisory). That announcement is sent once, so every `NATS_EXHAUSTED_SWEEP_SECONDS` (5 minutes) each worker also moves exhausted jobs whose announcement nobody handled, e.g. during a rolling deployment.
 
 ## Logging
 

@@ -133,6 +133,10 @@
         "streamName": {
           "type": "string",
           "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "exhaustedSweepSeconds": {
+          "type": "integer",
+          "minimum": 0
         }
       },
       "additionalProperties": false

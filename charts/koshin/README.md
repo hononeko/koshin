@@ -307,6 +307,7 @@ Kubernetes: `>=1.29.0-0`
 | nats.reloader.merge.securityContext.capabilities.drop[0] | string | `"ALL"` |  |
 | nats.reloader.merge.securityContext.readOnlyRootFilesystem | bool | `true` |  |
 | natsSettings.ackWaitSeconds | int | `60` | `NATS_ACK_WAIT_SECONDS`; must be greater than `worker.config.lockTtlSeconds` |
+| natsSettings.exhaustedSweepSeconds | int | `300` | `NATS_EXHAUSTED_SWEEP_SECONDS`: how often workers move exhausted jobs whose MaxDeliver advisory was missed to the DLQ; 0 turns it off |
 | natsSettings.maxDeliver | int | `5` | `NATS_MAX_DELIVER`: deliveries of a job before it's dead-lettered |
 | natsSettings.streamName | string | `"RENOVATE_JOBS"` | `NATS_STREAM_NAME`: the job stream (WorkQueue) |
 | natsSettings.streamReplicas | string | `nil` | `NATS_STREAM_REPLICAS` for the job and DLQ streams and the repo cache bucket. Default: the NATS cluster size (`nats.config.cluster.replicas` when clustered), else 1. |

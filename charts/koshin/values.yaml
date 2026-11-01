@@ -71,6 +71,9 @@ natsSettings:
   ackWaitSeconds: 60
   # -- `NATS_MAX_DELIVER`: deliveries of a job before it's dead-lettered
   maxDeliver: 5
+  # -- `NATS_EXHAUSTED_SWEEP_SECONDS`: how often workers move exhausted jobs whose MaxDeliver advisory was missed to the
+  # DLQ; 0 turns it off
+  exhaustedSweepSeconds: 300
 
 valkeySettings:
   # -- `VALKEY_KEY_PREFIX` for koshin's coordination keys

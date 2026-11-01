@@ -15,6 +15,7 @@ data:
   NATS_STREAM_REPLICAS: {{ include "koshin.natsStreamReplicas" . | quote }}
   NATS_ACK_WAIT_SECONDS: {{ .Values.natsSettings.ackWaitSeconds | quote }}
   NATS_MAX_DELIVER: {{ .Values.natsSettings.maxDeliver | quote }}
+  NATS_EXHAUSTED_SWEEP_SECONDS: {{ .Values.natsSettings.exhaustedSweepSeconds | quote }}
   VALKEY_URL: {{ include "koshin.valkeyUrl" . | quote }}
   VALKEY_KEY_PREFIX: {{ .Values.valkeySettings.keyPrefix | quote }}
   VALKEY_COMMAND_TIMEOUT_SECONDS: {{ .Values.valkeySettings.commandTimeoutSeconds | quote }}

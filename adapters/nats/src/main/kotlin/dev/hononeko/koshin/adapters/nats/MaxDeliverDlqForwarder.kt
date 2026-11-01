@@ -64,7 +64,7 @@ class MaxDeliverDlqForwarder(
         }
 
         handledAdvisoriesCount.incrementAndGet()
-        processExhaustedMessageWithRetry(advisory)
+        moveToDeadLetter(advisory.streamSeq, advisory.deliveries, SOURCE_ADVISORY)
     }
 
     private fun isValidAdvisory(advisory: MaxDeliveriesAdvisory): Boolean = when {
@@ -81,32 +81,40 @@ class MaxDeliverDlqForwarder(
         else -> true
     }
 
-    private fun processExhaustedMessageWithRetry(
-        advisory: MaxDeliveriesAdvisory,
+    /**
+     * Copies the job at [streamSeq] to the DLQ (deduplicated by `dlq:<stream>:<seq>`) and deletes it from the work
+     * queue, retrying transient errors. Returns false if the job was already gone. Also used by
+     * [ExhaustedMessageSweeper] for exhausted jobs whose advisory nobody handled.
+     */
+    fun moveToDeadLetter(
+        streamSeq: Long,
+        deliveries: Long,
+        source: String,
         maxRetries: Int = DEFAULT_MAX_RETRIES,
-    ) {
+    ): Boolean {
         var attempt = 0
-        while (attempt < maxRetries) {
+        // Ends by returning, or by rethrowing once the retries run out
+        while (true) {
             attempt++
             try {
-                val msgInfo = fetchMessageOrNull(advisory.streamSeq) ?: return
+                val msgInfo = fetchMessageOrNull(streamSeq) ?: return false
                 val platform = extractPlatform(msgInfo)
-                forwardToDlq(advisory.streamSeq, msgInfo, platform, advisory.deliveries)
-                deleteFromWorkQueueWithRetry(advisory.streamSeq)
-                return
+                forwardToDlq(streamSeq, msgInfo, platform, deliveries, source)
+                deleteFromWorkQueueWithRetry(streamSeq)
+                return true
             } catch (@Suppress("TooGenericExceptionCaught") e: Exception) {
                 logger.warn(
                     "Attempt {}/{} failed to process exhausted message seq {} from {}: {}",
                     attempt,
                     maxRetries,
-                    advisory.streamSeq,
+                    streamSeq,
                     config.jobsStreamName,
                     e.message,
                 )
                 if (attempt >= maxRetries) {
                     logger.error(
-                        "Exhausted retries processing advisory for seq {} in stream {}",
-                        advisory.streamSeq,
+                        "Exhausted retries moving seq {} in stream {} to the DLQ",
+                        streamSeq,
                         config.jobsStreamName,
                         e,
                     )
@@ -166,7 +174,13 @@ class MaxDeliverDlqForwarder(
         }
     }
 
-    private fun forwardToDlq(streamSeq: Long, msgInfo: MessageInfo, platform: String, deliveries: Long = 0L) {
+    private fun forwardToDlq(
+        streamSeq: Long,
+        msgInfo: MessageInfo,
+        platform: String,
+        deliveries: Long,
+        source: String,
+    ) {
         val dlqSubject = "${config.dlqSubjectPrefix}.$platform"
         val dlqMsgId = "dlq:${config.jobsStreamName}:$streamSeq"
         val headers = if (msgInfo.headers != null) Headers(msgInfo.headers) else Headers()
@@ -179,12 +193,13 @@ class MaxDeliverDlqForwarder(
         if (deliveries > 0L) {
             headers.put("Koshin-Deliveries", deliveries.toString())
         }
+        headers.put("Koshin-Dlq-Source", source)
 
         val publishOptions = PublishOptions.builder()
             .messageId(dlqMsgId)
             .build()
 
-        logger.info(
+        logger.atInfo().addKeyValue("source", source).log(
             "Forwarding exhausted message seq {} from {} to DLQ subject {}",
             streamSeq,
             config.jobsStreamName,
@@ -250,6 +265,9 @@ class MaxDeliverDlqForwarder(
     }
 
     companion object {
+        /** How a job reached the DLQ, in its `Koshin-Dlq-Source` header. */
+        const val SOURCE_ADVISORY = "advisory"
+        const val SOURCE_SWEEP = "sweep"
         private const val MESSAGE_NOT_FOUND_ERROR_CODE = 10037
         private const val DEFAULT_MAX_RETRIES = 5
         private const val RETRY_BACKOFF_BASE_MS = 100L
