@@ -14,6 +14,7 @@ class NatsConfigTest {
         assertEquals(1, config.replicas)
         assertEquals(60.seconds, config.ackWait)
         assertEquals(5L, config.maxDeliver)
+        assertEquals(300.seconds, config.exhaustedSweepInterval)
     }
 
     @Test
@@ -25,6 +26,7 @@ class NatsConfigTest {
             "NATS_JOBS_STREAM" to "CUSTOM_JOBS",
             "NATS_DLQ_STREAM" to "CUSTOM_DLQ",
             "NATS_STORAGE_TYPE" to "file",
+            "NATS_EXHAUSTED_SWEEP_SECONDS" to "0",
         )
         val config = NatsConfig.fromEnv(env)
         assertEquals("CUSTOM_JOBS", config.jobsStreamName)
@@ -33,6 +35,7 @@ class NatsConfigTest {
         assertEquals(120.seconds, config.ackWait)
         assertEquals(10L, config.maxDeliver)
         assertEquals(io.nats.client.api.StorageType.File, config.storageType)
+        assertEquals(0.seconds, config.exhaustedSweepInterval)
 
         val streamNameConfig = NatsConfig.fromEnv(mapOf("NATS_STREAM_NAME" to "PRIMARY_JOBS_STREAM"))
         assertEquals("PRIMARY_JOBS_STREAM", streamNameConfig.jobsStreamName)
@@ -67,6 +70,9 @@ class NatsConfigTest {
         }
         assertThrows<IllegalArgumentException> {
             NatsConfig(ackWait = 0.seconds)
+        }
+        assertThrows<IllegalArgumentException> {
+            NatsConfig(exhaustedSweepInterval = (-1).seconds)
         }
         assertThrows<IllegalArgumentException> {
             NatsConfig(duplicateWindow = 0.seconds)

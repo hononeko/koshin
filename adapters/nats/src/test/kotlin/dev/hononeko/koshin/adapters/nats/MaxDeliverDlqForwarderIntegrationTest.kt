@@ -207,6 +207,7 @@ class MaxDeliverDlqForwarderIntegrationTest {
         )
         assertEquals("1", dlqMsg.headers?.getFirst("Koshin-Stream-Seq"))
         assertEquals("2", dlqMsg.headers?.getFirst("Koshin-Deliveries"))
+        assertEquals("advisory", dlqMsg.headers?.getFirst("Koshin-Dlq-Source"))
         assertEquals(0L, jsm.getStreamInfo(jobsStream).streamState.msgCount)
     }
 

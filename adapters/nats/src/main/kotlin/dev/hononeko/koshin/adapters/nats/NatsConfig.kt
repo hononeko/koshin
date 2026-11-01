@@ -20,6 +20,8 @@ data class NatsConfig(
     val dlqForwarderQueueGroup: String = DEFAULT_DLQ_QUEUE_GROUP,
     val consumerPrefix: String = DEFAULT_CONSUMER_PREFIX,
     val storageType: StorageType = StorageType.File,
+    /** How often workers look for exhausted jobs whose MaxDeliver advisory nobody handled; zero turns it off. */
+    val exhaustedSweepInterval: Duration = DEFAULT_EXHAUSTED_SWEEP_SECONDS.seconds,
 ) {
     val jobsSubject: String
         get() = "$jobsSubjectPrefix.>"
@@ -45,6 +47,7 @@ data class NatsConfig(
         require(dlqMaxAge.isPositive()) { "dlqMaxAge must be positive" }
         require(dlqForwarderQueueGroup.isNotBlank()) { "dlqForwarderQueueGroup cannot be blank" }
         require(consumerPrefix.isNotBlank()) { "consumerPrefix cannot be blank" }
+        require(!exhaustedSweepInterval.isNegative()) { "exhaustedSweepInterval cannot be negative" }
     }
 
     companion object {
@@ -59,6 +62,7 @@ data class NatsConfig(
         const val DEFAULT_MAX_DELIVER = 5L
         const val DEFAULT_DUPLICATE_WINDOW_MINUTES = 2L
         const val DEFAULT_DLQ_MAX_AGE_DAYS = 7L
+        const val DEFAULT_EXHAUSTED_SWEEP_SECONDS = 300L
 
         fun fromEnv(env: Map<String, String> = System.getenv()): NatsConfig = NatsConfig(
             jobsStreamName = env["NATS_STREAM_NAME"] ?: env["NATS_JOBS_STREAM"] ?: DEFAULT_JOBS_STREAM,
@@ -81,6 +85,11 @@ data class NatsConfig(
             dlqForwarderQueueGroup = env["NATS_DLQ_FORWARDER_QUEUE_GROUP"] ?: DEFAULT_DLQ_QUEUE_GROUP,
             consumerPrefix = env["NATS_CONSUMER_PREFIX"] ?: DEFAULT_CONSUMER_PREFIX,
             storageType = parseEnvStorageType(env["NATS_STORAGE_TYPE"]),
+            exhaustedSweepInterval = parseEnvLong(
+                env,
+                "NATS_EXHAUSTED_SWEEP_SECONDS",
+                DEFAULT_EXHAUSTED_SWEEP_SECONDS,
+            ).seconds,
         )
 
         private fun parseEnvInt(env: Map<String, String>, key: String, default: Int): Int = env[key]?.let { raw ->

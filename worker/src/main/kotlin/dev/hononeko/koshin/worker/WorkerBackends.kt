@@ -1,5 +1,6 @@
 package dev.hononeko.koshin.worker
 
+import dev.hononeko.koshin.adapters.nats.ExhaustedMessageSweeper
 import dev.hononeko.koshin.adapters.nats.MaxDeliverDlqForwarder
 import dev.hononeko.koshin.adapters.nats.NatsConfig
 import dev.hononeko.koshin.adapters.nats.NatsJetStreamBootstrap
@@ -171,6 +172,11 @@ class WorkerBackends(
                 }
                 bootstrap(connection)
                 val forwarder = MaxDeliverDlqForwarder(connection, config)
+                if (config.exhaustedSweepInterval.isPositive()) {
+                    ExhaustedMessageSweeper(connection.jetStreamManagement(), config, platforms) { seq ->
+                        forwarder.moveToDeadLetter(seq, config.maxDeliver, MaxDeliverDlqForwarder.SOURCE_SWEEP)
+                    }.start(reconnectScope, config.exhaustedSweepInterval)
+                }
                 val consumer = NatsJobQueueConsumer(connection, config)
                 return NatsBackend(
                     consumer = consumer,
