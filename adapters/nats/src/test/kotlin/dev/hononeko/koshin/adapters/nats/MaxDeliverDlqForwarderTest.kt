@@ -15,6 +15,8 @@ import io.nats.client.api.MessageInfo
 import io.nats.client.api.PublishAck
 import io.nats.client.impl.Headers
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import java.io.IOException
@@ -48,7 +50,7 @@ class MaxDeliverDlqForwarderTest {
     fun `moves a stored job to the DLQ and deletes it`() {
         stored(7)
 
-        forwarder.moveToDeadLetter(7, 5, MaxDeliverDlqForwarder.SOURCE_SWEEP)
+        assertTrue(forwarder.moveToDeadLetter(7, 5, MaxDeliverDlqForwarder.SOURCE_SWEEP))
 
         assertEquals("sweep", headers.captured.getFirst("Koshin-Dlq-Source"))
         assertEquals("5", headers.captured.getFirst("Koshin-Deliveries"))
@@ -61,7 +63,7 @@ class MaxDeliverDlqForwarderTest {
     fun `a job that's already gone is left alone`() {
         every { jsm.getMessage(config.jobsStreamName, 3) } throws ApiError(10037)
 
-        forwarder.moveToDeadLetter(3, 5, MaxDeliverDlqForwarder.SOURCE_SWEEP)
+        assertFalse(forwarder.moveToDeadLetter(3, 5, MaxDeliverDlqForwarder.SOURCE_SWEEP))
 
         verify(exactly = 0) { js.publish(any<String>(), any<Headers>(), any<ByteArray>(), any<PublishOptions>()) }
     }

@@ -48,7 +48,7 @@ class NatsJetStreamBootstrap(private val jsm: JetStreamManagement, private val c
             .subjects(config.dlqSubject)
             .retentionPolicy(RetentionPolicy.Limits)
             .storageType(config.storageType)
-            .duplicateWindow(config.duplicateWindow.toJavaDuration())
+            .duplicateWindow(config.dlqDuplicateWindow.toJavaDuration())
             .maxAge(config.dlqMaxAge.toJavaDuration())
             .replicas(config.replicas)
             .build()

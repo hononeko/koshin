@@ -63,6 +63,13 @@ class ExhaustedMessageSweeperIntegrationTest {
         }
     }
 
+    private suspend fun setUpStream(vararg repos: String): Pair<NatsJobQueuePublisher, NatsJobQueueConsumer> {
+        NatsJetStreamBootstrap(jsm, config).bootstrap(listOf(Platform.GITHUB))
+        val publisher = NatsJobQueuePublisher(connection, config)
+        repos.forEach { publisher.publish(job(it)) }
+        return publisher to NatsJobQueueConsumer(connection, config)
+    }
+
     private fun repoOf(data: ByteArray) =
         Json.decodeFromString(RenovateJobEvent.serializer(), data.decodeToString()).repo.repository
 
@@ -123,6 +130,28 @@ class ExhaustedMessageSweeperIntegrationTest {
         assertEquals(0, sweeper().sweep())
         assertNull(runCatching { jsm.getMessage(config.dlqStreamName, 1) }.getOrNull())
         assertNotNull(jsm.getStreamInfo(config.jobsStreamName))
+        consumer.close()
+    }
+
+    @Test
+    fun `an exhausted job at the end of the queue is swept too`() = runBlocking {
+        val (_, consumer) = setUpStream("last")
+        repeat(2) { consumer.fetchNext(Platform.GITHUB, 2.seconds)!!.nack() }
+        // An idle worker's next pull is when NATS finds the job over MaxDeliver; no later job moves the ack floor
+        assertNull(consumer.fetchNext(Platform.GITHUB, 500.milliseconds))
+
+        assertEquals(1, sweeper().sweep())
+        assertEquals(emptyList<String>(), storedJobs())
+        consumer.close()
+    }
+
+    @Test
+    fun `a job waiting to be redelivered is left alone`() = runBlocking {
+        val (_, consumer) = setUpStream("retry-later")
+        consumer.fetchNext(Platform.GITHUB, 2.seconds)!!.nack(60.seconds)
+
+        assertEquals(0, sweeper().sweep())
+        assertEquals(listOf("hononeko/retry-later"), storedJobs())
         consumer.close()
     }
 }

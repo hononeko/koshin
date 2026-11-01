@@ -83,19 +83,25 @@ class MaxDeliverDlqForwarder(
 
     /**
      * Copies the job at [streamSeq] to the DLQ (deduplicated by `dlq:<stream>:<seq>`) and deletes it from the work
-     * queue, retrying transient errors. Does nothing if the job is already gone. Also used by
+     * queue, retrying transient errors. Returns false if the job was already gone. Also used by
      * [ExhaustedMessageSweeper] for exhausted jobs whose advisory nobody handled.
      */
-    fun moveToDeadLetter(streamSeq: Long, deliveries: Long, source: String, maxRetries: Int = DEFAULT_MAX_RETRIES) {
+    fun moveToDeadLetter(
+        streamSeq: Long,
+        deliveries: Long,
+        source: String,
+        maxRetries: Int = DEFAULT_MAX_RETRIES,
+    ): Boolean {
         var attempt = 0
-        while (attempt < maxRetries) {
+        // Ends by returning, or by rethrowing once the retries run out
+        while (true) {
             attempt++
             try {
-                val msgInfo = fetchMessageOrNull(streamSeq) ?: return
+                val msgInfo = fetchMessageOrNull(streamSeq) ?: return false
                 val platform = extractPlatform(msgInfo)
                 forwardToDlq(streamSeq, msgInfo, platform, deliveries, source)
                 deleteFromWorkQueueWithRetry(streamSeq)
-                return
+                return true
             } catch (@Suppress("TooGenericExceptionCaught") e: Exception) {
                 logger.warn(
                     "Attempt {}/{} failed to process exhausted message seq {} from {}: {}",

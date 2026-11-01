@@ -3,6 +3,7 @@ package dev.hononeko.koshin.adapters.nats
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
+import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.seconds
 
 class NatsConfigTest {
@@ -15,6 +16,7 @@ class NatsConfigTest {
         assertEquals(60.seconds, config.ackWait)
         assertEquals(5L, config.maxDeliver)
         assertEquals(300.seconds, config.exhaustedSweepInterval)
+        assertEquals(1.days, config.dlqDuplicateWindow)
     }
 
     @Test
@@ -73,6 +75,9 @@ class NatsConfigTest {
         }
         assertThrows<IllegalArgumentException> {
             NatsConfig(exhaustedSweepInterval = (-1).seconds)
+        }
+        assertThrows<IllegalArgumentException> {
+            NatsConfig(dlqDuplicateWindow = 8.days)
         }
         assertThrows<IllegalArgumentException> {
             NatsConfig(duplicateWindow = 0.seconds)

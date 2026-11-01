@@ -173,7 +173,12 @@ class WorkerBackends(
                 bootstrap(connection)
                 val forwarder = MaxDeliverDlqForwarder(connection, config)
                 if (config.exhaustedSweepInterval.isPositive()) {
-                    ExhaustedMessageSweeper(connection.jetStreamManagement(), config, platforms) { seq ->
+                    ExhaustedMessageSweeper(
+                        connection.jetStreamManagement(),
+                        config,
+                        platforms,
+                        ioDispatcher = ioDispatcher,
+                    ) { seq ->
                         forwarder.moveToDeadLetter(seq, config.maxDeliver, MaxDeliverDlqForwarder.SOURCE_SWEEP)
                     }.start(reconnectScope, config.exhaustedSweepInterval)
                 }

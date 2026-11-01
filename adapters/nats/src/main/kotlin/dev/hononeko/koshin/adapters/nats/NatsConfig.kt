@@ -17,6 +17,8 @@ data class NatsConfig(
     val maxDeliver: Long = 5L,
     val duplicateWindow: Duration = 2.minutes,
     val dlqMaxAge: Duration = 7.days,
+    /** Longer than the jobs stream's: a job whose move to the DLQ failed after publishing is moved again much later. */
+    val dlqDuplicateWindow: Duration = 1.days,
     val dlqForwarderQueueGroup: String = DEFAULT_DLQ_QUEUE_GROUP,
     val consumerPrefix: String = DEFAULT_CONSUMER_PREFIX,
     val storageType: StorageType = StorageType.File,
@@ -45,6 +47,9 @@ data class NatsConfig(
         require(ackWait.isPositive()) { "ackWait must be positive" }
         require(duplicateWindow.isPositive()) { "duplicateWindow must be positive" }
         require(dlqMaxAge.isPositive()) { "dlqMaxAge must be positive" }
+        require(dlqDuplicateWindow.isPositive() && dlqDuplicateWindow <= dlqMaxAge) {
+            "dlqDuplicateWindow must be positive and at most dlqMaxAge"
+        }
         require(dlqForwarderQueueGroup.isNotBlank()) { "dlqForwarderQueueGroup cannot be blank" }
         require(consumerPrefix.isNotBlank()) { "consumerPrefix cannot be blank" }
         require(!exhaustedSweepInterval.isNegative()) { "exhaustedSweepInterval cannot be negative" }
