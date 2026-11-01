@@ -17,8 +17,11 @@ dependencies {
     implementation(libs.nats.jnats)
     implementation(libs.lettuce.core)
     implementation(libs.kotlinx.coroutines.core)
+    implementation(libs.kotlinx.coroutines.slf4j)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.logback.classic)
+    implementation(libs.logstash.logback.encoder)
+    implementation(libs.jul.to.slf4j)
 
     testImplementation(libs.ktor.server.test.host)
     testImplementation(libs.kotlinx.coroutines.test)

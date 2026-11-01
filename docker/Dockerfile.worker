@@ -41,4 +41,4 @@ ENV RENOVATE_BINARY_SOURCE=global \
 EXPOSE 8080
 # containerbase's entrypoint initializes the toolchain, then execs dumb-init (PID 1, reaps orphans)
 ENTRYPOINT ["/usr/local/sbin/docker-entrypoint.sh"]
-CMD ["/bin/sh", "-c", "exec /opt/koshin/jre/bin/java $KOSHIN_JAVA_OPTS -cp '/opt/koshin/lib/*' dev.hononeko.koshin.worker.ApplicationKt"]
+CMD ["/bin/sh", "-c", "exec /opt/koshin/jre/bin/java --enable-native-access=ALL-UNNAMED $KOSHIN_JAVA_OPTS -cp '/opt/koshin/lib/*' dev.hononeko.koshin.worker.ApplicationKt"]

@@ -1,9 +1,14 @@
 package dev.hononeko.koshin.worker
 
+import ch.qos.logback.classic.Level
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import dev.hononeko.koshin.core.model.JobExecutionResult
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.PlatformCredentials
+import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.model.RepoRef
+import dev.hononeko.koshin.core.model.TriggerReason
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
@@ -15,6 +20,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.io.TempDir
+import org.slf4j.LoggerFactory
 import java.nio.file.Path
 import kotlin.io.path.exists
 import kotlin.io.path.readLines
@@ -209,5 +215,37 @@ class RenovateProcessExecutorTest {
         assertFalse(built.containsKey("RENOVATE_HOST_RULES"))
         assertFalse(built.containsKey("RENOVATE_MAX_REQUESTS_PER_SECOND"))
         assertFalse(built.containsKey("RENOVATE_CONCURRENT_REQUEST_LIMIT"))
+    }
+
+    @Test
+    fun `renovate output carries the job's MDC and Renovate's level`() = runBlocking {
+        val logger = LoggerFactory.getLogger(RenovateOutputLogger.LOGGER_NAME) as ch.qos.logback.classic.Logger
+        val appender = ListAppender<ILoggingEvent>().apply { start() }
+        logger.addAppender(appender)
+        logger.level = Level.TRACE
+        val event = RenovateJobEvent(repo, "delivery-7", TriggerReason.SCHEDULE)
+        try {
+            MdcJobContext.within(event, 1) {
+                executor("""echo '{"level":50,"msg":"Repository failed","repository":"hononeko/koshin"}'""")
+                    .execute(repo, creds, 1.minutes)
+            }
+        } finally {
+            logger.detachAppender(appender)
+            logger.level = null
+        }
+
+        val line = appender.list.single()
+        assertEquals(Level.ERROR, line.level)
+        assertEquals("Repository failed", line.formattedMessage)
+        assertEquals("github:hononeko/koshin", line.mdcPropertyMap["repo"])
+        assertEquals("delivery-7", line.mdcPropertyMap["deliveryId"])
+    }
+
+    @Test
+    fun `koshin's log levels stay out of Renovate's environment`() {
+        val built = executor("true", env + mapOf("LOG_LEVEL" to "debug", "RENOVATE_LOG_LEVEL" to "warn"))
+            .buildEnvironment(repo, creds)
+        assertFalse(built.containsKey("LOG_LEVEL"))
+        assertEquals("warn", built["RENOVATE_LOG_LEVEL"])
     }
 }

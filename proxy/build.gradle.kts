@@ -15,6 +15,8 @@ dependencies {
     implementation(libs.ktor.serialization.kotlinx.json)
     implementation(libs.nats.jnats)
     implementation(libs.logback.classic)
+    implementation(libs.logstash.logback.encoder)
+    implementation(libs.jul.to.slf4j)
 
     testImplementation(libs.ktor.server.test.host)
     testImplementation(libs.kotlinx.coroutines.test)

@@ -50,6 +50,14 @@ gitlab:
 # -- `RENOVATE_BOT_LOGINS`: more bot logins whose webhooks are ignored
 renovateBotLogins: []
 
+logging:
+  # -- `LOG_LEVEL`: koshin's own log level (`trace`, `debug`, `info`, `warn`, `error`)
+  level: info
+  # -- `ROOT_LOG_LEVEL`: the level of the libraries koshin uses (NATS, Valkey, Ktor, ...)
+  rootLevel: info
+  # -- `RENOVATE_LOG_LEVEL`: Renovate's own log level (`trace`, `debug`, `info`, `warn`, `error`, `fatal`)
+  renovateLevel: info
+
 # -- `HTTP2_ENABLED`: cleartext HTTP/2 (h2c) next to HTTP/1.1 on the proxy and worker
 http2Enabled: true
 

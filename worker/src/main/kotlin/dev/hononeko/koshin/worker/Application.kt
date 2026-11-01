@@ -23,6 +23,7 @@ import io.ktor.server.routing.routing
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 import org.slf4j.LoggerFactory
+import org.slf4j.bridge.SLF4JBridgeHandler
 
 private val logger = LoggerFactory.getLogger("dev.hononeko.koshin.worker.Application")
 
@@ -95,6 +96,10 @@ internal fun cliExecutor(settings: WorkerSettings): CliExecutorPort {
 }
 
 fun main() {
+    // Libraries logging through java.util.logging end up in the JSON log too
+    SLF4JBridgeHandler.removeHandlersForRootLogger()
+    SLF4JBridgeHandler.install()
+    checkLogLevels()
     val settings = WorkerSettings.fromEnv()
     val natsConfig = NatsConfig.fromEnv()
     val valkeyConfig = ValkeyConfig.fromEnv()
@@ -137,6 +142,7 @@ fun main() {
             cliExecutor = cliExecutor,
             workspaceCleaner = workspaceCleaner,
             config = settings.jobConfig,
+            jobContext = MdcJobContext,
         )
     }
     daemon.start()

@@ -265,6 +265,9 @@ Packaged as a Helm chart (`charts/koshin`, KSH-13), the primary install path: `p
 | :--- | :--- | :--- | :--- |
 | `PORT` | Both | `8080` | HTTP port (`/healthz`, `/readyz`, webhooks) |
 | `HTTP2_ENABLED` | Both | `true` | HTTP/2 on Netty (`enableHttp2` + `enableH2c`; `h2` with TLS) |
+| `LOG_LEVEL` | Both | `info` | koshin's log level (`dev.hononeko.koshin` loggers) |
+| `ROOT_LOG_LEVEL` | Both | `info` | Log level of the libraries (NATS, Valkey, Ktor, ...) |
+| `RENOVATE_LOG_LEVEL` | Worker | `info` | Renovate's own log level; `LOG_LEVEL` isn't passed on to Renovate |
 | `PLATFORMS` | Both | `github` | Enabled platforms (`github`, `gitlab`) |
 | `NATS_URL` | Both | `nats://koshin-nats:4222` | NATS connection URL |
 | `NATS_STREAM_NAME` | Both | `RENOVATE_JOBS` | WorkQueue stream name |

@@ -79,6 +79,12 @@ jobs:
           status: "200"
           max-memory-mib: "384"
 
+      - name: Check proxy logs are JSON
+        if: hashFiles('docker/Dockerfile.proxy') != ''
+        env:
+          IMAGE: ${{ inputs.push && format('ghcr.io/{0}/koshin-proxy@{1}', github.repository_owner, steps.build-proxy.outputs.digest) || format('smoke-proxy:{0}', matrix.arch) }}
+        run: .github/scripts/check-json-logs.sh "$IMAGE"
+
       - name: Export proxy digest
         if: inputs.push && hashFiles('docker/Dockerfile.proxy') != ''
         env:
@@ -123,6 +129,12 @@ jobs:
           path: /healthz
           status: "200"
           max-memory-mib: "384"
+
+      - name: Check worker logs are JSON
+        if: hashFiles('docker/Dockerfile.worker') != ''
+        env:
+          IMAGE: ${{ inputs.push && format('ghcr.io/{0}/koshin-worker@{1}', github.repository_owner, steps.build-worker.outputs.digest) || format('smoke-worker:{0}', matrix.arch) }}
+        run: .github/scripts/check-json-logs.sh "$IMAGE"
 
       - name: Export worker digest
         if: inputs.push && hashFiles('docker/Dockerfile.worker') != ''

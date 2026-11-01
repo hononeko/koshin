@@ -8,6 +8,7 @@ import dev.hononeko.koshin.core.model.RepoRef
 import dev.hononeko.koshin.core.model.TriggerReason
 import dev.hononeko.koshin.core.ports.AcquireResult
 import dev.hononeko.koshin.core.ports.CliExecutorPort
+import dev.hononeko.koshin.core.ports.JobContextPort
 import dev.hononeko.koshin.core.ports.JobDelivery
 import dev.hononeko.koshin.core.ports.JobQueueConsumer
 import dev.hononeko.koshin.core.ports.JobQueuePublisher
@@ -712,5 +713,38 @@ class ProcessRenovateJobUseCaseTest {
         coVerify(exactly = 0) { delivery.ack() }
         coVerify(exactly = 1) { delivery.nack(Duration.ZERO) }
         coVerify(exactly = 1) { coordinationPort.releaseLock(testRepo, "token-1") }
+    }
+
+    @Test
+    fun `the whole delivery runs within the job context`() = runTest {
+        val calls = mutableListOf<String>()
+        val jobContext = object : JobContextPort {
+            override suspend fun within(event: RenovateJobEvent, deliveryAttempt: Int, block: suspend () -> Unit) {
+                calls += "enter ${event.deliveryId} #$deliveryAttempt"
+                block()
+                calls += "exit"
+            }
+        }
+        coEvery { cliExecutor.execute(any(), any(), any()) } coAnswers {
+            calls += "cli"
+            JobExecutionResult.Success
+        }
+        val contextual = ProcessRenovateJobUseCase(
+            queueConsumer = queueConsumer,
+            queuePublisher = queuePublisher,
+            coordinationPort = coordinationPort,
+            throttlePort = throttlePort,
+            cachePort = cachePort,
+            credentialsPort = credentialsPort,
+            cliExecutor = cliExecutor,
+            workspaceCleaner = workspaceCleaner,
+            config = testConfig,
+            jobContext = jobContext,
+        )
+
+        contextual.processDelivery(delivery, "token-1")
+
+        assertEquals(listOf("enter initial-delivery-id #1", "cli", "exit"), calls)
+        coVerify(exactly = 1) { delivery.ack() }
     }
 }

@@ -85,6 +85,15 @@ The coordination Valkey instance (`VALKEY_URL`, supporting both standalone `redi
 * **Pod deletion cost (optional):** with `POD_DELETION_COST_ENABLED=true` (plus `POD_NAME` / `POD_NAMESPACE` from the downward API), the worker sets `controller.kubernetes.io/pod-deletion-cost` to `1000` while Renovate runs and back to `0` afterwards. Failed patches are logged and ignored.
 * **Health:** `GET /healthz` is liveness only; `GET /readyz` checks NATS and Valkey.
 
+## Logging
+
+The proxy and worker print one JSON object per line (logstash-logback-encoder): `message`, `level`, `logger_name`, `thread_name`, `stack_trace`, plus any key-value fields at the top level.
+
+* **Job context:** while the worker handles a job, every line it logs carries `repo`, `deliveryId`, `triggerReason` and `deliveryAttempt`.
+* **Renovate output:** each line Renovate prints (`LOG_FORMAT=json`) is logged at its own level, with Renovate's `msg` as the `message` and the whole line under `renovate` (`renovate.level`, `renovate.repository`, `renovate.err`, ...). Lines that aren't JSON are logged as they are.
+* **NATS client:** connection events and errors go through the same log (logger `dev.hononeko.koshin.nats`), not `java.util.logging`.
+* **Levels:** `LOG_LEVEL` sets koshin's level and `ROOT_LOG_LEVEL` the libraries' (both `info` by default), read at startup, so changing them needs only a restart. Renovate's own level is `RENOVATE_LOG_LEVEL`; `LOG_LEVEL` isn't passed on to Renovate.
+
 ## Shared Repository Cache (KSH-10)
 
 Renovate's repository cache (`RENOVATE_REPOSITORY_CACHE=enabled`) speeds up runs a lot, but each job lands on a random, short-lived pod. `REPO_CACHE_PROVIDER` picks where the cache lives between runs:
