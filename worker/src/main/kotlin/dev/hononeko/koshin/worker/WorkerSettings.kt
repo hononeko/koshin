@@ -18,6 +18,8 @@ data class WorkerSettings(
     val renovateCacheDir: Path = renovateBaseDir.resolve(RENOVATE_CACHE_SUBDIR),
     val renovateBinarySource: String = DEFAULT_RENOVATE_BINARY_SOURCE,
     val renovateRedisUrl: String? = null,
+    /** The Renovate runner's socket (`RUNNER_SOCKET`); without one, Renovate runs in this container. */
+    val runnerSocket: Path? = null,
     val githubToken: String? = null,
     val githubEndpoint: String? = null,
     val gitlabToken: String? = null,
@@ -38,6 +40,7 @@ data class WorkerSettings(
         require(renovateBaseDir.isAbsolute) { "RENOVATE_BASE_DIR must be absolute: $renovateBaseDir" }
         require(renovateCacheDir.isAbsolute) { "RENOVATE_CACHE_DIR must be absolute: $renovateCacheDir" }
         require(renovateBinarySource.isNotBlank()) { "renovateBinarySource cannot be blank" }
+        require(runnerSocket?.isAbsolute != false) { "RUNNER_SOCKET must be absolute: $runnerSocket" }
         require(!podDeletionCostEnabled || (!podName.isNullOrBlank() && !podNamespace.isNullOrBlank())) {
             "POD_DELETION_COST_ENABLED requires POD_NAME and POD_NAMESPACE"
         }
@@ -45,7 +48,7 @@ data class WorkerSettings(
     }
 
     override fun toString(): String = "WorkerSettings(port=$port, http2Enabled=$http2Enabled, platforms=$platforms, " +
-        "natsUrl=${natsUrl.withoutUserInfo()}, renovateBaseDir=$renovateBaseDir, " +
+        "natsUrl=${natsUrl.withoutUserInfo()}, renovateBaseDir=$renovateBaseDir, runnerSocket=$runnerSocket, " +
         "githubToken=${githubToken.redacted()}, gitlabToken=${gitlabToken.redacted()}, jobConfig=$jobConfig, " +
         "throttle=$throttle, requestLimits=$requestLimits, repoCache=$repoCache)"
 
@@ -79,6 +82,7 @@ data class WorkerSettings(
                 ?: env.nonBlank("RENOVATE_BINARYSOURCE")
                 ?: DEFAULT_RENOVATE_BINARY_SOURCE,
             renovateRedisUrl = env.nonBlank("RENOVATE_REDIS_URL") ?: renovateRedisFallback(env.nonBlank("VALKEY_URL")),
+            runnerSocket = env.nonBlank("RUNNER_SOCKET")?.let { Path(it) },
             githubToken = env.nonBlank("GITHUB_TOKEN"),
             githubEndpoint = env.nonBlank("GITHUB_API_URL"),
             gitlabToken = env.nonBlank("GITLAB_TOKEN"),

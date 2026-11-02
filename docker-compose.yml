@@ -50,10 +50,24 @@ services:
       nats:
         condition: service_healthy
 
-  worker:
+  # Renovate runs here, without the worker's secrets: the worker hands it each run over the runner socket
+  renovate:
     build:
       context: .
       dockerfile: docker/Dockerfile.worker
+    image: koshin-worker:dev
+    command: ["/opt/koshin/bin/koshin-runner"]
+    environment:
+      RUNNER_SOCKET: /run/koshin/runner.sock
+    volumes:
+      - workspace:/tmp/renovate
+      - runner:/run/koshin
+    healthcheck:
+      test: ["CMD", "test", "-S", "/run/koshin/runner.sock"]
+      interval: 2s
+      retries: 60
+
+  worker:
     image: koshin-worker:dev
     ports:
       - "8081:8080"
@@ -63,15 +77,33 @@ services:
       NATS_STREAM_REPLICAS: "1"
       VALKEY_URL: redis://valkey:6379
       RENOVATE_REDIS_URL: redis://valkey-cache:6379
+      RUNNER_SOCKET: /run/koshin/runner.sock
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       GITLAB_TOKEN: ${GITLAB_TOKEN:-}
-    tmpfs:
-      - /tmp/renovate:uid=12021,mode=0700
+    volumes:
+      - workspace:/tmp/renovate
+      - runner:/run/koshin:ro
     stop_grace_period: 30s
     depends_on:
+      # Stopped after the worker, so the worker's shutdown path still kills the run
+      renovate:
+        condition: service_healthy
       nats:
         condition: service_healthy
       valkey:
         condition: service_healthy
       valkey-cache:
         condition: service_started
+
+volumes:
+  # Shared by the worker and Renovate: per-run workspaces and the runner socket
+  workspace:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: uid=12021,mode=0700
+  runner:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: uid=12021,mode=0700,size=1m

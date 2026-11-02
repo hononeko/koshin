@@ -9,7 +9,7 @@ reference for the `minimal` profile.
 
 ## Prerequisites
 
-* Kubernetes 1.29+
+* Kubernetes 1.30+ (native sidecar containers, `ValidatingAdmissionPolicy`)
 * [KEDA](https://keda.sh) 2.21+ to scale workers with the job backlog. Without it the chart runs a fixed
   `worker.replicas` (the `ScaledObject` is rendered only when the `keda.sh/v1alpha1` API exists, so pass
   `--api-versions keda.sh/v1alpha1/ScaledObject` to `helm template`).
@@ -122,6 +122,23 @@ publishing for a few seconds; the proxy retries, so webhooks are still accepted.
 The inline `*.secrets.*` and `github.app.privateKey` values exist for testing only. Without `INTERNAL_TRIGGER_TOKEN`
 the sweeper CronJob isn't installed.
 
+## Worker isolation
+
+Renovate can run code from the repositories it updates (e.g. Gradle during lockfile updates), so it doesn't run in the
+`worker` container. Each worker pod has a second container, `renovate` (a native sidecar), and the worker hands it
+every run over a Unix socket in a shared memory `emptyDir`:
+
+* The `renovate` container gets none of the worker's Secrets and no ServiceAccount token, and can't see the worker's
+  processes (or their environment) through `/proc`. Renovate gets only the run's environment: the platform token for
+  that run and the non-secret settings.
+* After each run, every process left in the `renovate` container is killed, so no process a run starts can watch the
+  next one.
+* Only the `worker` container mounts a ServiceAccount token, valid for `worker.podDeletionCost.tokenExpirationSeconds`.
+  The token can patch pods (for the pod-deletion cost), so the chart also installs a cluster-scoped
+  `ValidatingAdmissionPolicy` that only lets it change the `controller.kubernetes.io/pod-deletion-cost` annotation of
+  the worker's own pod. If you can't install cluster-scoped resources, set `worker.podDeletionCost.admissionPolicy=false`
+  (the token can then patch any pod in the namespace) or turn off `worker.podDeletionCost.enabled`.
+
 ## Repository cache
 
 `worker.repoCache.provider` picks where Renovate's repository cache lives between runs: `nats` (default, an Object Store
@@ -172,15 +189,16 @@ Resource requests with the defaults:
 | Component | Pods (`minimal` / `ha`) | Requests per pod | Limits per pod | Storage per pod |
 | :--- | :--- | :--- | :--- | :--- |
 | Proxy | 2 / 3 | 100m CPU, 256 Mi | 512 Mi | — |
-| Worker | 1 to `autoscaling.maxReplicas` | 500m CPU, 1 Gi | 4 Gi | 10 Gi `emptyDir`, plus the ~10 GB image on each node |
+| Worker: `renovate` container | 1 to `autoscaling.maxReplicas` | 500m CPU, 1 Gi | 4 Gi | 10 Gi `emptyDir`, plus the ~10 GB image on each node |
+| Worker: `worker` container | (same pods) | 100m CPU, 256 Mi | 768 Mi | — |
 | NATS | 1 / 3 | 50m CPU, 64 Mi | 256 Mi | 2 Gi `emptyDir` / 10 Gi PVC |
 | Valkey (coordination) | 1 / 3 | 50m CPU, 32 Mi | 128 Mi | `emptyDir` / 1 Gi PVC |
 | Sentinel | — / 3 | unset (`valkey.sentinel.resources`) | unset | memory-backed `emptyDir` |
 | Valkey (package cache) | 1 / 1 | 50m CPU, 128 Mi | 512 Mi | `emptyDir` |
 | Sweeper (CronJob) | 1 every 6 hours | 10m CPU, 16 Mi | 64 Mi | — |
 
-Workers dominate: each runs one Renovate process, and large repositories (monorepos, many package managers) may need
-more than 4 Gi. Keep the worker image on nodes that run workers (e.g. with an image cache or Spegel), since pulling
+Workers dominate: each runs one Renovate process in its `renovate` container (`worker.renovate.resources`), and large
+repositories (monorepos, many package managers) may need more than 4 Gi. Keep the worker image on nodes that run workers (e.g. with an image cache or Spegel), since pulling
 10 GB delays every scale-up.
 
 JetStream storage is mostly the repo cache: jobs are small and leave the stream once acknowledged. Keep
@@ -230,7 +248,7 @@ chart are yours to delete.
 
 ## Requirements
 
-Kubernetes: `>=1.29.0-0`
+Kubernetes: `>=1.30.0-0`
 
 | Repository | Name | Version |
 |------------|------|---------|
@@ -402,7 +420,9 @@ Kubernetes: `>=1.29.0-0`
 | worker.image.tag | string | `""` | Worker image tag (default: the chart's `appVersion`) |
 | worker.nodeSelector | object | `{}` | Worker node selector |
 | worker.podAnnotations | object | `{}` | Worker pod annotations |
-| worker.podDeletionCost.enabled | bool | `true` | `POD_DELETION_COST_ENABLED`: mark busy workers expensive to delete, so KEDA scale-in removes idle ones |
+| worker.podDeletionCost.admissionPolicy | bool | `true` | Create a ValidatingAdmissionPolicy (cluster-scoped) so the token can only change the pod-deletion-cost annotation of the worker's own pod. Without it, the token can patch any pod in the namespace. |
+| worker.podDeletionCost.enabled | bool | `true` | `POD_DELETION_COST_ENABLED`: mark busy workers expensive to delete, so KEDA scale-in removes idle ones. The worker container gets a ServiceAccount token for it; Renovate's container never does. |
+| worker.podDeletionCost.tokenExpirationSeconds | int | `600` | Lifetime of that token in seconds (at least 600); the kubelet renews it before it expires |
 | worker.podDisruptionBudget.enabled | string | `nil` | Create a PodDisruptionBudget for the workers (`maxUnavailable: 1`, for node drains). Default: on in `ha`. |
 | worker.podLabels | object | `{}` | Worker pod labels |
 | worker.podSecurityContext | object | `{"runAsGroup":0,"runAsNonRoot":true,"runAsUser":12021,"seccompProfile":{"type":"RuntimeDefault"}}` | Worker pod security context (Renovate's `full` image runs as uid 12021) |
@@ -413,6 +433,7 @@ Kubernetes: `>=1.29.0-0`
 | worker.rateLimits.maxConcurrentRunsPerPlatform | int | `3` | `MAX_CONCURRENT_RUNS_PER_PLATFORM`: Renovate runs per platform across all workers |
 | worker.rateLimits.maxRequestsPerSecond | string | `nil` | `RENOVATE_MAX_REQUESTS_PER_SECOND`, injected into Renovate's `hostRules` for the platform API |
 | worker.rateLimits.maxRequeues | int | `5` | `MAX_RATE_LIMIT_REQUEUES` before a rate-limited job is dead-lettered |
+| worker.renovate.resources | object | `{"limits":{"memory":"4Gi"},"requests":{"cpu":"500m","memory":"1Gi"}}` | Resources of the `renovate` container, where Renovate runs (KSH-21) |
 | worker.renovateRedisUrl | string | `""` | `RENOVATE_REDIS_URL`: Renovate's package cache. Default: the `valkey-cache` subchart, else the coordination Valkey when it's a plain `redis://` URL. |
 | worker.replicas | int | `1` | Worker replicas when KEDA isn't installed or `autoscaling.enabled` is false |
 | worker.repoCache.bucket | string | `"koshin-repo-cache"` | `REPO_CACHE_BUCKET`: Object Store bucket |
@@ -423,10 +444,10 @@ Kubernetes: `>=1.29.0-0`
 | worker.repoCache.s3.pathStyle | bool | `true` | `RENOVATE_S3_PATH_STYLE` |
 | worker.repoCache.s3.url | string | `""` | `RENOVATE_REPOSITORY_CACHE_TYPE`, e.g. `s3://renovate/repo-cache/` |
 | worker.repoCache.ttlDays | int | `30` | `REPO_CACHE_TTL_DAYS`: drops caches of repos without a successful run for this long |
-| worker.resources | object | `{"limits":{"memory":"4Gi"},"requests":{"cpu":"500m","memory":"1Gi"}}` | Worker resources |
+| worker.resources | object | `{"limits":{"memory":"768Mi"},"requests":{"cpu":"100m","memory":"256Mi"}}` | Resources of the `worker` container (koshin itself) |
 | worker.secrets.githubToken | string | `""` | `GITHUB_TOKEN` |
 | worker.secrets.gitlabToken | string | `""` | `GITLAB_TOKEN` |
-| worker.securityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}` | Worker container security context |
+| worker.securityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}` | Security context of the `worker` and `renovate` containers |
 | worker.serviceAccount.annotations | object | `{}` | Worker ServiceAccount annotations |
 | worker.terminationGracePeriodSeconds | int | `30` | Grace period covering the SIGTERM path (kill the CLI, release the lock, NAK), not a full run |
 | worker.tolerations | list | `[]` | Worker tolerations |

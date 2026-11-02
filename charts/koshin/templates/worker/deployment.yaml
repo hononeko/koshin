@@ -26,7 +26,8 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "koshin.fullname" . }}-worker
-      automountServiceAccountToken: {{ .Values.worker.podDeletionCost.enabled }}
+      # Only the worker container gets a token (kube-api-access), never Renovate's
+      automountServiceAccountToken: false
       terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -50,6 +51,32 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      initContainers:
+        # Renovate, and any repo code it runs, live in this container: no worker secrets, no ServiceAccount token.
+        # The worker hands it each run over the runner socket. A native sidecar: it starts before the worker and
+        # stops after it, so the SIGTERM path still kills the run itself.
+        - name: renovate
+          image: {{ include "koshin.image" (dict "ctx" . "image" .Values.worker.image) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          restartPolicy: Always
+          args: ["/opt/koshin/bin/koshin-runner"]
+          env:
+            - name: RUNNER_SOCKET
+              value: {{ include "koshin.runnerSocket" . }}
+          startupProbe:
+            exec:
+              command: ["test", "-S", {{ include "koshin.runnerSocket" . | quote }}]
+            periodSeconds: 2
+            failureThreshold: 60
+          resources:
+            {{- toYaml .Values.worker.renovate.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.worker.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: renovate
+              mountPath: /tmp/renovate
+            - name: runner
+              mountPath: /run/koshin
       containers:
         - name: worker
           image: {{ include "koshin.image" (dict "ctx" . "image" .Values.worker.image) }}
@@ -73,6 +100,8 @@ spec:
           env:
             - name: RENOVATE_BASE_DIR
               value: /tmp/renovate
+            - name: RUNNER_SOCKET
+              value: {{ include "koshin.runnerSocket" . }}
             - name: POD_DELETION_COST_ENABLED
               value: {{ .Values.worker.podDeletionCost.enabled | quote }}
             - name: POD_NAME
@@ -105,10 +134,27 @@ spec:
           volumeMounts:
             - name: renovate
               mountPath: /tmp/renovate
+            # Connecting needs no write access
+            - name: runner
+              mountPath: /run/koshin
+              readOnly: true
+            {{- if .Values.worker.podDeletionCost.enabled }}
+            - name: kube-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+            {{- end }}
             {{- with include "koshin.githubAppVolumeMount" . }}{{ . | nindent 12 }}{{- end }}
       volumes:
         # Per-run workspaces, deleted after each run and purged at startup
         - name: renovate
           emptyDir:
             sizeLimit: {{ .Values.worker.workspaceSizeLimit }}
+        - name: runner
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        {{- if .Values.worker.podDeletionCost.enabled }}
+        # Mounted by the worker container only
+        {{- include "koshin.kubeApiAccessVolume" . | nindent 8 }}
+        {{- end }}
         {{- with include "koshin.githubAppVolume" . }}{{ . | nindent 8 }}{{- end }}

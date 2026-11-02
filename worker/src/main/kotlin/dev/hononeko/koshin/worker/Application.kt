@@ -84,6 +84,7 @@ internal fun cliExecutor(settings: WorkerSettings): CliExecutorPort {
         rateLimitPattern = Regex(settings.rateLimitLogPattern),
         repoCache = settings.repoCache,
         cacheDir = settings.renovateCacheDir,
+        launcher = settings.runnerSocket?.let { RunnerRenovateLauncher(it) } ?: LocalRenovateLauncher(),
     )
     return if (settings.podDeletionCostEnabled) {
         PodDeletionCostCliExecutor(
@@ -114,6 +115,9 @@ fun main() {
     runBlocking { workspaceCleaner.purgeAll() }
 
     val cliExecutor = cliExecutor(settings)
+    if (settings.runnerSocket == null) {
+        logger.warn("No RUNNER_SOCKET: Renovate runs in this container and can read its secrets")
+    }
 
     val backends = WorkerBackends(
         // Consumers for every platform, so KEDA's per-platform triggers never hit a missing consumer.

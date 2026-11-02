@@ -79,10 +79,11 @@ The coordination Valkey instance (`VALKEY_URL`, supporting both standalone `redi
 ## Worker Runtime (KSH-7)
 
 * **1 job per pod.** The daemon polls the enabled `PLATFORMS` and runs one `renovate <repository>` at a time. Each run gets `RENOVATE_PLATFORM`, `RENOVATE_ENDPOINT` and `RENOVATE_TOKEN` for the job's platform (`GITHUB_TOKEN`/`GITHUB_API_URL`, `GITLAB_TOKEN`/`GITLAB_ENDPOINT`), plus `LOG_FORMAT=json`, `RENOVATE_BASE_DIR`, `RENOVATE_BINARY_SOURCE`, `RENOVATE_REDIS_URL` and the repository cache settings below. Other `RENOVATE_*` variables on the worker are passed through; worker secrets (`GITHUB_TOKEN`, `GITLAB_TOKEN`, `VALKEY_URL`, …) are not.
+* **Isolation (KSH-21):** Renovate, and any repo code it runs (e.g. Gradle during lockfile updates), runs in the pod's `renovate` container, not the worker's. The worker hands it each run over a Unix socket (`RUNNER_SOCKET`, in a shared `emptyDir`) with the run's environment, and the runner sends back Renovate's output and exit code. The `renovate` container has none of the worker's secrets and no ServiceAccount token, and its processes can't see the worker's through `/proc`. After each run the runner kills every process left in its container. Without `RUNNER_SOCKET`, Renovate runs in the worker's own container (and can read its secrets).
 * **Timeouts and cancellation** (`CLI_TIMEOUT_MINUTES`, lost lock, shutdown) forcibly kill the whole CLI process tree.
 * **Workspaces:** `$RENOVATE_BASE_DIR/repos/<platform>/<repo>` is deleted after every run; everything under `$RENOVATE_BASE_DIR` is purged at startup.
 * **SIGTERM:** stops fetching, kills the CLI, releases the lock (keeping the dirty flag), NAKs the delivery and releases the run slot, without waiting for the run to finish.
-* **Pod deletion cost (optional):** with `POD_DELETION_COST_ENABLED=true` (plus `POD_NAME` / `POD_NAMESPACE` from the downward API), the worker sets `controller.kubernetes.io/pod-deletion-cost` to `1000` while Renovate runs and back to `0` afterwards. Failed patches are logged and ignored.
+* **Pod deletion cost (optional):** with `POD_DELETION_COST_ENABLED=true` (plus `POD_NAME` / `POD_NAMESPACE` from the downward API), the worker sets `controller.kubernetes.io/pod-deletion-cost` to `1000` while Renovate runs and back to `0` afterwards. Failed patches are logged and ignored. Only the `worker` container gets a ServiceAccount token (projected, valid for 10 minutes), and a `ValidatingAdmissionPolicy` lets it change nothing but that annotation on its own pod.
 * **Health:** `GET /healthz` is liveness only; `GET /readyz` checks NATS and Valkey.
 * **Dead-lettering:** a job that uses up its `NATS_MAX_DELIVER` deliveries is moved to `renovate.dlq.<platform>` when NATS announces it (the MaxDeliver advisory). That announcement is sent once, so every `NATS_EXHAUSTED_SWEEP_SECONDS` (5 minutes) each worker also moves exhausted jobs whose announcement nobody handled, e.g. during a rolling deployment.
 
@@ -121,7 +122,7 @@ Git provider API limits cap throughput long before NATS or Valkey do (GitHub: 5,
 
 ## Running Locally (Docker Compose)
 
-`docker compose up --build` starts NATS (JetStream), the coordination and cache Valkeys, the proxy (`localhost:8080`) and a worker (`localhost:8081`), matching the `minimal` profile. Export `GITHUB_TOKEN` (or `GITLAB_TOKEN`) first so runs can authenticate, then trigger one:
+`docker compose up --build` starts NATS (JetStream), the coordination and cache Valkeys, the proxy (`localhost:8080`) and a worker (`localhost:8081`) with its Renovate runner, matching the `minimal` profile. Export `GITHUB_TOKEN` (or `GITLAB_TOKEN`) first so runs can authenticate, then trigger one:
 
 ```bash
 curl -X POST localhost:8080/api/v1/trigger -H "Authorization: Bearer dev-trigger-token" \
@@ -133,7 +134,7 @@ curl -X POST localhost:8080/api/v1/trigger -H "Authorization: Bearer dev-trigger
 ## Container Images
 
 * **`koshin-proxy`**: `eclipse-temurin:25-jre-noble`, runs as UID `10001`.
-* **`koshin-worker`**: the pinned `ghcr.io/renovatebot/renovate:<version>-full` image (Renovate plus its whole toolchain, `RENOVATE_BINARY_SOURCE=global`) with a private Temurin 25 JRE under `/opt/koshin/jre`. Runs as Renovate's UID `12021`; `dumb-init` is PID 1 and reaps orphaned processes.
+* **`koshin-worker`**: the pinned `ghcr.io/renovatebot/renovate:<version>-full` image (Renovate plus its whole toolchain, `RENOVATE_BINARY_SOURCE=global`) with a private Temurin 25 JRE under `/opt/koshin/jre`. Runs as Renovate's UID `12021`; `dumb-init` is PID 1 and reaps orphaned processes. The same image runs the Renovate runner with `/opt/koshin/bin/koshin-runner` (JVM flags in `KOSHIN_RUNNER_JAVA_OPTS`).
   * The image is ~10 GB. In-cluster **[Spegel](https://github.com/spegel-org/spegel)** shares image layers between nodes P2P, so a new worker pod usually pulls from a peer instead of the registry; no koshin-specific config is needed.
 * JVM flags come from `KOSHIN_JAVA_OPTS` (not `JAVA_OPTS`/`JAVA_TOOL_OPTIONS`, which Renovate's own Java/Gradle runs would inherit).
 
@@ -155,7 +156,7 @@ helm install koshin oci://ghcr.io/hononeko/charts/koshin -n koshin --create-name
 
 ## Kubernetes Deployment (Kustomize reference)
 
-The Kustomize manifests stay as a small, dependency-free reference for the `minimal` profile; `ha` is Helm-only. `k8s/base` holds the proxy (2 replicas, `appProtocol: kubernetes.io/h2c`), the worker, its KEDA `ScaledObject`, the 6-hourly sweeper `CronJob`, and the worker's RBAC. `k8s/overlays/minimal` adds the `koshin` namespace plus a single NATS, a coordination Valkey (`noeviction`) and a package-cache Valkey (`allkeys-lru`), all on `emptyDir`. Requires [KEDA](https://keda.sh) 2.21+.
+The Kustomize manifests stay as a small, dependency-free reference for the `minimal` profile; `ha` is Helm-only. `k8s/base` holds the proxy (2 replicas, `appProtocol: kubernetes.io/h2c`), the worker, its KEDA `ScaledObject`, the 6-hourly sweeper `CronJob`, and the worker's RBAC with its `ValidatingAdmissionPolicy` (cluster-scoped). `k8s/overlays/minimal` adds the `koshin` namespace plus a single NATS, a coordination Valkey (`noeviction`) and a package-cache Valkey (`allkeys-lru`), all on `emptyDir`. Requires Kubernetes 1.30+ and [KEDA](https://keda.sh) 2.21+.
 
 ```bash
 kubectl -n koshin create secret generic koshin-proxy-secrets \

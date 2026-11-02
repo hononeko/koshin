@@ -211,6 +211,15 @@ class WorkerSettingsTest {
     }
 
     @Test
+    fun `RUNNER_SOCKET hands runs to the Renovate runner`() {
+        assertNull(WorkerSettings.fromEnv(emptyMap()).runnerSocket)
+        val settings = WorkerSettings.fromEnv(mapOf("RUNNER_SOCKET" to "/run/koshin/runner.sock"))
+        assertEquals(Path("/run/koshin/runner.sock"), settings.runnerSocket)
+        assertTrue(settings.toString().contains("runnerSocket=/run/koshin/runner.sock"))
+        assertThrows<IllegalArgumentException> { WorkerSettings.fromEnv(mapOf("RUNNER_SOCKET" to "runner.sock")) }
+    }
+
+    @Test
     fun `invalid values are rejected`() {
         assertThrows<IllegalArgumentException> { WorkerSettings.fromEnv(mapOf("PORT" to "eighty")) }
         assertThrows<IllegalArgumentException> { WorkerSettings.fromEnv(mapOf("HTTP2_ENABLED" to "maybe")) }
