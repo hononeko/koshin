@@ -1,5 +1,7 @@
 package dev.hononeko.koshin.proxy
 
+import dev.hononeko.koshin.adapters.github.GitHubApp
+import dev.hononeko.koshin.adapters.github.GitHubAppConfig
 import dev.hononeko.koshin.adapters.nats.NatsConfig
 import dev.hononeko.koshin.core.ports.JobQueuePublisher
 import dev.hononeko.koshin.core.ports.RepositoryDiscoveryPort
@@ -23,6 +25,9 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import io.ktor.utils.io.readBuffer
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.io.readByteArray
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -64,6 +69,7 @@ fun Application.proxyModule(
     publisher: JobQueuePublisher,
     discoveryPort: RepositoryDiscoveryPort? = config.sweepRepositoriesFile?.let { StaticFileRepositoryDiscovery(it) },
     readinessCheck: () -> Boolean = { true },
+    gitHubApp: ProxyGitHubApp = ProxyGitHubApp(),
 ) {
     val ingestUseCase = IngestWebhookUseCase(
         RetryingJobQueuePublisher(
@@ -72,8 +78,9 @@ fun Application.proxyModule(
             maxTotalDelay = config.publishRetryBudget,
         ),
     )
-    val eventFilter = WebhookEventFilter(config.botLogins, ProxyJson)
-    val routeHandler = ProxyRouteHandler(config, eventFilter, ingestUseCase, discoveryPort)
+    val eventFilter = WebhookEventFilter(config.botLogins, ProxyJson, gitHubApp.botLogins)
+    val routeHandler =
+        ProxyRouteHandler(config, eventFilter, ingestUseCase, discoveryPort, gitHubApp.onInstallationGone)
 
     install(ContentNegotiation) {
         json(ProxyJson)
@@ -126,12 +133,20 @@ suspend fun ApplicationCall.receiveBoundedBytes(maxBytes: Int): ByteArray? {
     }
 }
 
+/** What the proxy does as a GitHub App: ignore its bot's webhooks, and forget a gone installation's tokens. */
+class ProxyGitHubApp(
+    val botLogins: () -> Collection<String> = { emptyList() },
+    val onInstallationGone: (Long) -> Unit = {},
+)
+
+@Suppress("LongParameterList") // The server's wiring: every parameter but the first two has a default
 fun createProxyServer(
     config: ProxyConfig,
     publisher: JobQueuePublisher,
     discoveryPort: RepositoryDiscoveryPort? = config.sweepRepositoriesFile?.let { StaticFileRepositoryDiscovery(it) },
     readinessCheck: () -> Boolean = { true },
     onStop: () -> Unit = {},
+    gitHubApp: ProxyGitHubApp = ProxyGitHubApp(),
 ): EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> = embeddedServer(
     factory = Netty,
     configure = {
@@ -151,6 +166,7 @@ fun createProxyServer(
             publisher = publisher,
             discoveryPort = discoveryPort,
             readinessCheck = readinessCheck,
+            gitHubApp = gitHubApp,
         )
     },
 )
@@ -173,10 +189,26 @@ fun main() {
     val natsLifecycle = ProxyNatsLifecycle(proxyConfig.natsUrl, natsConfig)
     natsLifecycle.startAsync()
 
+    val gitHubApp = GitHubAppConfig.fromEnv()?.let(::GitHubApp)
+    val appScope = CoroutineScope(SupervisorJob())
+    val botLogin = gitHubApp?.let { app -> AppBotLogin(app::botLogin).also { it.start(appScope) } }
+    val discovery = CompositeRepositoryDiscovery.of(
+        listOfNotNull(gitHubApp?.discovery(), proxyConfig.sweepRepositoriesFile?.let(::StaticFileRepositoryDiscovery)),
+    )
+
     createProxyServer(
         config = proxyConfig,
         publisher = natsLifecycle,
+        discoveryPort = discovery,
         readinessCheck = natsLifecycle::isReady,
-        onStop = natsLifecycle::close,
+        onStop = {
+            appScope.cancel()
+            gitHubApp?.close()
+            natsLifecycle.close()
+        },
+        gitHubApp = ProxyGitHubApp(
+            botLogins = { listOfNotNull(botLogin?.get()) },
+            onInstallationGone = { gitHubApp?.tokens?.evict(it) },
+        ),
     ).start(wait = true)
 }

@@ -20,3 +20,20 @@ class StaticCredentialsProvider(private val credentials: Map<Platform, PlatformC
     override suspend fun credentialsFor(repo: RepoRef): PlatformCredentials =
         checkNotNull(credentials[repo.platform]) { "No token configured for platform ${repo.platform}" }
 }
+
+/** GitHub runs use the GitHub App when it's configured (KSH-14); everything else, and GitHub without it, the tokens. */
+class WorkerCredentials(
+    private val tokens: StaticCredentialsProvider,
+    private val gitHubApp: PlatformCredentialsPort?,
+) : PlatformCredentialsPort {
+
+    fun isConfigured(platform: Platform): Boolean =
+        (platform == Platform.GITHUB && gitHubApp != null) || tokens.isConfigured(platform)
+
+    override suspend fun credentialsFor(repo: RepoRef): PlatformCredentials =
+        if (repo.platform == Platform.GITHUB && gitHubApp != null) {
+            gitHubApp.credentialsFor(repo)
+        } else {
+            tokens.credentialsFor(repo)
+        }
+}

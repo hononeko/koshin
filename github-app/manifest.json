@@ -1,0 +1,29 @@
+{
+  "name": "koshin",
+  "url": "https://github.com/hononeko/koshin",
+  "description": "Runs Renovate on the repositories it's installed on, through koshin.",
+  "hook_attributes": {
+    "url": "https://koshin.example.com/webhooks/github",
+    "active": true
+  },
+  "redirect_url": "https://github.com/hononeko/koshin/blob/main/github-app/README.md",
+  "public": false,
+  "default_permissions": {
+    "administration": "read",
+    "checks": "write",
+    "contents": "write",
+    "issues": "write",
+    "merge_queues": "write",
+    "metadata": "read",
+    "pull_requests": "write",
+    "statuses": "write",
+    "vulnerability_alerts": "read",
+    "workflows": "write",
+    "members": "read"
+  },
+  "default_events": [
+    "push",
+    "pull_request",
+    "issues"
+  ]
+}

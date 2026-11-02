@@ -28,9 +28,11 @@ commonLabels: {}
 github:
   # -- `GITHUB_API_URL` for GitHub Enterprise Server (default `https://api.github.com`)
   apiUrl: ""
-  # -- `GITHUB_BOT_LOGIN`: webhooks sent by this login are ignored, so Renovate's own pushes don't re-trigger it
+  # -- `GITHUB_BOT_LOGIN`: webhooks sent by this login are ignored, so Renovate's own pushes don't re-trigger it. With
+  # the GitHub App, its bot (`<slug>[bot]`) is ignored without this.
   botLogin: ""
-  # GitHub App credentials, preferred over a PAT (used once the App support of KSH-14 lands)
+  # The GitHub App, preferred over a PAT (`worker.existingSecret`'s `GITHUB_TOKEN`); see `github-app/README.md` in the
+  # repository.
   app:
     # -- `GITHUB_APP_ID`
     id: ""

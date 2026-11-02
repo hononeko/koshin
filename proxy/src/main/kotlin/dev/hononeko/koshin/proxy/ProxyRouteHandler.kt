@@ -18,6 +18,7 @@ internal class ProxyRouteHandler(
     private val eventFilter: WebhookEventFilter,
     private val ingestUseCase: IngestWebhookUseCase,
     private val discoveryPort: RepositoryDiscoveryPort?,
+    private val onInstallationGone: (Long) -> Unit = {},
 ) {
     private val logger = LoggerFactory.getLogger(ProxyRouteHandler::class.java)
 
@@ -109,6 +110,19 @@ internal class ProxyRouteHandler(
             is WebhookDecision.Enqueue -> {
                 enqueueWebhookEvent(call, platform, decision.repository, deliveryId)
             }
+
+            is WebhookDecision.EnqueueInstalled -> {
+                enqueueInstalledRepositories(call, decision.repositories, deliveryId)
+            }
+
+            is WebhookDecision.InstallationGone -> {
+                logger.info("GitHub App installation {} gone ({})", decision.installationId, decision.reason)
+                onInstallationGone(decision.installationId)
+                call.respond(
+                    HttpStatusCode.Accepted,
+                    WebhookResponse(status = "ignored", enqueued = false, reason = decision.reason),
+                )
+            }
         }
     }
 
@@ -142,6 +156,36 @@ internal class ProxyRouteHandler(
             throw e
         } catch (e: Exception) {
             logger.error("Failed to publish {} webhook job for {}", platform, validatedRepo.repository, e)
+            call.respond(HttpStatusCode.ServiceUnavailable, ErrorResponse("Queue unavailable"))
+        }
+    }
+
+    /** One scheduled run per repository the App was just installed on; the delivery ID dedupes a redelivery. */
+    @Suppress("TooGenericExceptionCaught")
+    private suspend fun enqueueInstalledRepositories(
+        call: ApplicationCall,
+        repositories: List<String>,
+        deliveryId: String?,
+    ) {
+        val repos = try {
+            repositories.map { RepoRef(Platform.GITHUB, it.trim()) }
+        } catch (e: IllegalArgumentException) {
+            call.respond(HttpStatusCode.BadRequest, ErrorResponse(e.message ?: "Invalid repository"))
+            return
+        }
+        try {
+            repos.forEach { repo ->
+                ingestUseCase.execute(repo.platform, repo.repository, deliveryId, TriggerReason.SCHEDULE)
+            }
+            logger.info("GitHub App installed on {} repositories; enqueued an initial run for each", repos.size)
+            call.respond(
+                HttpStatusCode.Accepted,
+                WebhookResponse(status = "accepted", enqueued = true, deliveryId = deliveryId),
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.error("Failed to publish initial runs for a GitHub App installation", e)
             call.respond(HttpStatusCode.ServiceUnavailable, ErrorResponse("Queue unavailable"))
         }
     }

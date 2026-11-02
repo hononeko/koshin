@@ -9,6 +9,8 @@ application {
 dependencies {
     implementation(project(":core"))
     implementation(project(":adapters:nats"))
+    implementation(project(":adapters:github-app"))
+    implementation(libs.kotlinx.coroutines.core)
     implementation(libs.ktor.server.core)
     implementation(libs.ktor.server.netty)
     implementation(libs.ktor.server.content.negotiation)
