@@ -290,7 +290,7 @@ worker:
       memory: 768Mi
   renovate:
     image:
-      # -- Registry of the Renovate image
+      # -- Registry of the Renovate image (empty: Docker Hub, e.g. with `repository: renovate/renovate`)
       registry: ghcr.io
       # -- Renovate image repository. Use a `-full` image: it ships the tools Renovate runs (`binarySource=global`).
       repository: renovatebot/renovate

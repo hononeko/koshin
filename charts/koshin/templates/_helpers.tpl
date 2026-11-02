@@ -41,9 +41,13 @@ app.kubernetes.io/component: {{ . }}
 {{- end }}
 {{- end }}
 
-{{/* Image reference; pass (dict "ctx" $ "image" .Values.proxy.image). Registry and tag default to koshin's. */}}
+{{/*
+Image reference; pass (dict "ctx" $ "image" .Values.proxy.image). Without a `registry` key the image uses
+`image.registry`; an empty one means Docker Hub. The tag defaults to the chart's appVersion.
+*/}}
 {{- define "koshin.image" -}}
-{{- $repo := printf "%s/%s" (.image.registry | default .ctx.Values.image.registry) .image.repository | trimPrefix "/" }}
+{{- $registry := ternary .image.registry .ctx.Values.image.registry (hasKey .image "registry") }}
+{{- $repo := printf "%s/%s" $registry .image.repository | trimPrefix "/" }}
 {{- if .image.digest }}
 {{- printf "%s@%s" $repo .image.digest }}
 {{- else }}

@@ -453,7 +453,7 @@ Kubernetes: `>=1.30.0-0`
 | worker.rateLimits.maxRequeues | int | `5` | `MAX_RATE_LIMIT_REQUEUES` before a rate-limited job is dead-lettered |
 | worker.renovate.image.digest | string | `""` | Renovate image digest; takes precedence over the tag |
 | worker.renovate.image.pullPolicy | string | `""` | Pull policy of the Renovate image (default: `image.pullPolicy`) |
-| worker.renovate.image.registry | string | `"ghcr.io"` | Registry of the Renovate image |
+| worker.renovate.image.registry | string | `"ghcr.io"` | Registry of the Renovate image (empty: Docker Hub, e.g. with `repository: renovate/renovate`) |
 | worker.renovate.image.repository | string | `"renovatebot/renovate"` | Renovate image repository. Use a `-full` image: it ships the tools Renovate runs (`binarySource=global`). |
 | worker.renovate.image.tag | string | `"44.178.3-full"` | Renovate version, upgradable without a koshin release |
 | worker.renovate.resources | object | `{"limits":{"memory":"4Gi"},"requests":{"cpu":"500m","memory":"1Gi"}}` | Resources of the `renovate` container, where Renovate runs (KSH-21) |
