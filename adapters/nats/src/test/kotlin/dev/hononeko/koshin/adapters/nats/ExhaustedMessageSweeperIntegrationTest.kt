@@ -4,11 +4,13 @@ import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.model.RepoRef
 import dev.hononeko.koshin.core.model.TriggerReason
+import dev.hononeko.koshin.core.ports.JobDelivery
 import io.nats.client.Connection
 import io.nats.client.Nats
 import io.nats.client.Options
 import io.nats.client.PullSubscribeOptions
 import io.nats.client.api.StorageType
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.AfterAll
@@ -20,12 +22,17 @@ import org.junit.jupiter.api.Test
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
-/** An exhausted job whose MaxDeliver advisory nobody received (no forwarder subscribed). */
+/**
+ * An exhausted job whose MaxDeliver advisory nobody received (no forwarder subscribed). NATS handles ACKs and NAKs
+ * asynchronously, so the tests wait for it to have acted on each one rather than racing it.
+ */
 class ExhaustedMessageSweeperIntegrationTest {
     companion object {
         private lateinit var connection: Connection
         private val ids = AtomicInteger()
+        private val AWAIT_TIMEOUT = 10.seconds
 
         @BeforeAll
         @JvmStatic
@@ -47,7 +54,8 @@ class ExhaustedMessageSweeperIntegrationTest {
         jobsSubjectPrefix = "sweep$id.jobs",
         dlqSubjectPrefix = "sweep$id.dlq",
         storageType = StorageType.Memory,
-        ackWait = 1.seconds,
+        // Long enough that no in-flight job is redelivered while a slow test runs
+        ackWait = 30.seconds,
         maxDeliver = 2,
     )
     private val jsm = connection.jetStreamManagement()
@@ -70,6 +78,39 @@ class ExhaustedMessageSweeperIntegrationTest {
         return publisher to NatsJobQueueConsumer(connection, config)
     }
 
+    private fun consumerInfo() = jsm.getConsumerInfo(config.jobsStreamName, config.consumerNameFor(Platform.GITHUB))
+
+    private suspend fun awaitUntil(what: String, condition: suspend () -> Boolean) {
+        val deadline = TimeSource.Monotonic.markNow() + AWAIT_TIMEOUT
+        while (!condition()) {
+            check(deadline.hasNotPassedNow()) { "Timed out waiting for $what" }
+            delay(20.milliseconds)
+        }
+    }
+
+    /**
+     * Delivers and NAKs [repo]'s job, the only one waiting, until it's over MaxDeliver. NATS gives up on it when it
+     * next tries to deliver it, so pull until it's no longer ACK-pending.
+     */
+    private suspend fun exhaust(consumer: NatsJobQueueConsumer, repo: String) {
+        repeat(config.maxDeliver.toInt()) {
+            // Waits for the redelivery while NATS hasn't processed the previous NAK yet
+            val delivery = consumer.fetchNext(Platform.GITHUB, AWAIT_TIMEOUT)
+            assertEquals("hononeko/$repo", delivery?.event?.repo?.repository)
+            delivery!!.nack()
+        }
+        awaitUntil("hononeko/$repo to be exhausted") {
+            assertNull(consumer.fetchNext(Platform.GITHUB, 100.milliseconds), "delivered past MaxDeliver")
+            consumerInfo().numAckPending == 0L
+        }
+    }
+
+    /** ACKs [delivery] and waits until NATS has deleted the job from the work queue. */
+    private suspend fun ackAndAwait(delivery: JobDelivery) {
+        delivery.ack()
+        awaitUntil("${delivery.event.repo} to be ACKed") { delivery.event.repo.repository !in storedJobs() }
+    }
+
     private fun repoOf(data: ByteArray) =
         Json.decodeFromString(RenovateJobEvent.serializer(), data.decodeToString()).repo.repository
 
@@ -84,17 +125,16 @@ class ExhaustedMessageSweeperIntegrationTest {
 
     @Test
     fun `moves only exhausted jobs to the DLQ`() = runBlocking {
-        NatsJetStreamBootstrap(jsm, config).bootstrap(listOf(Platform.GITHUB))
-        val publisher = NatsJobQueuePublisher(connection, config)
-        val consumer = NatsJobQueueConsumer(connection, config)
-        listOf("exhausted", "acked", "in-flight", "waiting").forEach { publisher.publish(job(it)) }
+        val (publisher, consumer) = setUpStream("exhausted")
+        exhaust(consumer, "exhausted")
+        listOf("acked", "in-flight", "waiting").forEach { publisher.publish(job(it)) }
 
-        repeat(2) { consumer.fetchNext(Platform.GITHUB, 2.seconds)!!.nack() }
-        // The next pull finds "exhausted" over MaxDeliver and serves "acked"; acking it moves the ack floor past both
-        val acked = consumer.fetchNext(Platform.GITHUB, 2.seconds)!!
+        // Acking "acked" moves the ack floor past "exhausted", which is no longer ACK-pending
+        val acked = consumer.fetchNext(Platform.GITHUB, AWAIT_TIMEOUT)!!
         assertEquals("hononeko/acked", acked.event.repo.repository)
-        acked.ack()
-        val inFlight = consumer.fetchNext(Platform.GITHUB, 2.seconds)
+        ackAndAwait(acked)
+        awaitUntil("the ack floor to pass hononeko/acked") { consumerInfo().ackFloor.streamSequence >= 2 }
+        val inFlight = consumer.fetchNext(Platform.GITHUB, AWAIT_TIMEOUT)
         assertEquals("hononeko/in-flight", inFlight?.event?.repo?.repository)
 
         assertEquals(1, sweeper().sweep())
@@ -111,7 +151,7 @@ class ExhaustedMessageSweeperIntegrationTest {
         assertEquals("2", moved.headers.getFirst("Koshin-Deliveries"))
 
         // The in-flight job is still the worker's to settle
-        inFlight!!.ack()
+        ackAndAwait(inFlight!!)
         assertEquals(0, sweeper().sweep())
         assertEquals(listOf("hononeko/waiting"), storedJobs())
         consumer.close()
@@ -125,7 +165,7 @@ class ExhaustedMessageSweeperIntegrationTest {
         val publisher = NatsJobQueuePublisher(connection, config)
         val consumer = NatsJobQueueConsumer(connection, config)
         publisher.publish(job("ok"))
-        consumer.fetchNext(Platform.GITHUB, 2.seconds)!!.ack()
+        ackAndAwait(consumer.fetchNext(Platform.GITHUB, AWAIT_TIMEOUT)!!)
 
         assertEquals(0, sweeper().sweep())
         assertNull(runCatching { jsm.getMessage(config.dlqStreamName, 1) }.getOrNull())
@@ -136,9 +176,8 @@ class ExhaustedMessageSweeperIntegrationTest {
     @Test
     fun `an exhausted job at the end of the queue is swept too`() = runBlocking {
         val (_, consumer) = setUpStream("last")
-        repeat(2) { consumer.fetchNext(Platform.GITHUB, 2.seconds)!!.nack() }
         // An idle worker's next pull is when NATS finds the job over MaxDeliver; no later job moves the ack floor
-        assertNull(consumer.fetchNext(Platform.GITHUB, 500.milliseconds))
+        exhaust(consumer, "last")
 
         assertEquals(1, sweeper().sweep())
         assertEquals(emptyList<String>(), storedJobs())
@@ -148,7 +187,7 @@ class ExhaustedMessageSweeperIntegrationTest {
     @Test
     fun `a job waiting to be redelivered is left alone`() = runBlocking {
         val (_, consumer) = setUpStream("retry-later")
-        consumer.fetchNext(Platform.GITHUB, 2.seconds)!!.nack(60.seconds)
+        consumer.fetchNext(Platform.GITHUB, AWAIT_TIMEOUT)!!.nack(60.seconds)
 
         assertEquals(0, sweeper().sweep())
         assertEquals(listOf("hononeko/retry-later"), storedJobs())
