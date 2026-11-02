@@ -253,8 +253,14 @@ worker:
   # Valkey when it's a plain `redis://` URL.
   renovateRedisUrl: ""
   podDeletionCost:
-    # -- `POD_DELETION_COST_ENABLED`: mark busy workers expensive to delete, so KEDA scale-in removes idle ones
+    # -- `POD_DELETION_COST_ENABLED`: mark busy workers expensive to delete, so KEDA scale-in removes idle ones. The
+    # worker container gets a ServiceAccount token for it; Renovate's container never does.
     enabled: true
+    # -- Lifetime of that token in seconds (at least 600); the kubelet renews it before it expires
+    tokenExpirationSeconds: 600
+    # -- Create a ValidatingAdmissionPolicy (cluster-scoped) so the token can only change the pod-deletion-cost
+    # annotation of the worker's own pod. Without it, the token can patch any pod in the namespace.
+    admissionPolicy: true
   autoscaling:
     # -- Scale workers with KEDA (one per active or pending job). Rendered only when the `keda.sh/v1alpha1` API exists.
     enabled: true
@@ -275,13 +281,21 @@ worker:
   terminationGracePeriodSeconds: 30
   # -- Size of the `emptyDir` holding per-run workspaces and Renovate's caches
   workspaceSizeLimit: 10Gi
-  # -- Worker resources
+  # -- Resources of the `worker` container (koshin itself)
   resources:
     requests:
-      cpu: 500m
-      memory: 1Gi
+      cpu: 100m
+      memory: 256Mi
     limits:
-      memory: 4Gi
+      memory: 768Mi
+  renovate:
+    # -- Resources of the `renovate` container, where Renovate runs (KSH-21)
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        memory: 4Gi
   # -- Worker pod security context (Renovate's `full` image runs as uid 12021)
   podSecurityContext:
     runAsNonRoot: true
@@ -289,7 +303,7 @@ worker:
     runAsGroup: 0
     seccompProfile:
       type: RuntimeDefault
-  # -- Worker container security context
+  # -- Security context of the `worker` and `renovate` containers
   securityContext:
     allowPrivilegeEscalation: false
     capabilities:

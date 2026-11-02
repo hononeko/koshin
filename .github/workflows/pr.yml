@@ -146,15 +146,58 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
           df -h /
 
+      # The chart and the images can change together (e.g. the worker's Renovate runner, KSH-21), so this tests the
+      # chart with the branch's images, tagged `ci`, not the released ones of its appVersion
+      - name: Set up Docker Buildx
+        if: steps.changed.outputs.changed == 'true'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - name: Build proxy image
+        if: steps.changed.outputs.changed == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: docker/Dockerfile.proxy
+          platforms: linux/amd64
+          tags: ghcr.io/hononeko/koshin-proxy:ci
+          outputs: type=docker,dest=${{ runner.temp }}/proxy.tar
+          cache-from: type=gha,scope=proxy-amd64
+          provenance: false
+
+      - name: Build worker image
+        if: steps.changed.outputs.changed == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: docker/Dockerfile.worker
+          platforms: linux/amd64
+          tags: ghcr.io/hononeko/koshin-worker:ci
+          outputs: type=docker,dest=${{ runner.temp }}/worker.tar
+          cache-from: type=gha,scope=worker-amd64
+          provenance: false
+
+      # Frees the build cache (~13 GB) before kind unpacks the worker image
+      - name: Prune build cache
+        if: steps.changed.outputs.changed == 'true'
+        run: |
+          docker buildx prune --all --force
+          df -h /
+
       - name: Create kind cluster
         if: steps.changed.outputs.changed == 'true'
         uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
 
-      # Installs the released images of the chart's appVersion (the CD workflow bumps it with the images), so this
-      # tests the chart, not the branch's code
+      - name: Load images into kind
+        if: steps.changed.outputs.changed == 'true'
+        run: |
+          for image in proxy worker; do
+            kind load image-archive "$RUNNER_TEMP/$image.tar" --name chart-testing
+            rm "$RUNNER_TEMP/$image.tar"
+          done
+
       - name: Install and test (minimal profile)
         if: steps.changed.outputs.changed == 'true'
-        run: ct install --config .github/ct.yaml
+        run: ct install --config .github/ct.yaml --helm-extra-set-args "--set=proxy.image.tag=ci --set=worker.image.tag=ci"
 
   image:
     name: Image Build & Smoke Test

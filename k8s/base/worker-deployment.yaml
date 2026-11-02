@@ -17,6 +17,8 @@ spec:
         app.kubernetes.io/component: worker
     spec:
       serviceAccountName: koshin-worker
+      # Only the worker container gets a token (kube-api-access), never Renovate's
+      automountServiceAccountToken: false
       # Covers the SIGTERM path (kill the CLI, release the lock, NAK), not a full run
       terminationGracePeriodSeconds: 30
       securityContext:
@@ -25,6 +27,37 @@ spec:
         runAsGroup: 0
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        # Renovate, and any repo code it runs, live in this container: no worker secrets, no ServiceAccount token.
+        # The worker hands it each run over the runner socket. A native sidecar: it starts before the worker and
+        # stops after it, so the SIGTERM path still kills the run itself.
+        - name: renovate
+          image: ghcr.io/hononeko/koshin-worker
+          restartPolicy: Always
+          args: ["/opt/koshin/bin/koshin-runner"]
+          env:
+            - name: RUNNER_SOCKET
+              value: /run/koshin/runner.sock
+          startupProbe:
+            exec:
+              command: ["test", "-S", "/run/koshin/runner.sock"]
+            periodSeconds: 2
+            failureThreshold: 60
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              memory: 4Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: renovate
+              mountPath: /tmp/renovate
+            - name: runner
+              mountPath: /run/koshin
       containers:
         - name: worker
           image: ghcr.io/hononeko/koshin-worker
@@ -39,6 +72,8 @@ spec:
                 name: koshin-worker-secrets
                 optional: true
           env:
+            - name: RUNNER_SOCKET
+              value: /run/koshin/runner.sock
             - name: POD_DELETION_COST_ENABLED
               value: "true"
             - name: POD_NAME
@@ -62,10 +97,10 @@ spec:
             periodSeconds: 20
           resources:
             requests:
-              cpu: 500m
-              memory: 1Gi
+              cpu: 100m
+              memory: 256Mi
             limits:
-              memory: 4Gi
+              memory: 768Mi
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -73,8 +108,36 @@ spec:
           volumeMounts:
             - name: renovate
               mountPath: /tmp/renovate
+            # Connecting needs no write access
+            - name: runner
+              mountPath: /run/koshin
+              readOnly: true
+            - name: kube-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
       volumes:
         # Per-run workspaces, deleted after each run and purged at startup
         - name: renovate
           emptyDir:
             sizeLimit: 10Gi
+        - name: runner
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        # What automountServiceAccountToken would mount, but short-lived and for the worker container only
+        - name: kube-api-access
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef:
+                        fieldPath: metadata.namespace

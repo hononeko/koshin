@@ -30,6 +30,8 @@ LABEL org.opencontainers.image.title="koshin-worker" \
 # A private JRE, kept off PATH and JAVA_HOME so Renovate's own Java tooling is unaffected
 COPY --from=jre /opt/java/openjdk/ /opt/koshin/jre/
 COPY --from=build /src/worker/build/install/worker/lib/ /opt/koshin/lib/
+# The pod's `renovate` container runs this instead of the worker (KSH-21)
+COPY --chmod=755 docker/koshin-runner /opt/koshin/bin/koshin-runner
 
 ENV RENOVATE_BINARY_SOURCE=global \
     RENOVATE_BASE_DIR=/tmp/renovate \

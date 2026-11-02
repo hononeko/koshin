@@ -9,4 +9,5 @@ k8s/
 charts/
 docker-compose.yml
 docker/
+!docker/koshin-runner
 *.md

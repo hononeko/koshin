@@ -1,0 +1,6 @@
+#!/bin/sh
+# Entry point of the worker pod's `renovate` container (KSH-21): runs each Renovate run the worker hands over on
+# $RUNNER_SOCKET, away from the worker's secrets and ServiceAccount token.
+# shellcheck disable=SC2086 # KOSHIN_RUNNER_JAVA_OPTS is a list of flags
+exec /opt/koshin/jre/bin/java ${KOSHIN_RUNNER_JAVA_OPTS:--Xmx128m -XX:+UseSerialGC -XX:+ExitOnOutOfMemoryError} \
+  -cp '/opt/koshin/lib/*' dev.hononeko.koshin.worker.RenovateRunnerKt

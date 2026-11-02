@@ -501,6 +501,13 @@
           "properties": {
             "enabled": {
               "type": "boolean"
+            },
+            "tokenExpirationSeconds": {
+              "type": "integer",
+              "minimum": 600
+            },
+            "admissionPolicy": {
+              "type": "boolean"
             }
           },
           "additionalProperties": false
@@ -575,6 +582,15 @@
         },
         "resources": {
           "type": "object"
+        },
+        "renovate": {
+          "type": "object",
+          "properties": {
+            "resources": {
+              "type": "object"
+            }
+          },
+          "additionalProperties": false
         },
         "podSecurityContext": {
           "type": "object"

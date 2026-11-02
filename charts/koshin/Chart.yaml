@@ -5,7 +5,7 @@ type: application
 # Set to the release version by the CD workflow when the chart is published
 version: 0.8.0
 appVersion: "0.8.0"
-kubeVersion: ">=1.29.0-0"
+kubeVersion: ">=1.30.0-0"
 home: https://github.com/hononeko/koshin
 sources:
   - https://github.com/hononeko/koshin
