@@ -11,6 +11,9 @@ data class GitHubAppConfig(val appId: String, val privateKeyPath: Path, val apiU
         require(apiUrl.startsWith("https://") || apiUrl.startsWith("http://")) {
             "GITHUB_API_URL must be an http(s) URL: $apiUrl"
         }
+        require(!runCatching { URI(apiUrl).host }.getOrNull().isNullOrBlank()) {
+            "GITHUB_API_URL has no host: $apiUrl"
+        }
     }
 
     /** The API base without a trailing slash, e.g. `https://ghe.example.com/api/v3`. */

@@ -266,6 +266,24 @@ class GitHubAppTest {
     }
 
     @Test
+    fun `discovery won't send a token to a pagination link on another host`() = runTest {
+        route = { call ->
+            when (call) {
+                "GET /app/installations?per_page=100" -> json(
+                    """[{"id":1}]""",
+                    "Link" to """<https://evil.example.com/app/installations?page=2>; rel="next"""",
+                )
+
+                else -> error("No route for $call")
+            }
+        }
+
+        val error = assertThrows<java.io.IOException> { app().discovery().discover() }
+        assertTrue(error.message!!.contains("evil.example.com"), error.message)
+        assertEquals(1, requests.size)
+    }
+
+    @Test
     fun `the bot login is the App slug`() = runTest {
         route = defaultRoute
         assertEquals("koshin[bot]", app().use { it.botLogin() })
@@ -285,6 +303,7 @@ class GitHubAppTest {
                 mapOf("GITHUB_APP_ID" to "42", "GITHUB_APP_PRIVATE_KEY_PATH" to "/k", "GITHUB_API_URL" to "ghe"),
             )
         }
+        assertThrows<IllegalArgumentException> { GitHubAppConfig("42", Path("/k"), "https://") }
     }
 
     private companion object {

@@ -90,6 +90,10 @@ internal class GitHubAppApi(private val http: HttpClient, private val apiBase: S
             val response = http.get(url) { headers(bearer) }.orThrow("GET $path")
             items += page(response.bodyAsText())
             url = response.headers[HttpHeaders.Link]?.let { NEXT_LINK.find(it)?.groupValues?.get(1) }
+            // The token goes along: never to another host, e.g. one a proxy in front of GHES rewrote the links to.
+            if (url != null && !url.startsWith("$apiBase/")) {
+                throw IOException("Refusing to follow a pagination link outside $apiBase: $url")
+            }
         }
         return items
     }
