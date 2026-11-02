@@ -13,7 +13,8 @@ reference for the `minimal` profile.
 * [KEDA](https://keda.sh) 2.21+ to scale workers with the job backlog. Without it the chart runs a fixed
   `worker.replicas` (the `ScaledObject` is rendered only when the `keda.sh/v1alpha1` API exists, so pass
   `--api-versions keda.sh/v1alpha1/ScaledObject` to `helm template`).
-* The worker image is about 10 GB uncompressed: it bundles a pinned Renovate (`renovate:<version>-full`) and its tools.
+* Workers run Renovate from the upstream `ghcr.io/renovatebot/renovate:<version>-full` image (`worker.renovate.image`),
+  about 10 GB uncompressed with its tools. The koshin images are small Temurin JRE images.
 
 ## Install
 
@@ -125,8 +126,10 @@ the sweeper CronJob isn't installed.
 ## Worker isolation
 
 Renovate can run code from the repositories it updates (e.g. Gradle during lockfile updates), so it doesn't run in the
-`worker` container. Each worker pod has a second container, `renovate` (a native sidecar), and the worker hands it
-every run over a Unix socket in a shared memory `emptyDir`:
+`worker` container. Each worker pod has a second container, `renovate` (a native sidecar running
+`worker.renovate.image`), and the worker hands it every run over a Unix socket in a shared memory `emptyDir`. An init
+container, `koshin-runner-init`, first copies the runner from the worker image into a volume that `renovate` mounts
+read-only at `/opt/koshin`, so a run can't change it.
 
 * The `renovate` container gets none of the worker's Secrets and no ServiceAccount token, and can't see the worker's
   processes (or their environment) through `/proc`. Renovate gets only the run's environment: the platform token for
@@ -138,6 +141,21 @@ every run over a Unix socket in a shared memory `emptyDir`:
   `ValidatingAdmissionPolicy` that only lets it change the `controller.kubernetes.io/pod-deletion-cost` annotation of
   the worker's own pod. If you can't install cluster-scoped resources, set `worker.podDeletionCost.admissionPolicy=false`
   (the token can then patch any pod in the namespace) or turn off `worker.podDeletionCost.enabled`.
+
+## Renovate version
+
+The chart pins Renovate in `worker.renovate.image` (a `-full` tag, which ships the tools Renovate runs). Set `tag` or
+`digest` to run another version, without upgrading koshin:
+
+```yaml
+worker:
+  renovate:
+    image:
+      tag: 44.180.0-full
+```
+
+koshin relies on Renovate's repository cache layout and its rate-limit log message (`worker.rateLimits.logPattern`),
+both checked against the pinned version, so try a new major before rolling it out.
 
 ## Repository cache
 
@@ -189,7 +207,7 @@ Resource requests with the defaults:
 | Component | Pods (`minimal` / `ha`) | Requests per pod | Limits per pod | Storage per pod |
 | :--- | :--- | :--- | :--- | :--- |
 | Proxy | 2 / 3 | 100m CPU, 256 Mi | 512 Mi | — |
-| Worker: `renovate` container | 1 to `autoscaling.maxReplicas` | 500m CPU, 1 Gi | 4 Gi | 10 Gi `emptyDir`, plus the ~10 GB image on each node |
+| Worker: `renovate` container | 1 to `autoscaling.maxReplicas` | 500m CPU, 1 Gi | 4 Gi | 10 Gi `emptyDir`, plus the ~10 GB Renovate image on each node |
 | Worker: `worker` container | (same pods) | 100m CPU, 256 Mi | 768 Mi | — |
 | NATS | 1 / 3 | 50m CPU, 64 Mi | 256 Mi | 2 Gi `emptyDir` / 10 Gi PVC |
 | Valkey (coordination) | 1 / 3 | 50m CPU, 32 Mi | 128 Mi | `emptyDir` / 1 Gi PVC |
@@ -198,7 +216,7 @@ Resource requests with the defaults:
 | Sweeper (CronJob) | 1 every 6 hours | 10m CPU, 16 Mi | 64 Mi | — |
 
 Workers dominate: each runs one Renovate process in its `renovate` container (`worker.renovate.resources`), and large
-repositories (monorepos, many package managers) may need more than 4 Gi. Keep the worker image on nodes that run workers (e.g. with an image cache or Spegel), since pulling
+repositories (monorepos, many package managers) may need more than 4 Gi. Keep the Renovate image on nodes that run workers (e.g. with an image cache or Spegel), since pulling
 10 GB delays every scale-up.
 
 JetStream storage is mostly the repo cache: jobs are small and leave the stream once acknowledged. Keep
@@ -412,11 +430,11 @@ Kubernetes: `>=1.30.0-0`
 | worker.config.heartbeatIntervalSeconds | int | `15` | `HEARTBEAT_INTERVAL_SECONDS`: heartbeat, lock and run-slot renewal interval |
 | worker.config.lockCollisionRetrySeconds | int | `30` | `LOCK_COLLISION_RETRY_SECONDS`: NAK delay for a redelivered job that hits a held lock |
 | worker.config.lockTtlSeconds | int | `45` | `LOCK_TTL_SECONDS`: per-repo lock TTL |
-| worker.config.renovateBinarySource | string | `"global"` | `RENOVATE_BINARY_SOURCE` (tools come from the `full` image) |
+| worker.config.renovateBinarySource | string | `"global"` | `RENOVATE_BINARY_SOURCE` (tools come from the `full` Renovate image) |
 | worker.existingSecret | string | `""` | Existing Secret with `GITHUB_TOKEN` and/or `GITLAB_TOKEN` (PAT fallback when the GitHub App isn't configured) |
 | worker.extraEnv | list | `[]` | Extra environment variables for the worker (passed on to Renovate unless they're koshin secrets) |
 | worker.image.digest | string | `""` | Worker image digest; takes precedence over the tag |
-| worker.image.repository | string | `"hononeko/koshin-worker"` | Worker image repository. The image bundles a pinned Renovate (`renovate:<version>-full`). |
+| worker.image.repository | string | `"hononeko/koshin-worker"` | Worker image repository. It holds koshin only: Renovate runs from `worker.renovate.image`. |
 | worker.image.tag | string | `""` | Worker image tag (default: the chart's `appVersion`) |
 | worker.nodeSelector | object | `{}` | Worker node selector |
 | worker.podAnnotations | object | `{}` | Worker pod annotations |
@@ -425,7 +443,7 @@ Kubernetes: `>=1.30.0-0`
 | worker.podDeletionCost.tokenExpirationSeconds | int | `600` | Lifetime of that token in seconds (at least 600); the kubelet renews it before it expires |
 | worker.podDisruptionBudget.enabled | string | `nil` | Create a PodDisruptionBudget for the workers (`maxUnavailable: 1`, for node drains). Default: on in `ha`. |
 | worker.podLabels | object | `{}` | Worker pod labels |
-| worker.podSecurityContext | object | `{"runAsGroup":0,"runAsNonRoot":true,"runAsUser":12021,"seccompProfile":{"type":"RuntimeDefault"}}` | Worker pod security context (Renovate's `full` image runs as uid 12021) |
+| worker.podSecurityContext | object | `{"runAsGroup":0,"runAsNonRoot":true,"runAsUser":12021,"seccompProfile":{"type":"RuntimeDefault"}}` | Worker pod security context (both images run as Renovate's uid 12021) |
 | worker.rateLimits.backoffBaseSeconds | int | `60` | `RATE_LIMIT_BACKOFF_BASE_SECONDS`: platform cooldown base |
 | worker.rateLimits.backoffMaxSeconds | int | `3600` | `RATE_LIMIT_BACKOFF_MAX_SECONDS`: platform cooldown cap |
 | worker.rateLimits.concurrentRequestLimit | string | `nil` | `RENOVATE_CONCURRENT_REQUEST_LIMIT`, injected into Renovate's `hostRules` for the platform API |
@@ -433,6 +451,11 @@ Kubernetes: `>=1.30.0-0`
 | worker.rateLimits.maxConcurrentRunsPerPlatform | int | `3` | `MAX_CONCURRENT_RUNS_PER_PLATFORM`: Renovate runs per platform across all workers |
 | worker.rateLimits.maxRequestsPerSecond | string | `nil` | `RENOVATE_MAX_REQUESTS_PER_SECOND`, injected into Renovate's `hostRules` for the platform API |
 | worker.rateLimits.maxRequeues | int | `5` | `MAX_RATE_LIMIT_REQUEUES` before a rate-limited job is dead-lettered |
+| worker.renovate.image.digest | string | `""` | Renovate image digest; takes precedence over the tag |
+| worker.renovate.image.pullPolicy | string | `""` | Pull policy of the Renovate image (default: `image.pullPolicy`) |
+| worker.renovate.image.registry | string | `"ghcr.io"` | Registry of the Renovate image |
+| worker.renovate.image.repository | string | `"renovatebot/renovate"` | Renovate image repository. Use a `-full` image: it ships the tools Renovate runs (`binarySource=global`). |
+| worker.renovate.image.tag | string | `"44.178.3-full"` | Renovate version, upgradable without a koshin release |
 | worker.renovate.resources | object | `{"limits":{"memory":"4Gi"},"requests":{"cpu":"500m","memory":"1Gi"}}` | Resources of the `renovate` container, where Renovate runs (KSH-21) |
 | worker.renovateRedisUrl | string | `""` | `RENOVATE_REDIS_URL`: Renovate's package cache. Default: the `valkey-cache` subchart, else the coordination Valkey when it's a plain `redis://` URL. |
 | worker.replicas | int | `1` | Worker replicas when KEDA isn't installed or `autoscaling.enabled` is false |

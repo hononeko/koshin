@@ -187,7 +187,7 @@ proxy:
 
 worker:
   image:
-    # -- Worker image repository. The image bundles a pinned Renovate (`renovate:<version>-full`).
+    # -- Worker image repository. It holds koshin only: Renovate runs from `worker.renovate.image`.
     repository: hononeko/koshin-worker
     # -- Worker image tag (default: the chart's `appVersion`)
     tag: ""
@@ -214,7 +214,7 @@ worker:
     lockCollisionRetrySeconds: 30
     # -- `CLI_TIMEOUT_MINUTES`: hard cap per Renovate run (`+ 5` must stay below 60 for GitHub App tokens)
     cliTimeoutMinutes: 45
-    # -- `RENOVATE_BINARY_SOURCE` (tools come from the `full` image)
+    # -- `RENOVATE_BINARY_SOURCE` (tools come from the `full` Renovate image)
     renovateBinarySource: global
   rateLimits:
     # -- `MAX_CONCURRENT_RUNS_PER_PLATFORM`: Renovate runs per platform across all workers
@@ -289,6 +289,17 @@ worker:
     limits:
       memory: 768Mi
   renovate:
+    image:
+      # -- Registry of the Renovate image
+      registry: ghcr.io
+      # -- Renovate image repository. Use a `-full` image: it ships the tools Renovate runs (`binarySource=global`).
+      repository: renovatebot/renovate
+      # -- Renovate version, upgradable without a koshin release
+      tag: 44.178.3-full
+      # -- Renovate image digest; takes precedence over the tag
+      digest: ""
+      # -- Pull policy of the Renovate image (default: `image.pullPolicy`)
+      pullPolicy: ""
     # -- Resources of the `renovate` container, where Renovate runs (KSH-21)
     resources:
       requests:
@@ -296,7 +307,7 @@ worker:
         memory: 1Gi
       limits:
         memory: 4Gi
-  # -- Worker pod security context (Renovate's `full` image runs as uid 12021)
+  # -- Worker pod security context (both images run as Renovate's uid 12021)
   podSecurityContext:
     runAsNonRoot: true
     runAsUser: 12021

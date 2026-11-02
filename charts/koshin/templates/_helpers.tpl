@@ -41,9 +41,9 @@ app.kubernetes.io/component: {{ . }}
 {{- end }}
 {{- end }}
 
-{{/* Image reference; pass (dict "ctx" $ "image" .Values.proxy.image) */}}
+{{/* Image reference; pass (dict "ctx" $ "image" .Values.proxy.image). Registry and tag default to koshin's. */}}
 {{- define "koshin.image" -}}
-{{- $repo := printf "%s/%s" .ctx.Values.image.registry .image.repository | trimPrefix "/" }}
+{{- $repo := printf "%s/%s" (.image.registry | default .ctx.Values.image.registry) .image.repository | trimPrefix "/" }}
 {{- if .image.digest }}
 {{- printf "%s@%s" $repo .image.digest }}
 {{- else }}
