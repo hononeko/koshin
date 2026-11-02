@@ -16,7 +16,6 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -54,8 +53,8 @@ class RenovateRunnerTest {
         serving?.join(10_000)
     }
 
-    private fun startRunner(killer: ProcessKiller = ProcessKiller.TREE) {
-        val runner = RenovateRunner(socket, LocalRenovateLauncher(killer)).also { runner = it }
+    private fun startRunner(killer: ProcessKiller = ProcessKiller.TREE, ownEnv: Map<String, String> = System.getenv()) {
+        val runner = RenovateRunner(socket, LocalRenovateLauncher(killer), ownEnv = ownEnv).also { runner = it }
         serving = Thread { runner.serve() }.apply {
             isDaemon = true
             start()
@@ -100,26 +99,44 @@ class RenovateRunnerTest {
     }
 
     @Test
-    fun `a run gets exactly the requested environment and reports its exit code`() = runBlocking {
-        startRunner()
-        val script = """
-            env > "${'$'}RENOVATE_BASE_DIR/env.txt"
-            echo "${'$'}1" > "${'$'}RENOVATE_BASE_DIR/arg.txt"
-            exit 3
-        """.trimIndent()
+    fun `a run gets the runner's environment plus the request's, without the worker container's basics`() =
+        runBlocking {
+            startRunner(
+                ownEnv = mapOf(
+                    "PATH" to System.getenv("PATH"),
+                    "HOME" to "/home/ubuntu",
+                    "RENOVATE_BINARY_SOURCE" to "install",
+                    "RUNNER_SOCKET" to socket.toString(),
+                ),
+            )
+            val script = """
+                env > "${'$'}RENOVATE_BASE_DIR/env.txt"
+                echo "${'$'}1" > "${'$'}RENOVATE_BASE_DIR/arg.txt"
+                exit 3
+            """.trimIndent()
+            val workerEnv = mapOf(
+                "PATH" to "/opt/java/openjdk/bin:/usr/bin",
+                "HOME" to "/root",
+                "JAVA_HOME" to "/opt/java/openjdk",
+                "NODE_OPTIONS" to "--max-old-space-size=2048",
+            )
 
-        assertEquals(JobExecutionResult.Failed(3), executor(script).execute(repo, creds, 1.minutes))
+            assertEquals(JobExecutionResult.Failed(3), executor(script, workerEnv).execute(repo, creds, 1.minutes))
 
-        val seen = workDir.resolve("env.txt").readLines()
-            .filter { it.contains('=') }
-            .associate { it.substringBefore('=') to it.substringAfter('=') }
-        assertEquals("ghp_secret", seen["RENOVATE_TOKEN"])
-        assertEquals("github", seen["RENOVATE_PLATFORM"])
-        // The runner's own environment never reaches Renovate
-        assertNotNull(System.getenv("HOME"))
-        assertNull(seen["HOME"])
-        assertEquals("hononeko/koshin", workDir.resolve("arg.txt").readText().trim())
-    }
+            val seen = workDir.resolve("env.txt").readLines()
+                .filter { it.contains('=') }
+                .associate { it.substringBefore('=') to it.substringAfter('=') }
+            assertEquals("ghp_secret", seen["RENOVATE_TOKEN"])
+            assertEquals("github", seen["RENOVATE_PLATFORM"])
+            assertEquals("--max-old-space-size=2048", seen["NODE_OPTIONS"])
+            // The run's settings win over the runner's; the worker container's own basics don't reach Renovate
+            assertEquals("global", seen["RENOVATE_BINARY_SOURCE"])
+            assertEquals(System.getenv("PATH"), seen["PATH"])
+            assertEquals("/home/ubuntu", seen["HOME"])
+            assertNull(seen["JAVA_HOME"])
+            assertNull(seen["RUNNER_SOCKET"])
+            assertEquals("hononeko/koshin", workDir.resolve("arg.txt").readText().trim())
+        }
 
     @Test
     fun `output reaches the worker's log with the job's MDC before the exit code`() = runBlocking {

@@ -8,5 +8,5 @@ chart-repos:
 # The CD workflow sets the chart version at release, so PRs don't bump it
 check-version-increment: false
 validate-maintainers: false
-# The worker image bundles Renovate (~10 GB): leave time to start it in kind
+# The worker's `renovate` container runs the Renovate image (~10 GB): leave time to pull it into kind
 helm-extra-args: --timeout 900s

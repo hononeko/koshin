@@ -21,6 +21,7 @@
     "dependencies"
   ],
   "automergeType": "pr",
+  "platformAutomerge": true,
   "prHeader": "## 🤖 Renovate: Dependency Maintenance",
   "packageRules": [
     {
@@ -82,6 +83,9 @@
       "matchManagers": [
         "dockerfile"
       ],
+      "matchPackageNames": [
+        "!ghcr.io/renovatebot/renovate"
+      ],
       "groupName": "Docker Base Images"
     },
     {
@@ -90,6 +94,9 @@
         "helm-values",
         "helmv3",
         "helmfile"
+      ],
+      "matchPackageNames": [
+        "!ghcr.io/renovatebot/renovate"
       ],
       "groupName": "Helm"
     },
@@ -103,6 +110,28 @@
         "!gradle/actions"
       ],
       "groupName": "GitHub Actions"
+    },
+    {
+      "description": "Renovate CLI in the worker's `renovate` container (chart, Kustomize, Compose): one weekly PR, automerged",
+      "matchPackageNames": [
+        "ghcr.io/renovatebot/renovate"
+      ],
+      "groupName": "Renovate CLI",
+      "schedule": [
+        "before 5am on monday"
+      ],
+      "minimumReleaseAge": "3 days",
+      "automerge": true
+    },
+    {
+      "description": "Renovate CLI majors are reviewed by hand",
+      "matchPackageNames": [
+        "ghcr.io/renovatebot/renovate"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "automerge": false
     }
   ]
 }

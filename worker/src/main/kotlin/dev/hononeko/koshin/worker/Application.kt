@@ -116,7 +116,7 @@ fun main() {
 
     val cliExecutor = cliExecutor(settings)
     if (settings.runnerSocket == null) {
-        logger.warn("No RUNNER_SOCKET: Renovate runs in this container and can read its secrets")
+        logger.warn("No RUNNER_SOCKET: Renovate must be installed in this container, and can read its secrets")
     }
 
     val backends = WorkerBackends(

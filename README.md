@@ -79,7 +79,7 @@ The coordination Valkey instance (`VALKEY_URL`, supporting both standalone `redi
 ## Worker Runtime (KSH-7)
 
 * **1 job per pod.** The daemon polls the enabled `PLATFORMS` and runs one `renovate <repository>` at a time. Each run gets `RENOVATE_PLATFORM`, `RENOVATE_ENDPOINT` and `RENOVATE_TOKEN` for the job's platform (`GITHUB_TOKEN`/`GITHUB_API_URL`, `GITLAB_TOKEN`/`GITLAB_ENDPOINT`), plus `LOG_FORMAT=json`, `RENOVATE_BASE_DIR`, `RENOVATE_BINARY_SOURCE`, `RENOVATE_REDIS_URL` and the repository cache settings below. Other `RENOVATE_*` variables on the worker are passed through; worker secrets (`GITHUB_TOKEN`, `GITLAB_TOKEN`, `VALKEY_URL`, …) are not.
-* **Isolation (KSH-21):** Renovate, and any repo code it runs (e.g. Gradle during lockfile updates), runs in the pod's `renovate` container, not the worker's. The worker hands it each run over a Unix socket (`RUNNER_SOCKET`, in a shared `emptyDir`) with the run's environment, and the runner sends back Renovate's output and exit code. The `renovate` container has none of the worker's secrets and no ServiceAccount token, and its processes can't see the worker's through `/proc`. After each run the runner kills every process left in its container. Without `RUNNER_SOCKET`, Renovate runs in the worker's own container (and can read its secrets).
+* **Isolation (KSH-21):** Renovate, and any repo code it runs (e.g. Gradle during lockfile updates), runs in the pod's `renovate` container (the upstream Renovate image), not the worker's. The worker hands it each run over a Unix socket (`RUNNER_SOCKET`, in a shared `emptyDir`) with the run's environment, and the runner sends back Renovate's output and exit code. Renovate gets the `renovate` container's own `PATH`, `HOME` and locale plus the run's variables, never the worker container's. The `renovate` container has none of the worker's secrets and no ServiceAccount token, its processes can't see the worker's through `/proc`, and it mounts the runner read-only at `/opt/koshin`. After each run the runner kills every process left in its container. Without `RUNNER_SOCKET`, the worker runs `renovate` in its own container, which the `koshin-worker` image doesn't have.
 * **Timeouts and cancellation** (`CLI_TIMEOUT_MINUTES`, lost lock, shutdown) forcibly kill the whole CLI process tree.
 * **Workspaces:** `$RENOVATE_BASE_DIR/repos/<platform>/<repo>` is deleted after every run; everything under `$RENOVATE_BASE_DIR` is purged at startup.
 * **SIGTERM:** stops fetching, kills the CLI, releases the lock (keeping the dirty flag), NAKs the delivery and releases the run slot, without waiting for the run to finish.
@@ -122,7 +122,7 @@ Git provider API limits cap throughput long before NATS or Valkey do (GitHub: 5,
 
 ## Running Locally (Docker Compose)
 
-`docker compose up --build` starts NATS (JetStream), the coordination and cache Valkeys, the proxy (`localhost:8080`) and a worker (`localhost:8081`) with its Renovate runner, matching the `minimal` profile. Export `GITHUB_TOKEN` (or `GITLAB_TOKEN`) first so runs can authenticate, then trigger one:
+`docker compose up --build` starts NATS (JetStream), the coordination and cache Valkeys, the proxy (`localhost:8080`) and a worker (`localhost:8081`) with its Renovate runner (`renovate-init`, then the upstream Renovate image), matching the `minimal` profile. Export `GITHUB_TOKEN` (or `GITLAB_TOKEN`) first so runs can authenticate, then trigger one:
 
 ```bash
 curl -X POST localhost:8080/api/v1/trigger -H "Authorization: Bearer dev-trigger-token" \
@@ -134,8 +134,9 @@ curl -X POST localhost:8080/api/v1/trigger -H "Authorization: Bearer dev-trigger
 ## Container Images
 
 * **`koshin-proxy`**: `eclipse-temurin:25-jre-noble`, runs as UID `10001`.
-* **`koshin-worker`**: the pinned `ghcr.io/renovatebot/renovate:<version>-full` image (Renovate plus its whole toolchain, `RENOVATE_BINARY_SOURCE=global`) with a private Temurin 25 JRE under `/opt/koshin/jre`. Runs as Renovate's UID `12021`; `dumb-init` is PID 1 and reaps orphaned processes. The same image runs the Renovate runner with `/opt/koshin/bin/koshin-runner` (JVM flags in `KOSHIN_RUNNER_JAVA_OPTS`).
-  * The image is ~10 GB. In-cluster **[Spegel](https://github.com/spegel-org/spegel)** shares image layers between nodes P2P, so a new worker pod usually pulls from a peer instead of the registry; no koshin-specific config is needed.
+* **`koshin-worker`**: `eclipse-temurin:25-jre-noble` with the worker, running as Renovate's UID `12021` (~140 MB compressed). It holds no Renovate: the same image's `koshin-runner-init` copies the Renovate runner (`/opt/koshin/{jre,lib,bin}`, JVM flags in `KOSHIN_RUNNER_JAVA_OPTS`) into a volume for the pod's `renovate` container.
+* **Renovate** runs from the upstream `ghcr.io/renovatebot/renovate:<version>-full` image (Renovate plus its whole toolchain, `RENOVATE_BINARY_SOURCE=global`), pinned in the chart (`worker.renovate.image`), Kustomize and Compose and upgradable without a koshin release. Renovate (the bot) bumps it in one weekly, automerged PR.
+  * That image is ~10 GB. In-cluster **[Spegel](https://github.com/spegel-org/spegel)** shares image layers between nodes P2P, so a new worker pod usually pulls from a peer instead of the registry; no koshin-specific config is needed.
 * JVM flags come from `KOSHIN_JAVA_OPTS` (not `JAVA_OPTS`/`JAVA_TOOL_OPTIONS`, which Renovate's own Java/Gradle runs would inherit).
 
 ---
@@ -200,4 +201,4 @@ embeddedServer(
 ## Licensing & Distribution Notice
 
 * **Source Code:** All original source code across `:core`, `:adapters:*`, `:proxy`, and `:worker` is licensed under the [Apache License, Version 2.0](LICENSE).
-* **Distributed Worker Image Notice (AGPL-3.0):** The container image for `koshin-worker` bundles and executes the upstream Mend Renovate CLI (`renovate-cli`), which is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**. When building or distributing container images containing Renovate CLI, the resulting distributed artifacts are governed by the AGPL-3.0 license terms (`LABEL org.opencontainers.image.licenses="AGPL-3.0-only"`).
+* **Container Images:** `koshin-proxy` and `koshin-worker` contain only koshin and a JRE, and are Apache-2.0 too. Renovate runs from the unmodified upstream `ghcr.io/renovatebot/renovate` image, which is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**; koshin doesn't bundle or redistribute it.

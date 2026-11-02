@@ -52,14 +52,33 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       initContainers:
+        # Copies the Renovate runner (JRE, koshin's jars, scripts) from the worker image for the `renovate` container
+        - name: koshin-runner-init
+          image: {{ include "koshin.image" (dict "ctx" . "image" .Values.worker.image) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/opt/koshin/bin/koshin-runner-init", "/opt/koshin-dist"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            {{- toYaml .Values.worker.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: runner-bin
+              mountPath: /opt/koshin-dist
         # Renovate, and any repo code it runs, live in this container: no worker secrets, no ServiceAccount token.
         # The worker hands it each run over the runner socket. A native sidecar: it starts before the worker and
         # stops after it, so the SIGTERM path still kills the run itself.
         - name: renovate
-          image: {{ include "koshin.image" (dict "ctx" . "image" .Values.worker.image) }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.worker.renovate.image }}
+          image: {{ include "koshin.image" (dict "ctx" $ "image" .) }}
+          imagePullPolicy: {{ .pullPolicy | default $.Values.image.pullPolicy }}
+          {{- end }}
           restartPolicy: Always
-          args: ["/opt/koshin/bin/koshin-runner"]
+          # containerbase's entrypoint, without Renovate's, which would take a missing runner for a repository name
+          command: ["/usr/local/sbin/docker-entrypoint.sh", "/opt/koshin/bin/koshin-runner"]
           env:
             - name: RUNNER_SOCKET
               value: {{ include "koshin.runnerSocket" . }}
@@ -77,6 +96,10 @@ spec:
               mountPath: /tmp/renovate
             - name: runner
               mountPath: /run/koshin
+            # Read-only, so a run can't change the runner for the next one
+            - name: runner-bin
+              mountPath: /opt/koshin
+              readOnly: true
       containers:
         - name: worker
           image: {{ include "koshin.image" (dict "ctx" . "image" .Values.worker.image) }}
@@ -153,6 +176,10 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 1Mi
+        # The runner, filled by koshin-runner-init
+        - name: runner-bin
+          emptyDir:
+            sizeLimit: 512Mi
         {{- if .Values.worker.podDeletionCost.enabled }}
         # Mounted by the worker container only
         {{- include "koshin.kubeApiAccessVolume" . | nindent 8 }}

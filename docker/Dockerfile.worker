@@ -17,30 +17,23 @@ RUN ./gradlew --no-daemon --quiet :worker:dependencies --configuration runtimeCl
 COPY . .
 RUN ./gradlew --no-daemon :worker:installDist
 
-FROM eclipse-temurin:25.0.4_7-jre-noble AS jre
-
-# Pinned: the image bundles Renovate and its whole toolchain (binarySource=global).
-FROM ghcr.io/renovatebot/renovate:44.178.3-full
+FROM eclipse-temurin:25.0.4_7-jre-noble
 ARG VERSION=dev
 LABEL org.opencontainers.image.title="koshin-worker" \
       org.opencontainers.image.source="https://github.com/hononeko/koshin" \
-      org.opencontainers.image.licenses="AGPL-3.0-only" \
+      org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.version="${VERSION}"
 
-# A private JRE, kept off PATH and JAVA_HOME so Renovate's own Java tooling is unaffected
-COPY --from=jre /opt/java/openjdk/ /opt/koshin/jre/
+# No Renovate here: the pod's `renovate` container runs the upstream image, with the runner koshin-runner-init copies
+# from this one (KSH-27).
 COPY --from=build /src/worker/build/install/worker/lib/ /opt/koshin/lib/
-# The pod's `renovate` container runs this instead of the worker (KSH-21)
-COPY --chmod=755 docker/koshin-runner /opt/koshin/bin/koshin-runner
+COPY --chmod=755 docker/koshin-runner docker/koshin-runner-init /opt/koshin/bin/
+# koshin-runner-init's default destination, owned by the runtime user so a new Compose volume mounted there is too
+RUN install -d -o 12021 -g 0 /opt/koshin-dist
 
-ENV RENOVATE_BINARY_SOURCE=global \
-    RENOVATE_BASE_DIR=/tmp/renovate \
-    KOSHIN_JAVA_OPTS="-Xmx256m -XX:+ExitOnOutOfMemoryError" \
-    DUMB_INIT_SETSID=0
-# DUMB_INIT_SETSID=0: dumb-init forwards SIGTERM to the JVM only. In its default mode the whole process group
-# gets it, Renovate exits first, and the job is ACKed as failed instead of NAKed by the shutdown path.
-
+ENV RENOVATE_BASE_DIR=/tmp/renovate \
+    KOSHIN_JAVA_OPTS="-Xmx256m -XX:+ExitOnOutOfMemoryError"
+# Renovate's UID, so files in the volumes shared with the `renovate` container have a single owner
+USER 12021:0
 EXPOSE 8080
-# containerbase's entrypoint initializes the toolchain, then execs dumb-init (PID 1, reaps orphans)
-ENTRYPOINT ["/usr/local/sbin/docker-entrypoint.sh"]
-CMD ["/bin/sh", "-c", "exec /opt/koshin/jre/bin/java --enable-native-access=ALL-UNNAMED $KOSHIN_JAVA_OPTS -cp '/opt/koshin/lib/*' dev.hononeko.koshin.worker.ApplicationKt"]
+CMD ["/bin/sh", "-c", "exec java --enable-native-access=ALL-UNNAMED $KOSHIN_JAVA_OPTS -cp '/opt/koshin/lib/*' dev.hononeko.koshin.worker.ApplicationKt"]

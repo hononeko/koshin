@@ -50,24 +50,42 @@ services:
       nats:
         condition: service_healthy
 
-  # Renovate runs here, without the worker's secrets: the worker hands it each run over the runner socket
-  renovate:
+  # Copies the Renovate runner (JRE, koshin's jars, scripts) from the worker image for the `renovate` service
+  renovate-init:
     build:
       context: .
       dockerfile: docker/Dockerfile.worker
     image: koshin-worker:dev
+    command: ["/opt/koshin/bin/koshin-runner-init", "/opt/koshin-dist"]
+    restart: "no"
+    volumes:
+      - runner-bin:/opt/koshin-dist
+
+  # Renovate runs here, without the worker's secrets: the worker hands it each run over the runner socket
+  renovate:
+    image: ghcr.io/renovatebot/renovate:44.178.3-full
+    # containerbase's entrypoint, without Renovate's, which would take a missing runner for a repository name
+    entrypoint: ["/usr/local/sbin/docker-entrypoint.sh"]
     command: ["/opt/koshin/bin/koshin-runner"]
     environment:
       RUNNER_SOCKET: /run/koshin/runner.sock
     volumes:
       - workspace:/tmp/renovate
       - runner:/run/koshin
+      # Read-only, so a run can't change the runner for the next one
+      - runner-bin:/opt/koshin:ro
     healthcheck:
       test: ["CMD", "test", "-S", "/run/koshin/runner.sock"]
       interval: 2s
       retries: 60
+    depends_on:
+      renovate-init:
+        condition: service_completed_successfully
 
   worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
     image: koshin-worker:dev
     ports:
       - "8081:8080"
@@ -96,7 +114,7 @@ services:
         condition: service_started
 
 volumes:
-  # Shared by the worker and Renovate: per-run workspaces and the runner socket
+  # Shared by the worker and Renovate: per-run workspaces and the runner socket. runner-bin holds the runner itself.
   workspace:
     driver_opts:
       type: tmpfs
@@ -107,3 +125,5 @@ volumes:
       type: tmpfs
       device: tmpfs
       o: uid=12021,mode=0700,size=1m
+  # On disk: a tmpfs volume would be gone once renovate-init exits
+  runner-bin:

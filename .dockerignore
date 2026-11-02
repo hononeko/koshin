@@ -10,4 +10,5 @@ charts/
 docker-compose.yml
 docker/
 !docker/koshin-runner
+!docker/koshin-runner-init
 *.md

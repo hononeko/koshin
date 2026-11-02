@@ -30,3 +30,6 @@ images:
     newTag: latest
   - name: ghcr.io/hononeko/koshin-worker
     newTag: latest
+  # The worker's `renovate` container: upgradable without a koshin release
+  - name: ghcr.io/renovatebot/renovate
+    newTag: 44.178.3-full

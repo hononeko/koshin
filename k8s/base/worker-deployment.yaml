@@ -28,13 +28,31 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       initContainers:
+        # Copies the Renovate runner (JRE, koshin's jars, scripts) from the worker image for the `renovate` container
+        - name: koshin-runner-init
+          image: ghcr.io/hononeko/koshin-worker
+          command: ["/opt/koshin/bin/koshin-runner-init", "/opt/koshin-dist"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: runner-bin
+              mountPath: /opt/koshin-dist
         # Renovate, and any repo code it runs, live in this container: no worker secrets, no ServiceAccount token.
         # The worker hands it each run over the runner socket. A native sidecar: it starts before the worker and
-        # stops after it, so the SIGTERM path still kills the run itself.
+        # stops after it, so the SIGTERM path still kills the run itself. The tag is in kustomization.yaml.
         - name: renovate
-          image: ghcr.io/hononeko/koshin-worker
+          image: ghcr.io/renovatebot/renovate
           restartPolicy: Always
-          args: ["/opt/koshin/bin/koshin-runner"]
+          # containerbase's entrypoint, without Renovate's, which would take a missing runner for a repository name
+          command: ["/usr/local/sbin/docker-entrypoint.sh", "/opt/koshin/bin/koshin-runner"]
           env:
             - name: RUNNER_SOCKET
               value: /run/koshin/runner.sock
@@ -58,6 +76,10 @@ spec:
               mountPath: /tmp/renovate
             - name: runner
               mountPath: /run/koshin
+            # Read-only, so a run can't change the runner for the next one
+            - name: runner-bin
+              mountPath: /opt/koshin
+              readOnly: true
       containers:
         - name: worker
           image: ghcr.io/hononeko/koshin-worker
@@ -124,6 +146,10 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 1Mi
+        # The runner, filled by koshin-runner-init
+        - name: runner-bin
+          emptyDir:
+            sizeLimit: 512Mi
         # What automountServiceAccountToken would mount, but short-lived and for the worker container only
         - name: kube-api-access
           projected:

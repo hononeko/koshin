@@ -1,0 +1,8 @@
+#!/bin/sh
+# Init container of the worker pod (KSH-27): copies the Renovate runner (this image's JRE, koshin's jars and the runner
+# script) into the volume the `renovate` container, running the upstream Renovate image, mounts read-only at /opt/koshin.
+set -eu
+dest=${1:-/opt/koshin-dist}
+rm -rf "${dest:?}/jre" "${dest:?}/lib" "${dest:?}/bin"
+cp -R /opt/java/openjdk "$dest/jre"
+cp -R /opt/koshin/lib /opt/koshin/bin "$dest/"

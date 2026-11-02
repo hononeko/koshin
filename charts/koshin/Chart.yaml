@@ -19,7 +19,7 @@ maintainers:
   - name: hononeko
     url: https://github.com/hononeko
 annotations:
-  artifacthub.io/license: AGPL-3.0-only
+  artifacthub.io/license: Apache-2.0
 dependencies:
   - name: nats
     version: 2.15.2

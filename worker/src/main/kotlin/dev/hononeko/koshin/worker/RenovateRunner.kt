@@ -25,8 +25,10 @@ import kotlin.io.path.deleteIfExists
 
 /**
  * Runs Renovate for the worker in a container of its own (KSH-21), so neither Renovate nor the repo code it may run can
- * read the worker's secrets (its environment, through `/proc`) or its ServiceAccount token. Renovate gets exactly the
- * environment each [RunRequest] carries.
+ * read the worker's secrets (its environment, through `/proc`) or its ServiceAccount token. That container runs the
+ * upstream Renovate image, so Renovate's environment is this container's ([ownEnv]: the image's `PATH`, `HOME` and
+ * toolchain settings) plus what each [RunRequest] carries, minus the worker container's own basics
+ * ([WORKER_LOCAL_ENV]).
  *
  * One run at a time, over the Unix socket at [socket]. Once a run is over, [launcher] kills what's left of it (the
  * whole container, with [ProcessKiller.sweep]) and the socket is bound afresh before the exit code goes out, so no
@@ -36,6 +38,7 @@ class RenovateRunner(
     private val socket: Path,
     private val launcher: RenovateLauncher,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val ownEnv: Map<String, String> = System.getenv(),
 ) : AutoCloseable {
 
     @Volatile
@@ -81,7 +84,7 @@ class RenovateRunner(
         val replies = Replies(Channels.newOutputStream(channel))
         val request = readRequest(input, replies) ?: return
         val run = try {
-            launcher.launch(request.command, request.env, Path(request.directory)) { stream, line ->
+            launcher.launch(request.command, runEnvironment(request.env), Path(request.directory)) { stream, line ->
                 replies.send(RunnerMessage.Output(stream, line))
             }
         } catch (e: IOException) {
@@ -123,6 +126,11 @@ class RenovateRunner(
         replies.send(RunnerMessage.Exited(code))
     }
 
+    internal fun runEnvironment(requested: Map<String, String>): Map<String, String> = buildMap {
+        putAll(ownEnv - RUNNER_ENV)
+        putAll(requested - WORKER_LOCAL_ENV)
+    }
+
     private fun readRequest(input: BufferedReader, replies: Replies): RunRequest? {
         val line = try {
             input.readLine()
@@ -159,6 +167,27 @@ class RenovateRunner(
     companion object {
         private val logger = LoggerFactory.getLogger(RenovateRunner::class.java)
         const val DEFAULT_SOCKET = "/run/koshin/runner.sock"
+
+        /** The runner's own settings, of no use to Renovate. */
+        private val RUNNER_ENV = setOf("RUNNER_SOCKET", "KOSHIN_RUNNER_JAVA_OPTS")
+
+        /**
+         * What the worker's environment says about the worker container itself (its image's `PATH`, Java, locale):
+         * Renovate keeps this container's values, or none.
+         */
+        val WORKER_LOCAL_ENV = setOf(
+            "PATH",
+            "HOME",
+            "HOSTNAME",
+            "PWD",
+            "SHLVL",
+            "LANG",
+            "LANGUAGE",
+            "LC_ALL",
+            "JAVA_HOME",
+            "JAVA_VERSION",
+            "KOSHIN_JAVA_OPTS",
+        )
     }
 }
 
