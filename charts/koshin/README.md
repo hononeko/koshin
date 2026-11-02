@@ -294,6 +294,8 @@ Kubernetes: `>=1.30.0-0`
 | extraObjects | list | `[]` | Extra manifests rendered with the release (templated), e.g. an Envoy Gateway `ClientTrafficPolicy` for HTTP/3 |
 | fullnameOverride | string | `""` | Overrides the full resource name prefix (default: the release name, plus `-koshin` unless it contains it) |
 | github.apiUrl | string | `""` | `GITHUB_API_URL` for GitHub Enterprise Server (default `https://api.github.com`) |
+| github.app.allowedAccounts | list | `[]` | `GITHUB_APP_ALLOWED_ACCOUNTS`: the users and organizations whose installations koshin serves, as numeric IDs (preferred: `gh api users/<login> --jq .id`) or logins. Empty serves every installation, which is fine for a private App; set it before making the App public. |
+| github.app.disallowedAction | string | `"ignore"` | `GITHUB_APP_DISALLOWED_ACTION` for installations by other accounts: `ignore`, `suspend` or `uninstall` |
 | github.app.existingSecret | string | `""` | Existing Secret holding the App's private key (PEM), mounted for both the proxy and the worker |
 | github.app.id | string | `""` | `GITHUB_APP_ID` |
 | github.app.privateKey | string | `""` | Inline private key, for testing only; ignored when `existingSecret` is set |

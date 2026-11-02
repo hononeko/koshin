@@ -1,8 +1,11 @@
 package dev.hononeko.koshin.proxy
 
+import dev.hononeko.koshin.adapters.github.AccountInfo
 import dev.hononeko.koshin.adapters.github.GitHubApp
 import dev.hononeko.koshin.adapters.github.GitHubAppConfig
 import dev.hononeko.koshin.adapters.nats.NatsConfig
+import dev.hononeko.koshin.core.model.RepoRef
+import dev.hononeko.koshin.core.ports.InstallationPolicyPort
 import dev.hononeko.koshin.core.ports.JobQueuePublisher
 import dev.hononeko.koshin.core.ports.RepositoryDiscoveryPort
 import dev.hononeko.koshin.core.usecase.IngestWebhookUseCase
@@ -28,6 +31,7 @@ import io.ktor.utils.io.readBuffer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
 import kotlinx.io.readByteArray
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -79,8 +83,7 @@ fun Application.proxyModule(
         ),
     )
     val eventFilter = WebhookEventFilter(config.botLogins, ProxyJson, gitHubApp.botLogins)
-    val routeHandler =
-        ProxyRouteHandler(config, eventFilter, ingestUseCase, discoveryPort, gitHubApp.onInstallationGone)
+    val routeHandler = ProxyRouteHandler(config, eventFilter, ingestUseCase, discoveryPort, gitHubApp)
 
     install(ContentNegotiation) {
         json(ProxyJson)
@@ -133,10 +136,17 @@ suspend fun ApplicationCall.receiveBoundedBytes(maxBytes: Int): ByteArray? {
     }
 }
 
-/** What the proxy does as a GitHub App: ignore its bot's webhooks, and forget a gone installation's tokens. */
+/**
+ * What the proxy does as a GitHub App: ignore its bot's webhooks, forget a gone installation's tokens, and serve only
+ * accounts the [policy] allows (KSH-17): [onDisallowedInstallation] applies `GITHUB_APP_DISALLOWED_ACTION` to a new
+ * installation by another account, and [allowedRepositories] drops such accounts' repositories from triggers.
+ */
 class ProxyGitHubApp(
     val botLogins: () -> Collection<String> = { emptyList() },
     val onInstallationGone: (Long) -> Unit = {},
+    val policy: InstallationPolicyPort? = null,
+    val onDisallowedInstallation: suspend (installationId: Long, account: WebhookAccount) -> Unit = { _, _ -> },
+    val allowedRepositories: suspend (List<RepoRef>) -> List<RepoRef> = { it },
 )
 
 @Suppress("LongParameterList") // The server's wiring: every parameter but the first two has a default
@@ -190,6 +200,7 @@ fun main() {
     natsLifecycle.startAsync()
 
     val gitHubApp = GitHubAppConfig.fromEnv()?.let(::GitHubApp)
+    gitHubApp?.let { runBlocking { it.allowList.resolveLogins() } }
     val appScope = CoroutineScope(SupervisorJob())
     val botLogin = gitHubApp?.let { app -> AppBotLogin(app::botLogin).also { it.start(appScope) } }
     val discovery = CompositeRepositoryDiscovery.of(
@@ -209,6 +220,11 @@ fun main() {
         gitHubApp = ProxyGitHubApp(
             botLogins = { listOfNotNull(botLogin?.get()) },
             onInstallationGone = { gitHubApp?.tokens?.evict(it) },
+            policy = gitHubApp?.allowList,
+            onDisallowedInstallation = { id, account ->
+                gitHubApp?.applyDisallowedAction(id, AccountInfo(account.id, account.login))
+            },
+            allowedRepositories = { repos -> gitHubApp?.withoutDisallowed(repos) ?: repos },
         ),
     ).start(wait = true)
 }

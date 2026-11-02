@@ -95,6 +95,7 @@ With `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY_PATH` set on the proxy and the 
 * **Webhooks:** the proxy ignores the bot's own events. Installing the App on repositories runs each of them once.
 * **Sweeper:** `discover: true` covers every repository of every installation (archived and disabled ones excluded), plus `SWEEP_REPOSITORIES_FILE`.
 * GitHub Enterprise Server works through `GITHUB_API_URL`.
+* **Allowed accounts (KSH-17):** a public App can be installed by anyone, so `GITHUB_APP_ALLOWED_ACCOUNTS` (numeric account IDs preferred, or logins) lists the users and organizations koshin serves. Other installations get no runs, tokens or sweeps, and `GITHUB_APP_DISALLOWED_ACTION` (`ignore`, `suspend`, `uninstall`) acts on them. Unset, every installation is served.
 
 ## Logging
 

@@ -42,6 +42,12 @@ github:
     privateKeyKey: private-key.pem
     # -- Inline private key, for testing only; ignored when `existingSecret` is set
     privateKey: ""
+    # -- `GITHUB_APP_ALLOWED_ACCOUNTS`: the users and organizations whose installations koshin serves, as numeric IDs
+    # (preferred: `gh api users/<login> --jq .id`) or logins. Empty serves every installation, which is fine for a
+    # private App; set it before making the App public.
+    allowedAccounts: []
+    # -- `GITHUB_APP_DISALLOWED_ACTION` for installations by other accounts: `ignore`, `suspend` or `uninstall`
+    disallowedAction: ignore
 
 gitlab:
   # -- `GITLAB_ENDPOINT`, e.g. `https://gitlab.example.com/api/v4/`

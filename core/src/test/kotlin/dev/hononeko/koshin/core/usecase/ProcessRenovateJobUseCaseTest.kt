@@ -17,6 +17,7 @@ import dev.hononeko.koshin.core.ports.PlatformThrottlePort
 import dev.hononeko.koshin.core.ports.ReleaseResult
 import dev.hononeko.koshin.core.ports.RepoCachePort
 import dev.hononeko.koshin.core.ports.RepoCoordinationPort
+import dev.hononeko.koshin.core.ports.RepositoryRejectedException
 import dev.hononeko.koshin.core.ports.WorkspaceCleanerPort
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -227,8 +228,8 @@ class ProcessRenovateJobUseCaseTest {
         useCase.processDelivery(delivery, "token-1")
 
         coVerifyOrder {
-            cachePort.restore(testRepo)
             credentialsPort.credentialsFor(testRepo)
+            cachePort.restore(testRepo)
             cliExecutor.execute(testRepo, testCreds, testConfig.cliTimeout)
             cachePort.persist(testRepo)
             coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1")
@@ -249,8 +250,8 @@ class ProcessRenovateJobUseCaseTest {
         useCase.processDelivery(delivery, "token-1")
 
         coVerifyOrder {
-            cachePort.restore(testRepo)
             credentialsPort.credentialsFor(testRepo)
+            cachePort.restore(testRepo)
             cliExecutor.execute(testRepo, testCreds, testConfig.cliTimeout)
             cachePort.persist(testRepo)
             coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1")
@@ -265,6 +266,25 @@ class ProcessRenovateJobUseCaseTest {
         assertEquals(TriggerReason.DIRTY_FOLLOWUP, followUp.triggerReason)
         assertEquals(0, followUp.rateLimitAttempt)
         assertNotEquals(testEvent.deliveryId, followUp.deliveryId)
+    }
+
+    @Test
+    fun `a rejected repository is ACKed without a run, a retry or a follow-up`() = runTest {
+        coEvery { credentialsPort.credentialsFor(testRepo) } throws RepositoryRejectedException("not allowed")
+        coEvery { coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1") } returns ReleaseResult.DIRTY
+
+        useCase.processDelivery(delivery, "token-1")
+
+        coVerifyOrder {
+            coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1")
+            delivery.ack()
+            throttlePort.releaseRunSlot(testRepo.platform, "token-1")
+            workspaceCleaner.cleanup(testRepo)
+        }
+        coVerify(exactly = 0) { cachePort.restore(any()) }
+        coVerify(exactly = 0) { cliExecutor.execute(any(), any(), any()) }
+        coVerify(exactly = 0) { queuePublisher.publish(any()) }
+        coVerify(exactly = 0) { delivery.nack(any()) }
     }
 
     @Test

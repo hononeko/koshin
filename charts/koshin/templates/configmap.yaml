@@ -76,6 +76,17 @@ data:
   {{- if include "koshin.githubAppSecretName" . }}
   GITHUB_APP_PRIVATE_KEY_PATH: {{ include "koshin.githubAppKeyPath" . | quote }}
   {{- end }}
+  {{- with .Values.github.app.allowedAccounts }}
+  {{- /* YAML numbers arrive as floats: print account IDs as integers, not 1.2345678e+07 */}}
+  {{- $accounts := list }}
+  {{- range . }}
+  {{- $accounts = append $accounts (ternary (int64 .) . (kindIs "float64" .)) }}
+  {{- end }}
+  GITHUB_APP_ALLOWED_ACCOUNTS: {{ join "," $accounts | quote }}
+  {{- end }}
+  {{- if .Values.github.app.id }}
+  GITHUB_APP_DISALLOWED_ACTION: {{ .Values.github.app.disallowedAction | quote }}
+  {{- end }}
   {{- with .Values.gitlab.endpoint }}
   GITLAB_ENDPOINT: {{ . | quote }}
   {{- end }}

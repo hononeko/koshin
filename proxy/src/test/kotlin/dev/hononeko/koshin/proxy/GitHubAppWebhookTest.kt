@@ -4,6 +4,7 @@ import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.model.RepoRef
 import dev.hononeko.koshin.core.model.TriggerReason
+import dev.hononeko.koshin.core.ports.InstallationPolicyPort
 import dev.hononeko.koshin.core.ports.JobQueuePublisher
 import dev.hononeko.koshin.core.ports.RepositoryDiscoveryPort
 import io.ktor.client.HttpClient
@@ -143,6 +144,84 @@ class GitHubAppWebhookTest {
         botLogin = "koshin[bot]"
         assertTrue(client.webhook("push", push).bodyAsText().contains("self-triggered push"))
         assertEquals(1, publisher.published.size)
+    }
+
+    /** Only hononeko (ID 100) may use the App. */
+    private val allowOnly100 = object : InstallationPolicyPort {
+        override suspend fun isAllowed(accountId: Long, login: String) = accountId == 100L
+    }
+
+    private fun push(ownerId: Long, owner: String) = """
+        {"ref":"refs/heads/main","repository":{"full_name":"$owner/repo","default_branch":"main",
+         "owner":{"id":$ownerId,"login":"$owner"}},"sender":{"login":"someone","type":"User"}}
+    """.trimIndent()
+
+    @Test
+    fun `webhooks from accounts that may not use the App enqueue nothing`() = testApplication {
+        val publisher = RecordingPublisher()
+        application {
+            proxyModule(config = config, publisher = publisher, gitHubApp = ProxyGitHubApp(policy = allowOnly100))
+        }
+
+        val ignored = client.webhook("push", push(200, "stranger"))
+        assertEquals(HttpStatusCode.Accepted, ignored.status)
+        assertTrue(ignored.bodyAsText().contains("stranger (200) is not allowed"))
+        client.webhook("push", push(100, "hononeko"))
+
+        assertEquals(listOf("hononeko/repo"), publisher.published.map { it.repo.repository })
+    }
+
+    @Test
+    fun `a new installation by an account that may not use the App gets the disallowed action, nothing else`() =
+        testApplication {
+            val publisher = RecordingPublisher()
+            val actions = CopyOnWriteArrayList<String>()
+            application {
+                proxyModule(
+                    config = config,
+                    publisher = publisher,
+                    gitHubApp = ProxyGitHubApp(
+                        policy = allowOnly100,
+                        onDisallowedInstallation = { id, account ->
+                            actions += "$id:$account"
+                            if (id == 9L) throw IOException("GitHub down")
+                        },
+                    ),
+                )
+            }
+            fun installed(id: Long, action: String, field: String) = """
+                {"action":"$action","installation":{"id":$id,"account":{"id":200,"login":"stranger"}},
+                 "$field":[{"full_name":"stranger/repo"}]}
+            """.trimIndent()
+
+            client.webhook("installation", installed(7, "created", "repositories"))
+            client.webhook("installation_repositories", installed(7, "added", "repositories_added"))
+            val failing = client.webhook("installation", installed(9, "created", "repositories"))
+
+            assertEquals(HttpStatusCode.Accepted, failing.status)
+            assertEquals(listOf("7:stranger (200)", "9:stranger (200)"), actions)
+            assertTrue(publisher.published.isEmpty())
+        }
+
+    @Test
+    fun `triggers drop the repositories the App's policy rejects`() = testApplication {
+        val publisher = RecordingPublisher()
+        application {
+            proxyModule(
+                config = config.copy(internalTriggerToken = "trigger"),
+                publisher = publisher,
+                gitHubApp = ProxyGitHubApp(allowedRepositories = { repos -> repos.filter { it.repository != "x/b" } }),
+            )
+        }
+
+        val res = client.post("/api/v1/trigger") {
+            header("Authorization", "Bearer trigger")
+            contentType(ContentType.Application.Json)
+            setBody("""{"repositories":[{"repository":"x/a"},{"repository":"x/b"}]}""")
+        }
+
+        assertTrue(res.bodyAsText().contains("\"enqueued\":1"), res.bodyAsText())
+        assertEquals(listOf("x/a"), publisher.published.map { it.repo.repository })
     }
 
     @Test
