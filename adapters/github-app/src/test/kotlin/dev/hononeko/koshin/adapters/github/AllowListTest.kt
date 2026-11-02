@@ -114,6 +114,16 @@ class AllowListTest {
     }
 
     @Test
+    fun `with an allow-list, an unnamed account isn't allowed, and enterprises match by slug`() = runTest {
+        val list = allowList("acme")
+
+        assertFalse(list.allows(null))
+        assertTrue(list.allows(AccountInfo(7, slug = "ACME")))
+        assertFalse(list.allows(AccountInfo(8, login = "stranger")))
+        assertTrue(allowList().allows(null))
+    }
+
+    @Test
     fun `logins are resolved to IDs at startup and matched by ID from then on`() = runTest {
         val list = allowList("hononeko", "ghost") { login ->
             if (login == "hononeko") UserInfo(100, "hononeko") else throw IOException("GitHub down")

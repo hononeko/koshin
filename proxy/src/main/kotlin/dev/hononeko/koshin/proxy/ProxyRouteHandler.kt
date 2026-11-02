@@ -109,7 +109,7 @@ internal class ProxyRouteHandler(
             }
 
             is WebhookDecision.Enqueue -> {
-                if (isAllowed(decision.account)) {
+                if (isAllowed(platform, decision.account)) {
                     enqueueWebhookEvent(call, platform, decision.repository, deliveryId)
                 } else {
                     respondDisallowed(call, decision.account)
@@ -117,13 +117,18 @@ internal class ProxyRouteHandler(
             }
 
             is WebhookDecision.EnqueueInstalled -> {
-                if (isAllowed(decision.account)) {
-                    enqueueInstalledRepositories(call, decision.repositories, deliveryId)
-                } else {
-                    if (decision.newInstallation && decision.installationId != null) {
-                        applyDisallowedAction(decision.installationId, checkNotNull(decision.account))
+                if (!isAllowed(platform, decision.account)) {
+                    if (decision.newInstallation && decision.installationId != null && decision.account != null) {
+                        applyDisallowedAction(decision.installationId, decision.account)
                     }
                     respondDisallowed(call, decision.account)
+                } else if (decision.repositories.isEmpty()) {
+                    call.respond(
+                        HttpStatusCode.Accepted,
+                        WebhookResponse(status = "ignored", enqueued = false, reason = "no repositories to run"),
+                    )
+                } else {
+                    enqueueInstalledRepositories(call, decision.repositories, deliveryId)
                 }
             }
 
@@ -172,10 +177,14 @@ internal class ProxyRouteHandler(
         }
     }
 
-    /** Whether the GitHub account a webhook is about may use the App (`GITHUB_APP_ALLOWED_ACCOUNTS`, KSH-17). */
-    private suspend fun isAllowed(account: WebhookAccount?): Boolean {
+    /**
+     * Whether the account a webhook is about may use the GitHub App (`GITHUB_APP_ALLOWED_ACCOUNTS`, KSH-17). Fails
+     * closed: with an allow-list, a GitHub webhook that names no account isn't allowed. GitLab's never name one.
+     */
+    private suspend fun isAllowed(platform: Platform, account: WebhookAccount?): Boolean {
         val policy = gitHubApp.policy
-        return account == null || policy == null || policy.isAllowed(account.id, account.login)
+        return platform != Platform.GITHUB || policy == null ||
+            (account != null && policy.isAllowed(account.id, account.login))
     }
 
     private suspend fun respondDisallowed(call: ApplicationCall, account: WebhookAccount?) {

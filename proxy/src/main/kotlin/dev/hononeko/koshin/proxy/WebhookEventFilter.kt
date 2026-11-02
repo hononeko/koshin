@@ -80,7 +80,8 @@ class WebhookEventFilter(
     private fun JsonObject.account(field: String): WebhookAccount? {
         val obj = this[field] as? JsonObject
         val id = obj?.get("id")?.jsonPrimitive?.longOrNull
-        return id?.let { WebhookAccount(it, obj.stringField("login").orEmpty()) }
+        // An enterprise account has a slug instead of a login
+        return id?.let { WebhookAccount(it, obj.stringField("login") ?: obj.stringField("slug").orEmpty()) }
     }
 
     /** `installation` (created) and `installation_repositories` (added) list the repositories the App now covers. */
@@ -103,7 +104,9 @@ class WebhookEventFilter(
 
             added == null -> WebhookDecision.Ignore("$eventType action '$action' ignored")
 
-            repositories.isEmpty() -> WebhookDecision.Ignore("$eventType $action without repositories")
+            // A new installation always goes on, so an account that isn't allowed gets the disallowed action.
+            repositories.isEmpty() && eventType != "installation" ->
+                WebhookDecision.Ignore("$eventType $action without repositories")
 
             else -> WebhookDecision.EnqueueInstalled(
                 repositories,

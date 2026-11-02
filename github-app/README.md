@@ -78,7 +78,8 @@ public App, so koshin does (KSH-17):
 
 * `GITHUB_APP_ALLOWED_ACCOUNTS` (chart: `github.app.allowedAccounts`) lists the users and organizations koshin serves.
   Use numeric account IDs, since a login can be renamed and a freed login registered by someone else:
-  `gh api users/<login> --jq .id`. Logins work too: they're resolved to IDs at startup and matched by ID from then on.
+  `gh api users/<login> --jq .id`. Logins work too: they're resolved to IDs at startup and matched by ID from then on
+  (unauthenticated, so on GHES in private mode they can't be, and are matched by login: use IDs there).
   Unset, every installation is served (and a warning logged), which is only right for a private App.
 * Installations by other accounts get nothing: their webhooks are ignored, triggers and the sweeper skip their
   repositories, and no installation token is minted for them (a job that slips through is dropped, not retried).

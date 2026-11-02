@@ -84,7 +84,7 @@ class GitHubApp internal constructor(
 
     private suspend fun ownerAllowed(repository: String): Boolean = try {
         val account = api.repositoryInstallation(repository)?.account
-        account == null || allowList.isAllowed(account.id, account.login.orEmpty()).also { allowed ->
+        account == null || allowList.allows(account).also { allowed ->
             if (!allowed) logger.info("Dropping repositories of {}: the account isn't allowed", account)
         }
     } catch (e: CancellationException) {
@@ -140,6 +140,10 @@ class AccountAllowList(entries: List<String>, private val lookup: suspend (Strin
 
     override suspend fun isAllowed(accountId: Long, login: String): Boolean =
         allowsAll || accountId in ids || login.lowercase() in logins
+
+    /** Fails closed: with an allow-list, an installation whose account GitHub didn't name isn't allowed. */
+    suspend fun allows(account: AccountInfo?): Boolean =
+        allowsAll || (account != null && isAllowed(account.id, account.login ?: account.slug.orEmpty()))
 }
 
 /** Installation tokens cached in memory per installation (never in Valkey), minted again once too short-lived. */
@@ -171,7 +175,7 @@ class GitHubAppCredentialsProvider internal constructor(
     private val api: GitHubAppApi,
     private val tokens: InstallationTokens,
     private val config: GitHubAppConfig,
-    private val policy: InstallationPolicyPort,
+    private val policy: AccountAllowList,
     cliTimeout: Duration,
 ) : PlatformCredentialsPort {
 
@@ -228,7 +232,7 @@ class GitHubAppCredentialsProvider internal constructor(
     /** The installation's ID, unless its account isn't allowed: then no token is minted for it, ever. */
     private suspend fun allowed(repository: String, installation: InstallationInfo): Long {
         val account = installation.account
-        if (account != null && !policy.isAllowed(account.id, account.login.orEmpty())) {
+        if (!policy.allows(account)) {
             logger.warn("Not running {}: its installation belongs to {}, which isn't allowed", repository, account)
             throw RepositoryRejectedException("$repository is installed by $account, which isn't allowed")
         }
@@ -257,7 +261,7 @@ class GitHubAppCredentialsProvider internal constructor(
 class GitHubAppRepositoryDiscovery internal constructor(
     private val api: GitHubAppApi,
     private val tokens: InstallationTokens,
-    private val policy: InstallationPolicyPort,
+    private val policy: AccountAllowList,
     private val onDisallowed: suspend (Long, AccountInfo?) -> Unit,
 ) : RepositoryDiscoveryPort {
 
@@ -284,7 +288,7 @@ class GitHubAppRepositoryDiscovery internal constructor(
     /** An installation by an account that isn't allowed is skipped, and gets `GITHUB_APP_DISALLOWED_ACTION`. */
     private suspend fun isAllowed(installation: InstallationInfo): Boolean {
         val account = installation.account
-        if (account == null || policy.isAllowed(account.id, account.login.orEmpty())) return true
+        if (policy.allows(account)) return true
         logger.info("Skipping installation {} of {} in discovery: the account isn't allowed", installation.id, account)
         try {
             onDisallowed(installation.id, account)

@@ -204,6 +204,60 @@ class GitHubAppWebhookTest {
         }
 
     @Test
+    fun `with an allow-list, GitHub webhooks naming no account are ignored, GitLab's aren't affected`() =
+        testApplication {
+            val publisher = RecordingPublisher()
+            application {
+                proxyModule(
+                    config = config.copy(
+                        platforms = setOf(Platform.GITHUB, Platform.GITLAB),
+                        gitlabWebhookSecret = "gl",
+                    ),
+                    publisher = publisher,
+                    gitHubApp = ProxyGitHubApp(policy = allowOnly100),
+                )
+            }
+            val noOwner = """{"ref":"refs/heads/main","repository":{"full_name":"x/repo","default_branch":"main"}}"""
+            val gitlab = """
+                {"object_kind":"push","ref":"refs/heads/main","after":"abc","user_username":"dev",
+                 "project":{"path_with_namespace":"group/project","default_branch":"main"}}
+            """.trimIndent()
+
+            assertTrue(client.webhook("push", noOwner).bodyAsText().contains("not allowed"))
+            client.post("/webhooks/gitlab") {
+                header("X-Gitlab-Token", "gl")
+                header("X-Gitlab-Event", "Push Hook")
+                contentType(ContentType.Application.Json)
+                setBody(gitlab)
+            }
+
+            assertEquals(listOf("group/project"), publisher.published.map { it.repo.repository })
+        }
+
+    @Test
+    fun `a new installation without repositories still gets the disallowed action`() = testApplication {
+        val actions = CopyOnWriteArrayList<Long>()
+        application {
+            proxyModule(
+                config = config,
+                publisher = RecordingPublisher(),
+                gitHubApp = ProxyGitHubApp(
+                    policy = allowOnly100,
+                    onDisallowedInstallation = { id, _ -> actions += id },
+                ),
+            )
+        }
+        fun created(id: Long, accountId: Long) =
+            """{"action":"created","installation":{"id":$id,"account":{"id":$accountId,"login":"a"}},"repositories":[]}"""
+
+        client.webhook("installation", created(5, 200))
+        val allowed = client.webhook("installation", created(6, 100))
+
+        assertEquals(listOf(5L), actions)
+        assertTrue(allowed.bodyAsText().contains("no repositories to run"))
+    }
+
+    @Test
     fun `triggers drop the repositories the App's policy rejects`() = testApplication {
         val publisher = RecordingPublisher()
         application {

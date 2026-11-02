@@ -220,7 +220,8 @@ fun main() {
         gitHubApp = ProxyGitHubApp(
             botLogins = { listOfNotNull(botLogin?.get()) },
             onInstallationGone = { gitHubApp?.tokens?.evict(it) },
-            policy = gitHubApp?.allowList,
+            // Only with an allow-list: unset, every account is served
+            policy = gitHubApp?.allowList?.takeUnless { it.allowsAll },
             onDisallowedInstallation = { id, account ->
                 gitHubApp?.applyDisallowedAction(id, AccountInfo(account.id, account.login))
             },
