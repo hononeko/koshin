@@ -70,12 +70,13 @@ spec:
     - name: oldAnnotations
       expression: "has(oldObject.metadata.annotations) ? oldObject.metadata.annotations : {}"
   validations:
-    - expression: "request.operation == 'UPDATE' && request.subResource == ''"
+    # Unset fields are absent, not empty: reading one without has() is an error, and errors deny
+    - expression: "request.operation == 'UPDATE' && (!has(request.subResource) || request.subResource == '')"
       message: The koshin worker may only patch pods.
     - expression: >-
         request.operation != 'UPDATE' ||
         (request.namespace == '{{ .Release.Namespace }}' &&
-        'authentication.kubernetes.io/pod-name' in request.userInfo.extra &&
+        has(request.userInfo.extra) && 'authentication.kubernetes.io/pod-name' in request.userInfo.extra &&
         request.userInfo.extra['authentication.kubernetes.io/pod-name'] == [object.metadata.name])
       message: The koshin worker may only patch its own pod.
     - expression: >-
