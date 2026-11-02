@@ -1,6 +1,8 @@
 package dev.hononeko.koshin.worker
 
 import dev.hononeko.koshin.core.model.Platform
+import dev.hononeko.koshin.core.model.PlatformCredentials
+import dev.hononeko.koshin.core.ports.PlatformCredentialsPort
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -232,6 +234,28 @@ class WorkerSettingsTest {
         }
         assertThrows<IllegalArgumentException> { WorkerSettings(port = 70000) }
         assertThrows<IllegalArgumentException> { WorkerSettings(platforms = emptySet()) }
+    }
+
+    @Test
+    fun `GitHub runs use the App when it's configured, and the PAT otherwise`() = runTest {
+        val github = dev.hononeko.koshin.core.model.RepoRef(Platform.GITHUB, "o/r")
+        val gitlab = dev.hononeko.koshin.core.model.RepoRef(Platform.GITLAB, "g/p")
+        val tokens = StaticCredentialsProvider(WorkerSettings(githubToken = "ghp_pat", gitlabToken = "glpat"))
+        val app = object : PlatformCredentialsPort {
+            override suspend fun credentialsFor(repo: dev.hononeko.koshin.core.model.RepoRef) =
+                PlatformCredentials("ghs_app", username = "koshin[bot]")
+        }
+
+        val withApp = WorkerCredentials(tokens, app)
+        assertEquals("ghs_app", withApp.credentialsFor(github).token)
+        assertEquals("glpat", withApp.credentialsFor(gitlab).token)
+        assertTrue(withApp.isConfigured(Platform.GITHUB))
+
+        val withoutApp = WorkerCredentials(tokens, null)
+        assertEquals("ghp_pat", withoutApp.credentialsFor(github).token)
+        val nothing = WorkerCredentials(StaticCredentialsProvider(emptyMap()), null)
+        assertFalse(nothing.isConfigured(Platform.GITHUB))
+        assertTrue(WorkerCredentials(StaticCredentialsProvider(emptyMap()), app).isConfigured(Platform.GITHUB))
     }
 
     @Test

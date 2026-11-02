@@ -28,6 +28,10 @@ kubectl -n koshin create secret generic koshin-proxy \
 kubectl -n koshin create secret generic koshin-worker --from-literal=GITHUB_TOKEN=...
 ```
 
+To run as a GitHub App instead of with a PAT, register one from
+[`github-app/manifest.json`](https://github.com/hononeko/koshin/tree/main/github-app) and set `github.app.id` and
+`github.app.existingSecret` (no `worker.existingSecret` needed for GitHub).
+
 ### `minimal` profile
 
 One NATS server and one coordination Valkey on `emptyDir`, plus a separate package-cache Valkey. A restart loses
@@ -294,7 +298,7 @@ Kubernetes: `>=1.30.0-0`
 | github.app.id | string | `""` | `GITHUB_APP_ID` |
 | github.app.privateKey | string | `""` | Inline private key, for testing only; ignored when `existingSecret` is set |
 | github.app.privateKeyKey | string | `"private-key.pem"` | Key of the private key in `existingSecret` |
-| github.botLogin | string | `""` | `GITHUB_BOT_LOGIN`: webhooks sent by this login are ignored, so Renovate's own pushes don't re-trigger it |
+| github.botLogin | string | `""` | `GITHUB_BOT_LOGIN`: webhooks sent by this login are ignored, so Renovate's own pushes don't re-trigger it. With the GitHub App, its bot (`<slug>[bot]`) is ignored without this. |
 | gitlab.botLogin | string | `""` | `GITLAB_BOT_LOGIN`: webhooks sent by this login are ignored |
 | gitlab.endpoint | string | `""` | `GITLAB_ENDPOINT`, e.g. `https://gitlab.example.com/api/v4/` |
 | http2Enabled | bool | `true` | `HTTP2_ENABLED`: cleartext HTTP/2 (h2c) next to HTTP/1.1 on the proxy and worker |

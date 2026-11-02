@@ -28,6 +28,10 @@ kubectl -n koshin create secret generic koshin-proxy \
 kubectl -n koshin create secret generic koshin-worker --from-literal=GITHUB_TOKEN=...
 ```
 
+To run as a GitHub App instead of with a PAT, register one from
+[`github-app/manifest.json`](https://github.com/hononeko/koshin/tree/main/github-app) and set `github.app.id` and
+`github.app.existingSecret` (no `worker.existingSecret` needed for GitHub).
+
 ### `minimal` profile
 
 One NATS server and one coordination Valkey on `emptyDir`, plus a separate package-cache Valkey. A restart loses

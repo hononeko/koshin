@@ -1,5 +1,7 @@
 package dev.hononeko.koshin.worker
 
+import dev.hononeko.koshin.adapters.github.GitHubApp
+import dev.hononeko.koshin.adapters.github.GitHubAppConfig
 import dev.hononeko.koshin.adapters.nats.NatsConfig
 import dev.hononeko.koshin.adapters.valkey.ValkeyConfig
 import dev.hononeko.koshin.core.model.Platform
@@ -96,6 +98,21 @@ internal fun cliExecutor(settings: WorkerSettings): CliExecutorPort {
     }
 }
 
+/** The GitHub App for GitHub runs when it's configured, the platform tokens otherwise. */
+internal fun workerCredentials(settings: WorkerSettings, gitHubApp: GitHubApp?): WorkerCredentials {
+    val credentials = WorkerCredentials(
+        StaticCredentialsProvider(settings),
+        gitHubApp?.credentialsProvider(settings.jobConfig.cliTimeout),
+    )
+    if (gitHubApp != null) {
+        logger.info("GitHub runs authenticate as the GitHub App")
+    }
+    settings.platforms.filterNot(credentials::isConfigured).forEach { platform ->
+        logger.warn("No token configured for {}; its jobs will fail until one is set", platform)
+    }
+    return credentials
+}
+
 fun main() {
     // Libraries logging through java.util.logging end up in the JSON log too
     SLF4JBridgeHandler.removeHandlersForRootLogger()
@@ -106,10 +123,8 @@ fun main() {
     val valkeyConfig = ValkeyConfig.fromEnv()
     logger.info("Starting koshin-worker with {}", settings)
 
-    val credentials = StaticCredentialsProvider(settings)
-    settings.platforms.filterNot(credentials::isConfigured).forEach { platform ->
-        logger.warn("No token configured for {}; its jobs will fail until one is set", platform)
-    }
+    val gitHubApp = GitHubAppConfig.fromEnv()?.let(::GitHubApp)
+    val credentials = workerCredentials(settings, gitHubApp)
 
     val workspaceCleaner = WorkspaceCleaner(settings.renovateBaseDir)
     runBlocking { workspaceCleaner.purgeAll() }
@@ -155,6 +170,9 @@ fun main() {
         settings = settings,
         readinessCheck = backends::isReady,
         onStopping = { daemon.stop() },
-        onStopped = backends::close,
+        onStopped = {
+            backends.close()
+            gitHubApp?.close()
+        },
     ).start(wait = true)
 }

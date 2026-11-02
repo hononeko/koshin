@@ -16,7 +16,7 @@ Stateless, horizontally scalable Renovate CLI orchestrator built with Kotlin, Kt
 * **`:core`**: Pure Kotlin domain models, use cases, and hexagonal ports (zero dependency on infrastructure frameworks).
 * **`:adapters:nats`**: NATS JetStream `WorkQueue` publisher/consumer adapter and Object Store repository cache.
 * **`:adapters:state-valkey`**: Valkey/Redis adapter for per-repository distributed mutexes and atomic dirty-flag coalescing via Lettuce.
-* **`:adapters:github-app`**: GitHub App authentication, JWT signing, and installation access token rotation.
+* **`:adapters:github-app`**: GitHub App authentication (JWT signing, installation tokens), bot identity and repository discovery.
 * **`:proxy`**: Stateless Ktor HTTP server receiving webhooks (GitHub/GitLab) and internal cron trigger schedules.
 * **`:worker`**: Autonomous coroutine daemon that pulls jobs from NATS, acquires repo mutexes, runs Renovate CLI subprocesses, deletes each repo workspace after the run, and handles heartbeats & dirty catch-ups.
 * **`charts/koshin`**: Helm chart with the `minimal` and `ha` profiles, the primary install path.
@@ -86,6 +86,15 @@ The coordination Valkey instance (`VALKEY_URL`, supporting both standalone `redi
 * **Pod deletion cost (optional):** with `POD_DELETION_COST_ENABLED=true` (plus `POD_NAME` / `POD_NAMESPACE` from the downward API), the worker sets `controller.kubernetes.io/pod-deletion-cost` to `1000` while Renovate runs and back to `0` afterwards. Failed patches are logged and ignored. Only the `worker` container gets a ServiceAccount token (projected, valid for 10 minutes), and a `ValidatingAdmissionPolicy` lets it change nothing but that annotation on its own pod.
 * **Health:** `GET /healthz` is liveness only; `GET /readyz` checks NATS and Valkey.
 * **Dead-lettering:** a job that uses up its `NATS_MAX_DELIVER` deliveries is moved to `renovate.dlq.<platform>` when NATS announces it (the MaxDeliver advisory). That announcement is sent once, so every `NATS_EXHAUSTED_SWEEP_SECONDS` (5 minutes) each worker also moves exhausted jobs whose announcement nobody handled, e.g. during a rolling deployment.
+
+## GitHub App (KSH-14)
+
+With `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY_PATH` set on the proxy and the worker, koshin works as a GitHub App instead of with `GITHUB_TOKEN`; [`github-app/`](github-app/README.md) has the manifest and how to register it.
+
+* **Runs** authenticate with installation tokens, cached in memory per installation and handed to a run only while they have at least `CLI_TIMEOUT_MINUTES + 5` minutes left (they last 60), so `CLI_TIMEOUT_MINUTES` must stay below 55. Renovate commits as the App's bot, `<slug>[bot]` (`RENOVATE_USERNAME`, `RENOVATE_GIT_AUTHOR`).
+* **Webhooks:** the proxy ignores the bot's own events. Installing the App on repositories runs each of them once.
+* **Sweeper:** `discover: true` covers every repository of every installation (archived and disabled ones excluded), plus `SWEEP_REPOSITORIES_FILE`.
+* GitHub Enterprise Server works through `GITHUB_API_URL`.
 
 ## Logging
 

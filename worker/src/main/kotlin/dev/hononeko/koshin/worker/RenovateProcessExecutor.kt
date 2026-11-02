@@ -70,6 +70,8 @@ class RenovateProcessExecutor(
         put("RENOVATE_PLATFORM", repo.platform.name.lowercase())
         put("RENOVATE_TOKEN", creds.token)
         creds.endpoint?.let { put("RENOVATE_ENDPOINT", it) }
+        creds.username?.let { put("RENOVATE_USERNAME", it) }
+        creds.gitAuthor?.let { put("RENOVATE_GIT_AUTHOR", it) }
         put("RENOVATE_BASE_DIR", baseDir.toString())
         put("RENOVATE_BINARY_SOURCE", binarySource)
         redisUrl?.let { put("RENOVATE_REDIS_URL", it) }

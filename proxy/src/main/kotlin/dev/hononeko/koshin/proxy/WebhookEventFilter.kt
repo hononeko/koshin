@@ -1,21 +1,35 @@
 package dev.hononeko.koshin.proxy
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 
 sealed interface WebhookDecision {
     data class Enqueue(val repository: String) : WebhookDecision
+
+    /** The GitHub App was installed on these repositories: run each once, as a scheduled run. */
+    data class EnqueueInstalled(val repositories: List<String>) : WebhookDecision
+
+    /** The GitHub App installation was deleted or suspended: its tokens are no good any more. */
+    data class InstallationGone(val installationId: Long, val reason: String) : WebhookDecision
+
     data class Ignore(val reason: String) : WebhookDecision
     data class Malformed(val reason: String) : WebhookDecision
 }
 
+/**
+ * Decides which webhooks start a Renovate run. Pushes and events by a bot login ([botLogins], plus [extraBotLogins],
+ * e.g. the GitHub App's bot once it's known) are ignored, so Renovate's own changes don't re-trigger it.
+ */
 class WebhookEventFilter(
     botLogins: Set<String> = ProxyConfig.DEFAULT_BOT_LOGINS,
     private val json: Json = Json { ignoreUnknownKeys = true },
+    private val extraBotLogins: () -> Collection<String> = { emptyList() },
 ) {
     private val normalizedBotLogins: Set<String> = botLogins.map { it.trim().lowercase() }.toSet()
 
@@ -24,6 +38,7 @@ class WebhookEventFilter(
         return when {
             eventType.isNullOrEmpty() -> WebhookDecision.Ignore("missing X-GitHub-Event header")
             eventType == "ping" -> WebhookDecision.Ignore("github ping event")
+            eventType in INSTALLATION_EVENTS -> evaluateInstallation(eventType, rawPayload)
             else -> evaluateGitHubJson(eventType, rawPayload)
         }
     }
@@ -44,6 +59,32 @@ class WebhookEventFilter(
                 "issues" -> evaluateGitHubIssues(root, fullName)
                 else -> WebhookDecision.Ignore("unhandled GitHub event '$eventType'")
             }
+        }
+    }
+
+    /** `installation` (created) and `installation_repositories` (added) list the repositories the App now covers. */
+    private fun evaluateInstallation(eventType: String, rawPayload: String): WebhookDecision {
+        val root = parseJsonObject(rawPayload)
+            ?: return WebhookDecision.Malformed("invalid JSON payload")
+        val action = root.stringField("action")?.lowercase()
+        val installationId = (root["installation"] as? JsonObject)?.get("id")?.jsonPrimitive?.longOrNull
+        val added = when {
+            eventType == "installation" && action == "created" -> root["repositories"]
+            eventType == "installation_repositories" && action == "added" -> root["repositories_added"]
+            else -> null
+        }
+        val repositories = (added as? JsonArray).orEmpty().mapNotNull { item ->
+            (item as? JsonObject)?.stringField("full_name")?.takeIf { it.isNotBlank() }
+        }
+        return when {
+            eventType == "installation" && action in GONE_ACTIONS && installationId != null ->
+                WebhookDecision.InstallationGone(installationId, "installation $action")
+
+            added == null -> WebhookDecision.Ignore("$eventType action '$action' ignored")
+
+            repositories.isEmpty() -> WebhookDecision.Ignore("$eventType $action without repositories")
+
+            else -> WebhookDecision.EnqueueInstalled(repositories)
         }
     }
 
@@ -251,6 +292,7 @@ class WebhookEventFilter(
     private fun isBotActor(login: String?, senderType: String?): Boolean {
         val normalized = login?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return false
         return normalized in normalizedBotLogins ||
+            extraBotLogins().any { it.trim().lowercase() == normalized } ||
             (senderType.equals("Bot", ignoreCase = true) && normalized.contains("renovate"))
     }
 
@@ -263,6 +305,8 @@ class WebhookEventFilter(
     private fun JsonObject.stringField(key: String): String? = this[key]?.jsonPrimitive?.contentOrNull
 
     companion object {
+        private val INSTALLATION_EVENTS = setOf("installation", "installation_repositories")
+        private val GONE_ACTIONS = setOf("deleted", "suspend")
         private const val DEFAULT_BRANCH = "main"
         private const val RENOVATE_BRANCH_REF_PREFIX = "refs/heads/renovate/"
         private const val ZERO_COMMIT_SHA = "0000000000000000000000000000000000000000"

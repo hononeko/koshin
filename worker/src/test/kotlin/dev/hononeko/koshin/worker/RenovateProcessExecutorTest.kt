@@ -124,6 +124,18 @@ class RenovateProcessExecutorTest {
     }
 
     @Test
+    fun `a GitHub App run gets the bot identity`() {
+        val built = executor("true").buildEnvironment(
+            repo,
+            PlatformCredentials("ghs_app", username = "koshin[bot]", gitAuthor = "koshin[bot] <1+koshin[bot]@x>"),
+        )
+        assertEquals("ghs_app", built["RENOVATE_TOKEN"])
+        assertEquals("koshin[bot]", built["RENOVATE_USERNAME"])
+        assertEquals("koshin[bot] <1+koshin[bot]@x>", built["RENOVATE_GIT_AUTHOR"])
+        assertFalse(executor("true").buildEnvironment(repo, creds).containsKey("RENOVATE_USERNAME"))
+    }
+
+    @Test
     fun `inherited RENOVATE_ENDPOINT is dropped when credentials have no endpoint`() {
         val built = executor("true").buildEnvironment(
             RepoRef(Platform.GITLAB, "group/project"),

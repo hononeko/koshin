@@ -47,3 +47,12 @@
 {{- fail "worker.repoCache.provider=s3 needs worker.repoCache.s3.url=s3://<bucket>/<prefix>/" }}
 {{- end }}
 {{- end }}
+{{- with .Values.github.app }}
+{{- $key := include "koshin.githubAppSecretName" $ }}
+{{- if and .id (not $key) }}
+{{- fail "github.app.id needs the App's private key: github.app.existingSecret (or privateKey)" }}
+{{- end }}
+{{- if and $key (not .id) }}
+{{- fail "the GitHub App's private key needs github.app.id" }}
+{{- end }}
+{{- end }}
