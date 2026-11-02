@@ -1,9 +1,11 @@
 package dev.hononeko.koshin.worker
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.slf4j.MDCContext
@@ -16,6 +18,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import java.util.stream.Stream
 import kotlin.io.path.createDirectories
 import kotlin.time.Duration.Companion.seconds
@@ -101,8 +104,9 @@ fun interface ProcessKiller {
             }
         }
 
-        /** Whether this process is the direct child of PID 1, i.e. the main process of its container. */
-        fun isContainerMain(): Boolean = ProcessHandle.current().parent().map { it.pid() }.orElse(0L) == 1L
+        /** Whether this process is PID 1 or its direct child, i.e. the main process of its container. */
+        fun isContainerMain(): Boolean = ProcessHandle.current().pid() == 1L ||
+            ProcessHandle.current().parent().map { it.pid() }.orElse(0L) == 1L
     }
 }
 
@@ -118,17 +122,26 @@ class LocalRenovateLauncher(
         directory: Path,
         onOutput: (OutputStreamName, String) -> Unit,
     ): RenovateRun {
-        val process = withContext(ioDispatcher) {
-            directory.createDirectories()
-            ProcessBuilder(command)
-                .directory(directory.toFile())
-                .apply {
-                    environment().clear()
-                    environment().putAll(env)
-                }
-                .start()
-                .also { it.outputStream.close() }
+        val started = AtomicReference<Process>()
+        try {
+            withContext(ioDispatcher) {
+                directory.createDirectories()
+                val process = ProcessBuilder(command)
+                    .directory(directory.toFile())
+                    .apply {
+                        environment().clear()
+                        environment().putAll(env)
+                    }
+                    .start()
+                started.set(process)
+                process.outputStream.close()
+            }
+        } catch (e: CancellationException) {
+            // Cancelled once it had started: nobody else can kill it.
+            started.get()?.let { withContext(NonCancellable + ioDispatcher) { killer.kill(it) } }
+            throw e
         }
+        val process = started.get()
         logger.debug("Started {} (pid {})", command.first(), process.pid())
         // Not children of the caller: a blocked read must never hold up cancellation. They keep the job's MDC.
         val pumps = CoroutineScope(ioDispatcher + MDCContext()).launch {

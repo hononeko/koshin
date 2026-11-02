@@ -29,8 +29,8 @@ subjects:
   - kind: ServiceAccount
     name: koshin-worker
 ---
-# Cluster-scoped: the koshin-worker ServiceAccount, in any namespace, may only change the pod-deletion-cost annotation
-# of its own pod: no other pod, and no spec, label or other metadata change.
+# Cluster-scoped: a koshin-worker ServiceAccount, in any namespace, may only change the pod-deletion-cost annotation
+# of its own pod: no other pod (in any namespace), and no spec, label or other metadata change.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -45,7 +45,9 @@ spec:
         resources: ["pods", "pods/*"]
   matchConditions:
     - name: worker-service-account
-      expression: "request.userInfo.username == 'system:serviceaccount:' + request.namespace + ':koshin-worker'"
+      expression: >-
+        request.userInfo.username.startsWith('system:serviceaccount:') &&
+        request.userInfo.username.endsWith(':koshin-worker')
   variables:
     - name: costAnnotation
       expression: "'controller.kubernetes.io/pod-deletion-cost'"
@@ -58,7 +60,8 @@ spec:
       message: The koshin worker may only patch pods.
     - expression: >-
         request.operation != 'UPDATE' ||
-        ('authentication.kubernetes.io/pod-name' in request.userInfo.extra &&
+        (request.userInfo.username == 'system:serviceaccount:' + request.namespace + ':koshin-worker' &&
+        'authentication.kubernetes.io/pod-name' in request.userInfo.extra &&
         request.userInfo.extra['authentication.kubernetes.io/pod-name'] == [object.metadata.name])
       message: The koshin worker may only patch its own pod.
     - expression: >-

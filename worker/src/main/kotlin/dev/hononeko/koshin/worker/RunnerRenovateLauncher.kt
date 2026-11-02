@@ -53,18 +53,21 @@ class RunnerRenovateLauncher(
         directory: Path,
         onOutput: (OutputStreamName, String) -> Unit,
     ): RenovateRun {
-        val channel = withContext(ioDispatcher) {
-            val channel = SocketChannel.open(StandardProtocolFamily.UNIX)
-            try {
+        val channel = SocketChannel.open(StandardProtocolFamily.UNIX)
+        var handedOver = false
+        try {
+            withContext(ioDispatcher) {
                 channel.connect(UnixDomainSocketAddress.of(socket))
                 val request = Json.encodeToString(RunRequest(command, env, directory.toString())) + "\n"
                 // Not closed: closing the stream closes the channel.
                 Channels.newOutputStream(channel).apply { write(request.toByteArray()) }.flush()
-                channel
-            } catch (e: IOException) {
-                channel.close()
-                throw IOException("Could not hand the run to the Renovate runner at $socket", e)
             }
+            handedOver = true
+        } catch (e: IOException) {
+            throw IOException("Could not hand the run to the Renovate runner at $socket", e)
+        } finally {
+            // Also when cancelled: closing the channel kills a run the runner may have started.
+            if (!handedOver) channel.close()
         }
         return RemoteRun(channel, onOutput)
     }

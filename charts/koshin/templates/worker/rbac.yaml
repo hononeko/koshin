@@ -42,8 +42,8 @@ subjects:
 {{- if .Values.worker.podDeletionCost.admissionPolicy }}
 {{- $name := printf "%s-worker.%s" (include "koshin.fullname" .) .Release.Namespace }}
 ---
-# The worker's ServiceAccount may only change the pod-deletion-cost annotation of its own pod: no other pod, and no
-# spec, label or other metadata change.
+# The worker's ServiceAccount may only change the pod-deletion-cost annotation of its own pod: no other pod (in any
+# namespace), and no spec, label or other metadata change.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -74,7 +74,8 @@ spec:
       message: The koshin worker may only patch pods.
     - expression: >-
         request.operation != 'UPDATE' ||
-        ('authentication.kubernetes.io/pod-name' in request.userInfo.extra &&
+        (request.namespace == '{{ .Release.Namespace }}' &&
+        'authentication.kubernetes.io/pod-name' in request.userInfo.extra &&
         request.userInfo.extra['authentication.kubernetes.io/pod-name'] == [object.metadata.name])
       message: The koshin worker may only patch its own pod.
     - expression: >-
@@ -100,9 +101,5 @@ metadata:
 spec:
   policyName: {{ $name }}
   validationActions: [Deny]
-  matchResources:
-    namespaceSelector:
-      matchLabels:
-        kubernetes.io/metadata.name: {{ .Release.Namespace }}
 {{- end }}
 {{- end }}
