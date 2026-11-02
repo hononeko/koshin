@@ -2,9 +2,11 @@ package dev.hononeko.koshin.adapters.github
 
 import io.ktor.client.HttpClient
 import io.ktor.client.request.HttpRequestBuilder
+import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
+import io.ktor.client.request.put
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
@@ -27,8 +29,20 @@ data class InstallationToken(val token: String, val expiresAt: Instant) {
 @Serializable
 internal data class AppInfo(val id: Long, val slug: String)
 
+/** A user, an organization, or (`slug`, no `login`) an enterprise. */
 @Serializable
-internal data class InstallationInfo(val id: Long, @SerialName("suspended_at") val suspendedAt: String? = null)
+data class AccountInfo(val id: Long, val login: String? = null, val slug: String? = null) {
+    val name: String get() = login ?: slug ?: id.toString()
+
+    override fun toString(): String = "$name ($id)"
+}
+
+@Serializable
+internal data class InstallationInfo(
+    val id: Long,
+    val account: AccountInfo? = null,
+    @SerialName("suspended_at") val suspendedAt: String? = null,
+)
 
 @Serializable
 internal data class RepositoryInfo(
@@ -38,7 +52,7 @@ internal data class RepositoryInfo(
 )
 
 @Serializable
-internal data class UserInfo(val id: Long, val login: String)
+data class UserInfo(val id: Long, val login: String)
 
 @Serializable
 private data class AccessTokenResponse(val token: String, @SerialName("expires_at") val expiresAt: String)
@@ -52,9 +66,21 @@ internal class GitHubAppApi(private val http: HttpClient, private val apiBase: S
     suspend fun app(): AppInfo = decode(get("/app", appAuth()))
 
     /** The installation that covers [repository] (`owner/name`), or `null` when the App isn't installed there. */
-    suspend fun repositoryInstallation(repository: String): Long? {
+    suspend fun repositoryInstallation(repository: String): InstallationInfo? {
         val response = get("/repos/${repositoryPath(repository)}/installation", appAuth(), allowNotFound = true)
-        return if (response.status == HttpStatusCode.NotFound) null else decode<InstallationInfo>(response).id
+        return if (response.status == HttpStatusCode.NotFound) null else decode<InstallationInfo>(response)
+    }
+
+    suspend fun suspendInstallation(installationId: Long) {
+        val path = "/app/installations/$installationId/suspended"
+        http.put(apiBase + path) { headers(appAuth()) }.orThrow("PUT $path")
+    }
+
+    /** Uninstalls; an installation that's already gone counts as done. */
+    suspend fun deleteInstallation(installationId: Long) {
+        val path = "/app/installations/$installationId"
+        val response = http.delete(apiBase + path) { headers(appAuth()) }
+        if (response.status != HttpStatusCode.NotFound) response.orThrow("DELETE $path")
     }
 
     suspend fun createInstallationToken(installationId: Long): InstallationToken {
@@ -72,11 +98,13 @@ internal class GitHubAppApi(private val http: HttpClient, private val apiBase: S
             json.decodeFromString<InstallationRepositories>(it).repositories
         }
 
-    suspend fun user(login: String, token: String): UserInfo = decode(get("/users/${login.encodeURLPathPart()}", token))
+    /** Looks up a user or an organization, without authentication when [token] is `null`. */
+    suspend fun user(login: String, token: String? = null): UserInfo =
+        decode(get("/users/${login.encodeURLPathPart()}", token))
 
     private fun appAuth(): String = jwt.create()
 
-    private suspend fun get(path: String, bearer: String, allowNotFound: Boolean = false): HttpResponse {
+    private suspend fun get(path: String, bearer: String?, allowNotFound: Boolean = false): HttpResponse {
         val response = http.get(apiBase + path) { headers(bearer) }
         val notFound = allowNotFound && response.status == HttpStatusCode.NotFound
         return if (notFound) response else response.orThrow("GET $path")
@@ -98,10 +126,10 @@ internal class GitHubAppApi(private val http: HttpClient, private val apiBase: S
         return items
     }
 
-    private fun HttpRequestBuilder.headers(bearer: String) {
+    private fun HttpRequestBuilder.headers(bearer: String?) {
         header(HttpHeaders.Accept, "application/vnd.github+json")
         header("X-GitHub-Api-Version", API_VERSION)
-        header(HttpHeaders.Authorization, "Bearer $bearer")
+        bearer?.let { header(HttpHeaders.Authorization, "Bearer $it") }
     }
 
     private suspend fun HttpResponse.orThrow(call: String): HttpResponse {

@@ -16,6 +16,7 @@ import dev.hononeko.koshin.core.ports.PlatformThrottlePort
 import dev.hononeko.koshin.core.ports.ReleaseResult
 import dev.hononeko.koshin.core.ports.RepoCachePort
 import dev.hononeko.koshin.core.ports.RepoCoordinationPort
+import dev.hononeko.koshin.core.ports.RepositoryRejectedException
 import dev.hononeko.koshin.core.ports.WorkspaceCleanerPort
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -185,8 +186,15 @@ class ProcessRenovateJobUseCase(
         val event = delivery.event
         val repo = event.repo
 
+        // Credentials first: a rejected repo costs no cache download.
+        val creds = try {
+            credentialsPort.credentialsFor(repo)
+        } catch (@Suppress("SwallowedException") _: RepositoryRejectedException) {
+            // The credentials port logged why.
+            handleRejected(delivery, lockToken, heartbeatJob)
+            return
+        }
         restoreCache(repo)
-        val creds = credentialsPort.credentialsFor(repo)
         val result = cliExecutor.execute(repo, creds, config.cliTimeout)
 
         when (result) {
@@ -320,6 +328,13 @@ class ProcessRenovateJobUseCase(
                 delivery.nack(Duration.ZERO)
             }
         }
+    }
+
+    /** Final: ACKed without a retry, and a dirty flag is dropped rather than turned into a follow-up run. */
+    private suspend fun handleRejected(delivery: JobDelivery, lockToken: String, heartbeatJob: Job) {
+        heartbeatJob.cancelAndJoin()
+        coordinationPort.releaseLockAndTakeDirty(delivery.event.repo, lockToken)
+        delivery.ack()
     }
 
     private suspend fun publishDirtyFollowUp(repo: RepoRef) {

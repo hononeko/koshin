@@ -124,6 +124,7 @@ fun main() {
     logger.info("Starting koshin-worker with {}", settings)
 
     val gitHubApp = GitHubAppConfig.fromEnv()?.let(::GitHubApp)
+    gitHubApp?.let { runBlocking { it.allowList.resolveLogins() } }
     val credentials = workerCredentials(settings, gitHubApp)
 
     val workspaceCleaner = WorkspaceCleaner(settings.renovateBaseDir)

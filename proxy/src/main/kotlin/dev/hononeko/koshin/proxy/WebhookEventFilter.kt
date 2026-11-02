@@ -9,11 +9,25 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 
-sealed interface WebhookDecision {
-    data class Enqueue(val repository: String) : WebhookDecision
+/** The GitHub account a webhook is about: the repository owner, which is also its App installation's account. */
+data class WebhookAccount(val id: Long, val login: String) {
+    override fun toString(): String = "$login ($id)"
+}
 
-    /** The GitHub App was installed on these repositories: run each once, as a scheduled run. */
-    data class EnqueueInstalled(val repositories: List<String>) : WebhookDecision
+sealed interface WebhookDecision {
+    /** [account] is the GitHub repository owner, checked against `GITHUB_APP_ALLOWED_ACCOUNTS`. */
+    data class Enqueue(val repository: String, val account: WebhookAccount? = null) : WebhookDecision
+
+    /**
+     * The GitHub App was installed on these repositories: run each once, as a scheduled run. [newInstallation] when it
+     * was installed on an account just now (`installation` created) rather than given more repositories.
+     */
+    data class EnqueueInstalled(
+        val repositories: List<String>,
+        val account: WebhookAccount? = null,
+        val installationId: Long? = null,
+        val newInstallation: Boolean = false,
+    ) : WebhookDecision
 
     /** The GitHub App installation was deleted or suspended: its tokens are no good any more. */
     data class InstallationGone(val installationId: Long, val reason: String) : WebhookDecision
@@ -53,13 +67,21 @@ class WebhookEventFilter(
         return if (repoObj == null || fullName == null) {
             WebhookDecision.Ignore("missing repository.full_name")
         } else {
-            when (eventType) {
+            val decision = when (eventType) {
                 "push" -> evaluateGitHubPush(root, repoObj, fullName)
                 "pull_request" -> evaluateGitHubPullRequest(root, fullName)
                 "issues" -> evaluateGitHubIssues(root, fullName)
                 else -> WebhookDecision.Ignore("unhandled GitHub event '$eventType'")
             }
+            if (decision is WebhookDecision.Enqueue) decision.copy(account = repoObj.account("owner")) else decision
         }
+    }
+
+    private fun JsonObject.account(field: String): WebhookAccount? {
+        val obj = this[field] as? JsonObject
+        val id = obj?.get("id")?.jsonPrimitive?.longOrNull
+        // An enterprise account has a slug instead of a login
+        return id?.let { WebhookAccount(it, obj.stringField("login") ?: obj.stringField("slug").orEmpty()) }
     }
 
     /** `installation` (created) and `installation_repositories` (added) list the repositories the App now covers. */
@@ -82,9 +104,16 @@ class WebhookEventFilter(
 
             added == null -> WebhookDecision.Ignore("$eventType action '$action' ignored")
 
-            repositories.isEmpty() -> WebhookDecision.Ignore("$eventType $action without repositories")
+            // A new installation always goes on, so an account that isn't allowed gets the disallowed action.
+            repositories.isEmpty() && eventType != "installation" ->
+                WebhookDecision.Ignore("$eventType $action without repositories")
 
-            else -> WebhookDecision.EnqueueInstalled(repositories)
+            else -> WebhookDecision.EnqueueInstalled(
+                repositories,
+                (root["installation"] as? JsonObject)?.account("account"),
+                installationId,
+                newInstallation = eventType == "installation",
+            )
         }
     }
 

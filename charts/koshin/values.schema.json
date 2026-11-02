@@ -83,6 +83,23 @@
             },
             "privateKey": {
               "type": "string"
+            },
+            "allowedAccounts": {
+              "type": "array",
+              "items": {
+                "type": [
+                  "string",
+                  "integer"
+                ]
+              }
+            },
+            "disallowedAction": {
+              "type": "string",
+              "enum": [
+                "ignore",
+                "suspend",
+                "uninstall"
+              ]
             }
           },
           "additionalProperties": false

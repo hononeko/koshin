@@ -47,7 +47,12 @@ class GitHubAppTest {
     private val requests = mutableListOf<String>()
     private var route: MockRequestHandleScope.(String) -> HttpResponseData = { error("No route for $it") }
 
-    private fun app(apiUrl: String = GitHubAppConfig.DEFAULT_API_URL, pem: String = pkcs8Pem): GitHubApp {
+    private fun app(
+        apiUrl: String = GitHubAppConfig.DEFAULT_API_URL,
+        pem: String = pkcs8Pem,
+        allowed: List<String> = emptyList(),
+        action: DisallowedAction = DisallowedAction.IGNORE,
+    ): GitHubApp {
         val keyFile = dir.resolve("key.pem").apply { writeText(pem) }
         val base = apiUrl.trimEnd('/')
         val engine = MockEngine { request ->
@@ -57,7 +62,7 @@ class GitHubAppTest {
             route(call)
         }
         val http = gitHubHttpClient(engine, HttpRetryConfig(maxRetries = 0), clock, sleep = {})
-        return GitHubApp(GitHubAppConfig("1234", keyFile, apiUrl), http, clock)
+        return GitHubApp(GitHubAppConfig("1234", keyFile, apiUrl, allowed, action), http, clock)
     }
 
     private var lastRequest: HttpRequestData? = null

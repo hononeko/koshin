@@ -27,7 +27,8 @@ It subscribes to `push`, `pull_request` and `issues`. GitHub always sends an App
 1. Edit `manifest.json`:
    * `name`: unique on GitHub, e.g. `koshin-<your-org>`.
    * `hook_attributes.url`: the proxy's GitHub webhook, `https://<proxy host>/webhooks/github`.
-   * Keep `public: false` unless the App must be installed on other accounts too.
+   * Keep `public: false` unless the App must be installed on other accounts too; then set the allow-list first
+     (see [Public App](#public-app-and-allowed-accounts)).
 2. Save this as `register.html`, paste `manifest.json` into the text area, and open it in a browser. For an organization,
    post to `https://github.com/organizations/<org>/settings/apps/new?state=koshin` instead:
 
@@ -67,6 +68,28 @@ It subscribes to `push`, `pull_request` and `issues`. GitHub always sends an App
 On GitHub Enterprise Server, use `https://<ghes>/settings/apps/new` and
 `https://<ghes>/api/v3/app-manifests/<code>/conversions`, and set `GITHUB_API_URL` (`github.apiUrl`) to
 `https://<ghes>/api/v3`.
+
+## Public App and allowed accounts
+
+A private App can only be installed on the account that owns it. To install it on another user or organization too
+(e.g. your own account and your organization), the App must be **public**, and then anyone who finds it can install it
+and point your workers, API budget and registry credentials at their repositories. GitHub can't restrict who installs a
+public App, so koshin does (KSH-17):
+
+* `GITHUB_APP_ALLOWED_ACCOUNTS` (chart: `github.app.allowedAccounts`) lists the users and organizations koshin serves.
+  Use numeric account IDs, since a login can be renamed and a freed login registered by someone else:
+  `gh api users/<login> --jq .id`. Logins work too: they're resolved to IDs at startup and matched by ID from then on
+  (unauthenticated, so on GHES in private mode they can't be, and are matched by login: use IDs there).
+  Unset, every installation is served (and a warning logged), which is only right for a private App.
+* Installations by other accounts get nothing: their webhooks are ignored, triggers and the sweeper skip their
+  repositories, and no installation token is minted for them (a job that slips through is dropped, not retried).
+* `GITHUB_APP_DISALLOWED_ACTION` (`github.app.disallowedAction`) also acts on them, when they install the App and on a
+  sweep:
+  * `ignore` (default): leave them installed. Nothing runs, but the account still sees the App as installed.
+  * `suspend`: suspend the installation. The account sees it suspended; you can unsuspend it from the App's settings.
+  * `uninstall`: remove it. Cleanest, but the account can install it again, and is removed again each time.
+
+Set the allow-list, then make the App public (App settings → Advanced → Make public).
 
 ## How koshin uses it
 

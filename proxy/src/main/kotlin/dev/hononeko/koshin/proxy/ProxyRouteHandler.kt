@@ -18,7 +18,7 @@ internal class ProxyRouteHandler(
     private val eventFilter: WebhookEventFilter,
     private val ingestUseCase: IngestWebhookUseCase,
     private val discoveryPort: RepositoryDiscoveryPort?,
-    private val onInstallationGone: (Long) -> Unit = {},
+    private val gitHubApp: ProxyGitHubApp = ProxyGitHubApp(),
 ) {
     private val logger = LoggerFactory.getLogger(ProxyRouteHandler::class.java)
 
@@ -84,7 +84,8 @@ internal class ProxyRouteHandler(
         val rawBody = bodyBytes.toString(Charsets.UTF_8)
         val targetRepos = resolveTriggerRepositories(call, rawBody)
         if (targetRepos != null) {
-            enqueueScheduledRepositories(call, targetRepos)
+            // Accounts that may not use the GitHub App (KSH-17) get no runs, whoever asks
+            enqueueScheduledRepositories(call, gitHubApp.allowedRepositories(targetRepos))
         }
     }
 
@@ -108,16 +109,32 @@ internal class ProxyRouteHandler(
             }
 
             is WebhookDecision.Enqueue -> {
-                enqueueWebhookEvent(call, platform, decision.repository, deliveryId)
+                if (isAllowed(platform, decision.account)) {
+                    enqueueWebhookEvent(call, platform, decision.repository, deliveryId)
+                } else {
+                    respondDisallowed(call, decision.account)
+                }
             }
 
             is WebhookDecision.EnqueueInstalled -> {
-                enqueueInstalledRepositories(call, decision.repositories, deliveryId)
+                if (!isAllowed(platform, decision.account)) {
+                    if (decision.newInstallation && decision.installationId != null && decision.account != null) {
+                        applyDisallowedAction(decision.installationId, decision.account)
+                    }
+                    respondDisallowed(call, decision.account)
+                } else if (decision.repositories.isEmpty()) {
+                    call.respond(
+                        HttpStatusCode.Accepted,
+                        WebhookResponse(status = "ignored", enqueued = false, reason = "no repositories to run"),
+                    )
+                } else {
+                    enqueueInstalledRepositories(call, decision.repositories, deliveryId)
+                }
             }
 
             is WebhookDecision.InstallationGone -> {
                 logger.info("GitHub App installation {} gone ({})", decision.installationId, decision.reason)
-                onInstallationGone(decision.installationId)
+                gitHubApp.onInstallationGone(decision.installationId)
                 call.respond(
                     HttpStatusCode.Accepted,
                     WebhookResponse(status = "ignored", enqueued = false, reason = decision.reason),
@@ -157,6 +174,36 @@ internal class ProxyRouteHandler(
         } catch (e: Exception) {
             logger.error("Failed to publish {} webhook job for {}", platform, validatedRepo.repository, e)
             call.respond(HttpStatusCode.ServiceUnavailable, ErrorResponse("Queue unavailable"))
+        }
+    }
+
+    /**
+     * Whether the account a webhook is about may use the GitHub App (`GITHUB_APP_ALLOWED_ACCOUNTS`, KSH-17). Fails
+     * closed: with an allow-list, a GitHub webhook that names no account isn't allowed. GitLab's never name one.
+     */
+    private suspend fun isAllowed(platform: Platform, account: WebhookAccount?): Boolean {
+        val policy = gitHubApp.policy
+        return platform != Platform.GITHUB || policy == null ||
+            (account != null && policy.isAllowed(account.id, account.login))
+    }
+
+    private suspend fun respondDisallowed(call: ApplicationCall, account: WebhookAccount?) {
+        logger.info("Ignoring a GitHub webhook from {}: the account isn't allowed", account)
+        call.respond(
+            HttpStatusCode.Accepted,
+            WebhookResponse(status = "ignored", enqueued = false, reason = "account $account is not allowed"),
+        )
+    }
+
+    /** `GITHUB_APP_DISALLOWED_ACTION` on a new installation by an account that isn't allowed; failures are logged. */
+    @Suppress("TooGenericExceptionCaught")
+    private suspend fun applyDisallowedAction(installationId: Long, account: WebhookAccount) {
+        try {
+            gitHubApp.onDisallowedInstallation(installationId, account)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.warn("Could not apply the disallowed action to installation {} of {}", installationId, account, e)
         }
     }
 
