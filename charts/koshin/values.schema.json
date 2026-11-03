@@ -154,6 +154,10 @@
         "exhaustedSweepSeconds": {
           "type": "integer",
           "minimum": 0
+        },
+        "consumerIdleTtlDays": {
+          "type": "integer",
+          "minimum": 0
         }
       },
       "additionalProperties": false
@@ -436,7 +440,11 @@
         "rateLimits": {
           "type": "object",
           "properties": {
-            "maxConcurrentRunsPerPlatform": {
+            "maxConcurrentRunsPerCredential": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxConcurrentRunsGlobal": {
               "type": "integer",
               "minimum": 1
             },

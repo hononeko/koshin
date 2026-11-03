@@ -1,5 +1,6 @@
 package dev.hononeko.koshin.adapters.nats
 
+import dev.hononeko.koshin.core.model.CredentialScope
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.model.RepoRef
@@ -24,13 +25,14 @@ class NatsQueueDepthIntegrationTest {
     )
 
     @Test
-    fun `counts pending and delivered-but-unsettled jobs per platform`() = runBlocking {
+    fun `counts pending and delivered-but-unsettled jobs per credential scope`() = runBlocking {
         Nats.connect(SharedNatsContainer.natsUrl).use { connection ->
             val jsm = connection.jetStreamManagement()
             val depth = NatsQueueDepth(jsm, config)
-            assertEquals(QueueDepth(0, 0), depth.depth(Platform.GITHUB), "no stream yet")
+            val github = CredentialScope.Token(Platform.GITHUB)
+            assertEquals(emptyMap<CredentialScope, QueueDepth>(), depth.depths(Platform.entries), "no stream yet")
 
-            NatsJetStreamBootstrap(jsm, config).bootstrap(listOf(Platform.GITHUB))
+            NatsJetStreamBootstrap(jsm, config).bootstrap()
             val publisher = NatsJobQueuePublisher(connection, config)
             repeat(3) { i ->
                 publisher.publish(
@@ -38,16 +40,16 @@ class NatsQueueDepthIntegrationTest {
                 )
             }
             NatsJobQueueConsumer(connection, config).use { consumer ->
-                checkNotNull(consumer.fetchNext(Platform.GITHUB, 5.seconds))
-                var seen = depth.depth(Platform.GITHUB)
+                checkNotNull(consumer.fetchNext(github, 5.seconds))
+                var seen = depth.depths(Platform.entries)[github]
                 repeat(50) {
                     if (seen == QueueDepth(2, 1)) return@repeat
                     delay(20.milliseconds)
-                    seen = depth.depth(Platform.GITHUB)
+                    seen = depth.depths(Platform.entries)[github]
                 }
                 assertEquals(QueueDepth(2, 1), seen)
             }
-            assertEquals(QueueDepth(0, 0), depth.depth(Platform.GITLAB), "no GitLab consumer")
+            assertEquals(emptyMap<CredentialScope, QueueDepth>(), depth.depths(listOf(Platform.GITLAB)), "no GitLab")
             jsm.deleteStream(config.jobsStreamName)
             jsm.deleteStream(config.dlqStreamName)
         }

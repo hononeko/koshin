@@ -83,13 +83,13 @@ data class ProxyConfig(
                 sweepRepositoriesFile = env["SWEEP_REPOSITORIES_FILE"]?.takeIf { it.isNotBlank() },
                 botLogins = botLogins,
                 ingest = ingestFromEnv(env),
-                dispatcher = dispatcherFromEnv(env, platforms),
+                dispatcher = dispatcherFromEnv(env),
             )
         }
 
-        private fun dispatcherFromEnv(env: Map<String, String>, platforms: Set<Platform>): DispatcherConfig {
+        private fun dispatcherFromEnv(env: Map<String, String>): DispatcherConfig {
             val defaults = DispatcherConfig()
-            val runsPerPlatform = env.long("MAX_CONCURRENT_RUNS_PER_PLATFORM")?.toInt() ?: defaults.maxRunsPerPlatform
+            val runsGlobal = env.long("MAX_CONCURRENT_RUNS_GLOBAL")?.toInt() ?: defaults.maxRunsGlobal
             return DispatcherConfig(
                 enabled = env["WORKER_DISPATCHER_ENABLED"]?.takeIf { it.isNotBlank() }?.let { raw ->
                     requireNotNull(raw.trim().lowercase().toBooleanStrictOrNull()) {
@@ -100,8 +100,12 @@ data class ProxyConfig(
                     ?: defaults.podTemplateName,
                 namespace = env["POD_NAMESPACE"]?.takeIf { it.isNotBlank() },
                 // More workers than run slots would only wait for one
-                maxWorkers = env.long("WORKER_MAX_REPLICAS")?.toInt() ?: (runsPerPlatform * platforms.size),
-                maxRunsPerPlatform = runsPerPlatform,
+                maxWorkers = env.long("WORKER_MAX_REPLICAS")?.toInt() ?: runsGlobal,
+                // The per-platform cap of earlier versions is the per-credential one now (KSH-24)
+                maxRunsPerCredential = (
+                    env.long("MAX_CONCURRENT_RUNS_PER_CREDENTIAL") ?: env.long("MAX_CONCURRENT_RUNS_PER_PLATFORM")
+                    )?.toInt() ?: defaults.maxRunsPerCredential,
+                maxRunsGlobal = runsGlobal,
                 minWarmWorkers = env.long("MIN_WARM_WORKERS")?.toInt() ?: defaults.minWarmWorkers,
                 interval = env.long("WORKER_DISPATCH_INTERVAL_SECONDS")?.seconds ?: defaults.interval,
                 jobActiveDeadline = env.long("WORKER_JOB_ACTIVE_DEADLINE_SECONDS")?.seconds

@@ -1,5 +1,6 @@
 package dev.hononeko.koshin.proxy
 
+import dev.hononeko.koshin.core.model.CredentialScope
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.model.RepoRef
@@ -74,11 +75,13 @@ class WorkerDispatcherTest {
     private val warmWorkers = mockk<WarmWorkerPort> { coEvery { liveCount() } returns 0 }
     private val pending = AtomicLong()
     private val queue = object : QueueDepthPort {
-        override suspend fun depth(platform: Platform) = QueueDepth(pending.get(), 0)
+        override suspend fun depths(platforms: Collection<Platform>) =
+            mapOf<CredentialScope, QueueDepth>(CredentialScope.Token(Platform.GITHUB) to QueueDepth(pending.get(), 0))
     }
     private val jobs = Jobs()
     private val ports = ProxyValkey.DispatchPorts(lease, throttle, warmWorkers)
-    private val config = DispatcherConfig(enabled = true, maxWorkers = 6, interval = 5.seconds)
+    private val config =
+        DispatcherConfig(enabled = true, maxWorkers = 6, maxRunsPerCredential = 3, interval = 5.seconds)
 
     private fun dispatcher(id: String, valkey: () -> ProxyValkey.DispatchPorts? = { ports }) =
         WorkerDispatcher(config, setOf(Platform.GITHUB), valkey, queue, jobs, holderId = id)
@@ -152,7 +155,8 @@ class WorkerDispatcherTest {
     @Test
     fun `a failing reconciliation is retried on the next tick`() = runBlocking {
         val failing = mockk<QueueDepthPort>()
-        coEvery { failing.depth(any()) } throws IllegalStateException("NATS down") andThen QueueDepth(1, 0)
+        coEvery { failing.depths(any()) } throws IllegalStateException("NATS down") andThen
+            mapOf(CredentialScope.Token(Platform.GITHUB) to QueueDepth(1, 0))
         val fast = DispatcherConfig(enabled = true, interval = 20.milliseconds)
         val dispatcher = WorkerDispatcher(fast, setOf(Platform.GITHUB), { ports }, failing, jobs, holderId = "a")
         val scope = CoroutineScope(SupervisorJob())
@@ -182,8 +186,9 @@ class WorkerDispatcherTest {
         assertThrows<IllegalArgumentException> { DispatcherConfig(podTemplateName = " ") }
         assertThrows<IllegalArgumentException> { DispatcherConfig(namespace = " ") }
         assertThrows<IllegalArgumentException> { DispatcherConfig(maxWorkers = 0) }
-        assertThrows<IllegalArgumentException> { DispatcherConfig(maxRunsPerPlatform = 0) }
-        assertThrows<IllegalArgumentException> { DispatcherConfig(minWarmWorkers = 4) }
+        assertThrows<IllegalArgumentException> { DispatcherConfig(maxRunsPerCredential = 0) }
+        assertThrows<IllegalArgumentException> { DispatcherConfig(maxRunsGlobal = 0) }
+        assertThrows<IllegalArgumentException> { DispatcherConfig(minWarmWorkers = 7) }
         assertThrows<IllegalArgumentException> { DispatcherConfig(interval = Duration.ZERO) }
         assertThrows<IllegalArgumentException> { DispatcherConfig(jobActiveDeadline = Duration.ZERO) }
         assertThrows<IllegalArgumentException> { DispatcherConfig(jobTtlAfterFinished = (-1).hours) }

@@ -1,5 +1,6 @@
 package dev.hononeko.koshin.adapters.nats
 
+import dev.hononeko.koshin.core.model.CredentialScope
 import dev.hononeko.koshin.core.model.Platform
 import io.nats.client.api.StorageType
 import kotlin.time.Duration
@@ -22,8 +23,13 @@ data class NatsConfig(
     val dlqForwarderQueueGroup: String = DEFAULT_DLQ_QUEUE_GROUP,
     val consumerPrefix: String = DEFAULT_CONSUMER_PREFIX,
     val storageType: StorageType = StorageType.File,
-    /** How often the proxy looks for exhausted jobs whose MaxDeliver advisory nobody handled; zero turns it off. */
+    /**
+     * How often the proxy looks for exhausted jobs whose MaxDeliver advisory nobody handled, and tidies the scope
+     * consumers; zero turns it off.
+     */
     val exhaustedSweepInterval: Duration = DEFAULT_EXHAUSTED_SWEEP_SECONDS.seconds,
+    /** A scope's consumer is deleted once it's had no job for this long (KSH-24); zero keeps them all. */
+    val consumerIdleTtl: Duration = DEFAULT_CONSUMER_IDLE_TTL_DAYS.days,
 ) {
     val jobsSubject: String
         get() = "$jobsSubjectPrefix.>"
@@ -31,11 +37,26 @@ data class NatsConfig(
     val dlqSubject: String
         get() = "$dlqSubjectPrefix.>"
 
-    fun jobsSubjectFor(platform: Platform): String = "$jobsSubjectPrefix.${platform.name.lowercase()}"
+    /** A credential scope's jobs (KSH-24): `renovate.jobs.<platform>.<scope>`, e.g. `renovate.jobs.github.inst-42`. */
+    fun jobsSubjectFor(scope: CredentialScope): String = "${legacyJobsSubjectFor(scope.platform)}.${scope.token}"
 
     fun dlqSubjectFor(platform: Platform): String = "$dlqSubjectPrefix.${platform.name.lowercase()}"
 
-    fun consumerNameFor(platform: Platform): String = "$consumerPrefix${platform.name.lowercase()}"
+    /** A credential scope's consumer: `koshin-workers-<platform>-<scope>`, e.g. `koshin-workers-github-inst-42`. */
+    fun consumerNameFor(scope: CredentialScope): String =
+        "$consumerPrefix${scope.platform.name.lowercase()}-${scope.token}"
+
+    /** The scope whose jobs [subject] holds, or `null` if it isn't a scope's subject. */
+    fun scopeOf(subject: String): CredentialScope? {
+        val tokens = subject.removePrefix("$jobsSubjectPrefix.").takeIf { it != subject }?.split('.')
+        val platform = Platform.entries.firstOrNull { it.name.lowercase() == tokens?.first() }
+        return if (tokens?.size == 2 && platform != null) CredentialScope.parse(platform, tokens[1]) else null
+    }
+
+    /** Where a platform's jobs went before they were partitioned by credential scope (KSH-24). */
+    fun legacyJobsSubjectFor(platform: Platform): String = "$jobsSubjectPrefix.${platform.name.lowercase()}"
+
+    fun legacyConsumerNameFor(platform: Platform): String = "$consumerPrefix${platform.name.lowercase()}"
 
     init {
         require(jobsStreamName.isNotBlank()) { "jobsStreamName cannot be blank" }
@@ -53,6 +74,7 @@ data class NatsConfig(
         require(dlqForwarderQueueGroup.isNotBlank()) { "dlqForwarderQueueGroup cannot be blank" }
         require(consumerPrefix.isNotBlank()) { "consumerPrefix cannot be blank" }
         require(!exhaustedSweepInterval.isNegative()) { "exhaustedSweepInterval cannot be negative" }
+        require(!consumerIdleTtl.isNegative()) { "consumerIdleTtl cannot be negative" }
     }
 
     companion object {
@@ -68,6 +90,7 @@ data class NatsConfig(
         const val DEFAULT_DUPLICATE_WINDOW_MINUTES = 2L
         const val DEFAULT_DLQ_MAX_AGE_DAYS = 7L
         const val DEFAULT_EXHAUSTED_SWEEP_SECONDS = 300L
+        const val DEFAULT_CONSUMER_IDLE_TTL_DAYS = 7L
 
         fun fromEnv(env: Map<String, String> = System.getenv()): NatsConfig = NatsConfig(
             jobsStreamName = env["NATS_STREAM_NAME"] ?: env["NATS_JOBS_STREAM"] ?: DEFAULT_JOBS_STREAM,
@@ -95,6 +118,7 @@ data class NatsConfig(
                 "NATS_EXHAUSTED_SWEEP_SECONDS",
                 DEFAULT_EXHAUSTED_SWEEP_SECONDS,
             ).seconds,
+            consumerIdleTtl = parseEnvLong(env, "NATS_CONSUMER_IDLE_TTL_DAYS", DEFAULT_CONSUMER_IDLE_TTL_DAYS).days,
         )
 
         private fun parseEnvInt(env: Map<String, String>, key: String, default: Int): Int = env[key]?.let { raw ->

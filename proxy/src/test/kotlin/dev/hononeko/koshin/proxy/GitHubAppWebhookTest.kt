@@ -3,6 +3,7 @@ package dev.hononeko.koshin.proxy
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.model.RepoRef
+import dev.hononeko.koshin.core.model.RepoTarget
 import dev.hononeko.koshin.core.model.TriggerReason
 import dev.hononeko.koshin.core.ports.InstallationPolicyPort
 import dev.hononeko.koshin.core.ports.JobQueuePublisher
@@ -264,7 +265,9 @@ class GitHubAppWebhookTest {
             proxyModule(
                 config = config.copy(internalTriggerToken = "trigger"),
                 publisher = publisher,
-                gitHubApp = ProxyGitHubApp(allowedRepositories = { repos -> repos.filter { it.repository != "x/b" } }),
+                gitHubApp = ProxyGitHubApp(
+                    resolveTargets = { targets -> targets.filter { it.repo.repository != "x/b" } },
+                ),
             )
         }
 
@@ -279,6 +282,72 @@ class GitHubAppWebhookTest {
     }
 
     @Test
+    fun `jobs run as the App are queued in the installation that sent the webhook`() = testApplication {
+        val publisher = RecordingPublisher()
+        application {
+            proxyModule(config = config, publisher = publisher, gitHubApp = ProxyGitHubApp(usesInstallations = true))
+        }
+
+        val push = """
+            {"ref":"refs/heads/main","after":"abc","installation":{"id":42},
+             "repository":{"full_name":"org/a","default_branch":"main","owner":{"id":1,"login":"org"}},
+             "sender":{"login":"dev","type":"User"}}
+        """.trimIndent()
+        client.webhook("push", push)
+        client.webhook(
+            "installation",
+            """{"action":"created","installation":{"id":43},"repositories":[{"full_name":"org/b"}]}""",
+        )
+
+        assertEquals(listOf(42L, 43L), publisher.published.map { it.installationId })
+    }
+
+    @Test
+    fun `without the App, a webhook's installation is ignored`() = testApplication {
+        val publisher = RecordingPublisher()
+        application { proxyModule(config = config, publisher = publisher) }
+
+        val push = """
+            {"ref":"refs/heads/main","after":"abc","installation":{"id":42},
+             "repository":{"full_name":"org/a","default_branch":"main"},"sender":{"login":"dev","type":"User"}}
+        """.trimIndent()
+        client.webhook("push", push)
+
+        assertEquals(listOf<Long?>(null), publisher.published.map { it.installationId })
+    }
+
+    @Test
+    fun `a trigger queues each repository in the installation the App resolves, or discovery found`() =
+        testApplication {
+            val publisher = RecordingPublisher()
+            val discovered = discovery(RepoTarget(RepoRef(Platform.GITHUB, "x/known"), 7))
+            application {
+                proxyModule(
+                    config = config.copy(internalTriggerToken = "trigger"),
+                    publisher = publisher,
+                    discoveryPort = discovered,
+                    gitHubApp = ProxyGitHubApp(
+                        usesInstallations = true,
+                        resolveTargets = { targets ->
+                            targets.map { if (it.installationId == null) it.copy(installationId = 9) else it }
+                        },
+                    ),
+                )
+            }
+
+            client.post("/api/v1/trigger") {
+                header("Authorization", "Bearer trigger")
+                contentType(ContentType.Application.Json)
+                setBody("""{"repositories":[{"repository":"x/known"},{"repository":"x/new"}],"discover":true}""")
+            }
+
+            assertEquals(
+                mapOf("x/known" to 7L, "x/new" to 9L),
+                publisher.published.associate { it.repo.repository to it.installationId },
+            )
+        }
+
+    @Test
     fun `the bot login is looked up again until GitHub answers`() = runTest {
         var calls = 0
         val login = AppBotLogin(fetch = { if (++calls < 3) throw IOException("GitHub down") else "koshin[bot]" })
@@ -290,18 +359,20 @@ class GitHubAppWebhookTest {
         assertEquals(3, calls)
     }
 
-    private fun discovery(vararg repos: RepoRef) = object : RepositoryDiscoveryPort {
-        override suspend fun discover(): List<RepoRef> = repos.toList()
+    private fun discovery(vararg targets: RepoTarget) = object : RepositoryDiscoveryPort {
+        override suspend fun discover(): List<RepoTarget> = targets.toList()
     }
 
     @Test
-    fun `discovery combines its sources`() = runTest {
-        val app = discovery(RepoRef(Platform.GITHUB, "org/a"), RepoRef(Platform.GITHUB, "org/b"))
-        val file = discovery(RepoRef(Platform.GITHUB, "org/a"), RepoRef(Platform.GITLAB, "g/p"))
+    fun `discovery combines its sources, a repository's installation winning`() = runTest {
+        fun target(platform: Platform, repo: String, installationId: Long? = null) =
+            RepoTarget(RepoRef(platform, repo), installationId)
+        val file = discovery(target(Platform.GITHUB, "org/a"), target(Platform.GITLAB, "g/p"))
+        val app = discovery(target(Platform.GITHUB, "org/a", 1), target(Platform.GITHUB, "org/b", 1))
 
         assertEquals(
-            listOf("org/a", "org/b", "g/p"),
-            CompositeRepositoryDiscovery.of(listOf(app, file))!!.discover().map { it.repository },
+            listOf("github:org/a (installation 1)", "gitlab:g/p", "github:org/b (installation 1)"),
+            CompositeRepositoryDiscovery.of(listOf(file, app))!!.discover().map { it.toString() },
         )
         assertSame(app, CompositeRepositoryDiscovery.of(listOf(app)))
         assertNull(CompositeRepositoryDiscovery.of(emptyList()))

@@ -1,5 +1,6 @@
 package dev.hononeko.koshin.proxy
 
+import dev.hononeko.koshin.adapters.valkey.PlatformThrottleConfig
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.ports.BurstWorkerPort
@@ -29,8 +30,12 @@ data class DispatcherConfig(
     val podTemplateName: String = DEFAULT_POD_TEMPLATE_NAME,
     /** `POD_NAMESPACE`; the ServiceAccount's namespace when unset. */
     val namespace: String? = null,
-    val maxWorkers: Int = DEFAULT_MAX_RUNS_PER_PLATFORM,
-    val maxRunsPerPlatform: Int = DEFAULT_MAX_RUNS_PER_PLATFORM,
+    /** `WORKER_MAX_REPLICAS`: more workers than global run slots would only wait for one. */
+    val maxWorkers: Int = PlatformThrottleConfig.DEFAULT_MAX_RUNS_GLOBAL,
+    /** `MAX_CONCURRENT_RUNS_PER_CREDENTIAL` (KSH-24). */
+    val maxRunsPerCredential: Int = PlatformThrottleConfig.DEFAULT_MAX_RUNS_PER_CREDENTIAL,
+    /** `MAX_CONCURRENT_RUNS_GLOBAL` (KSH-24). */
+    val maxRunsGlobal: Int = PlatformThrottleConfig.DEFAULT_MAX_RUNS_GLOBAL,
     val minWarmWorkers: Int = 0,
     /** Between reconciliations when nothing is published; also how often the leader renews its lease. */
     val interval: Duration = DEFAULT_INTERVAL,
@@ -41,7 +46,10 @@ data class DispatcherConfig(
         require(podTemplateName.isNotBlank()) { "WORKER_POD_TEMPLATE_NAME cannot be blank" }
         require(namespace == null || namespace.isNotBlank()) { "POD_NAMESPACE cannot be blank" }
         require(maxWorkers >= 1) { "WORKER_MAX_REPLICAS must be at least 1: $maxWorkers" }
-        require(maxRunsPerPlatform >= 1) { "MAX_CONCURRENT_RUNS_PER_PLATFORM must be at least 1: $maxRunsPerPlatform" }
+        require(maxRunsPerCredential >= 1) {
+            "MAX_CONCURRENT_RUNS_PER_CREDENTIAL must be at least 1: $maxRunsPerCredential"
+        }
+        require(maxRunsGlobal >= 1) { "MAX_CONCURRENT_RUNS_GLOBAL must be at least 1: $maxRunsGlobal" }
         require(minWarmWorkers in 0..maxWorkers) { "MIN_WARM_WORKERS must be in 0..$maxWorkers: $minWarmWorkers" }
         require(interval.isPositive() && interval.isFinite()) { "interval must be positive: $interval" }
         require(jobActiveDeadline.inWholeSeconds >= 1) { "jobActiveDeadline must be at least 1s: $jobActiveDeadline" }
@@ -52,11 +60,11 @@ data class DispatcherConfig(
     val leaseTtl: Duration
         get() = interval * LEASE_RENEWALS
 
-    fun dispatch(platforms: Set<Platform>) = DispatchConfig(platforms, maxWorkers, maxRunsPerPlatform, minWarmWorkers)
+    fun dispatch(platforms: Set<Platform>) =
+        DispatchConfig(platforms, maxWorkers, maxRunsPerCredential, minWarmWorkers, maxRunsGlobal)
 
     companion object {
         const val DEFAULT_POD_TEMPLATE_NAME = "koshin-worker"
-        const val DEFAULT_MAX_RUNS_PER_PLATFORM = 3
         private const val LEASE_RENEWALS = 3
         val DEFAULT_INTERVAL: Duration = 5.seconds
         val DEFAULT_JOB_ACTIVE_DEADLINE: Duration = 6.hours

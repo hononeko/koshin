@@ -1,17 +1,24 @@
 package dev.hononeko.koshin.core.ports
 
-import dev.hononeko.koshin.core.model.Platform
+import dev.hononeko.koshin.core.model.CredentialScope
 import kotlin.time.Duration
 
+/**
+ * Run slots and rate-limit cooldowns per credential scope (KSH-24). A run slot is two leases taken together: one of
+ * the global cap on runs, and one of its scope's cap.
+ */
 interface PlatformThrottlePort {
-    suspend fun tryAcquireRunSlot(platform: Platform, token: String, ttl: Duration): Boolean
-    suspend fun extendRunSlot(platform: Platform, token: String, ttl: Duration): Boolean
-    suspend fun releaseRunSlot(platform: Platform, token: String)
+    /** Leases a global slot and one of [scope]'s, both or neither. */
+    suspend fun tryAcquireRunSlot(scope: CredentialScope, token: String, ttl: Duration): Boolean
 
-    /** Run slots currently leased, by running jobs and by workers waiting on a fetch. */
-    suspend fun activeRunSlots(platform: Platform): Int
+    /** Extends both leases; false if either is gone. */
+    suspend fun extendRunSlot(scope: CredentialScope, token: String, ttl: Duration): Boolean
+    suspend fun releaseRunSlot(scope: CredentialScope, token: String)
 
-    suspend fun cooldownRemaining(platform: Platform): Duration?
-    suspend fun registerRateLimit(platform: Platform, retryAfter: Duration?): Duration
-    suspend fun resetBackoff(platform: Platform)
+    /** [scope]'s run slots currently leased, by running jobs and by workers waiting on a fetch. */
+    suspend fun activeRunSlots(scope: CredentialScope): Int
+
+    suspend fun cooldownRemaining(scope: CredentialScope): Duration?
+    suspend fun registerRateLimit(scope: CredentialScope, retryAfter: Duration?): Duration
+    suspend fun resetBackoff(scope: CredentialScope)
 }

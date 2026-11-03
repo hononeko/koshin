@@ -15,8 +15,12 @@ data class WebhookAccount(val id: Long, val login: String) {
 }
 
 sealed interface WebhookDecision {
-    /** [account] is the GitHub repository owner, checked against `GITHUB_APP_ALLOWED_ACCOUNTS`. */
-    data class Enqueue(val repository: String, val account: WebhookAccount? = null) : WebhookDecision
+    /**
+     * [account] is the GitHub repository owner, checked against `GITHUB_APP_ALLOWED_ACCOUNTS`; [installationId] the
+     * GitHub App installation that sent the webhook, whose scope the job is queued in (KSH-24).
+     */
+    data class Enqueue(val repository: String, val account: WebhookAccount? = null, val installationId: Long? = null) :
+        WebhookDecision
 
     /**
      * The GitHub App was installed on these repositories: run each once, as a scheduled run. [newInstallation] when it
@@ -73,7 +77,11 @@ class WebhookEventFilter(
                 "issues" -> evaluateGitHubIssues(root, fullName)
                 else -> WebhookDecision.Ignore("unhandled GitHub event '$eventType'")
             }
-            if (decision is WebhookDecision.Enqueue) decision.copy(account = repoObj.account("owner")) else decision
+            if (decision is WebhookDecision.Enqueue) {
+                decision.copy(account = repoObj.account("owner"), installationId = root.installationId())
+            } else {
+                decision
+            }
         }
     }
 
@@ -84,12 +92,16 @@ class WebhookEventFilter(
         return id?.let { WebhookAccount(it, obj.stringField("login") ?: obj.stringField("slug").orEmpty()) }
     }
 
+    /** The App installation a webhook was sent for: none without a GitHub App, or a non-positive ID. */
+    private fun JsonObject.installationId(): Long? =
+        (this["installation"] as? JsonObject)?.get("id")?.jsonPrimitive?.longOrNull?.takeIf { it > 0 }
+
     /** `installation` (created) and `installation_repositories` (added) list the repositories the App now covers. */
     private fun evaluateInstallation(eventType: String, rawPayload: String): WebhookDecision {
         val root = parseJsonObject(rawPayload)
             ?: return WebhookDecision.Malformed("invalid JSON payload")
         val action = root.stringField("action")?.lowercase()
-        val installationId = (root["installation"] as? JsonObject)?.get("id")?.jsonPrimitive?.longOrNull
+        val installationId = root.installationId()
         val added = when {
             eventType == "installation" && action == "created" -> root["repositories"]
             eventType == "installation_repositories" && action == "added" -> root["repositories_added"]

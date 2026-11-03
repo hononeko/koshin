@@ -250,8 +250,9 @@ class GitHubAppTest {
 
             val repos = app().discovery().discover()
 
-            assertEquals(listOf("org/a", "org/b", "user/c"), repos.map { it.repository })
-            assertTrue(repos.all { it.platform == Platform.GITHUB })
+            assertEquals(listOf("org/a", "org/b", "user/c"), repos.map { it.repo.repository })
+            assertEquals(listOf(1L, 1L, 3L), repos.map { it.installationId }, "each with its installation")
+            assertTrue(repos.all { it.repo.platform == Platform.GITHUB })
             assertTrue(requests.none { it.startsWith("POST /app/installations/2/") })
         }
 
@@ -267,7 +268,7 @@ class GitHubAppTest {
             }
         }
 
-        assertEquals(listOf("org/b"), app().discovery().discover().map { it.repository })
+        assertEquals(listOf("org/b"), app().discovery().discover().map { it.repo.repository })
     }
 
     @Test

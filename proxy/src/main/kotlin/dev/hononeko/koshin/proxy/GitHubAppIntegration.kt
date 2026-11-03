@@ -1,6 +1,6 @@
 package dev.hononeko.koshin.proxy
 
-import dev.hononeko.koshin.core.model.RepoRef
+import dev.hononeko.koshin.core.model.RepoTarget
 import dev.hononeko.koshin.core.ports.RepositoryDiscoveryPort
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -45,9 +45,16 @@ class AppBotLogin(
     }
 }
 
-/** Repositories from every source, e.g. the GitHub App's installations and the static list (also GitLab's). */
+/**
+ * Repositories from every source, e.g. the GitHub App's installations and the static list (also GitLab's), once each:
+ * a source that knows a repository's installation wins.
+ */
 class CompositeRepositoryDiscovery(private val sources: List<RepositoryDiscoveryPort>) : RepositoryDiscoveryPort {
-    override suspend fun discover(): List<RepoRef> = sources.flatMap { it.discover() }.distinct()
+    override suspend fun discover(): List<RepoTarget> {
+        val targets = sources.flatMap { it.discover() }
+        val withInstallation = targets.filter { it.installationId != null }.associateBy { it.repo }
+        return targets.map { withInstallation[it.repo] ?: it }.distinctBy { it.repo }
+    }
 
     companion object {
         fun of(sources: List<RepositoryDiscoveryPort>): RepositoryDiscoveryPort? = when (sources.size) {

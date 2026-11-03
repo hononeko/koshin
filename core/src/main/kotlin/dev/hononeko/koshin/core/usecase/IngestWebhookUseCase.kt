@@ -75,6 +75,8 @@ class IngestWebhookUseCase(
         repository: String,
         deliveryId: String? = null,
         triggerReason: TriggerReason = TriggerReason.WEBHOOK,
+        /** The GitHub App installation the job runs as, routing it to that installation's queue (KSH-24). */
+        installationId: Long? = null,
     ): IngestResult {
         val repo = RepoRef(platform, repository.trim())
 
@@ -89,6 +91,7 @@ class IngestWebhookUseCase(
             deliveryId = resolvedDeliveryId,
             triggerReason = triggerReason,
             rateLimitAttempt = 0,
+            installationId = installationId,
         )
         val decision = coalesce(repo)
         if (decision == EnqueueDecision.ALREADY_QUEUED || decision == EnqueueDecision.MARKED_DIRTY) {

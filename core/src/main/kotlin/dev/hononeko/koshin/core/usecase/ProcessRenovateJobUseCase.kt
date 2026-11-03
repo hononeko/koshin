@@ -1,5 +1,6 @@
 package dev.hononeko.koshin.core.usecase
 
+import dev.hononeko.koshin.core.model.CredentialScope
 import dev.hononeko.koshin.core.model.JobExecutionResult
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RenovateJobEvent
@@ -13,6 +14,8 @@ import dev.hononeko.koshin.core.ports.JobQueueConsumer
 import dev.hononeko.koshin.core.ports.JobQueuePublisher
 import dev.hononeko.koshin.core.ports.PlatformCredentialsPort
 import dev.hononeko.koshin.core.ports.PlatformThrottlePort
+import dev.hononeko.koshin.core.ports.QueueDepth
+import dev.hononeko.koshin.core.ports.QueueDepthPort
 import dev.hononeko.koshin.core.ports.ReleaseResult
 import dev.hononeko.koshin.core.ports.RepoCachePort
 import dev.hononeko.koshin.core.ports.RepoCoordinationPort
@@ -31,8 +34,16 @@ import java.util.UUID
 import kotlin.time.Duration
 import kotlin.time.TimeSource
 
+/**
+ * Runs one queued job (`processNext`). Jobs are queued per credential scope (KSH-24): it goes round-robin over the
+ * scopes with queued jobs, so a tenant with hundreds of them can't starve the others, and skips a scope in a
+ * rate-limit cooldown or without a free run slot before fetching, so its jobs wait in the queue without spending
+ * delivery attempts.
+ */
+@Suppress("LongParameterList") // The use case's ports; the last four have defaults
 class ProcessRenovateJobUseCase(
     private val queueConsumer: JobQueueConsumer,
+    private val queueDepth: QueueDepthPort,
     private val queuePublisher: JobQueuePublisher,
     private val coordinationPort: RepoCoordinationPort,
     private val throttlePort: PlatformThrottlePort,
@@ -45,50 +56,77 @@ class ProcessRenovateJobUseCase(
     private val timeSource: TimeSource = TimeSource.Monotonic,
     private val jobContext: JobContextPort = JobContextPort.None,
 ) {
+    /** The scope served last: the next round starts after it. */
+    @Volatile
+    private var lastServed: String? = null
 
+    /** Runs one job of [platforms] if one can run now; false if none could. */
     suspend fun processNext(platforms: Collection<Platform> = Platform.entries): Boolean {
-        for (platform in platforms) {
-            val handled = tryProcessPlatform(platform)
-            if (handled) return true
+        val queued = queueDepth.depths(platforms).filterValues { !it.isEmpty }
+        for (scope in roundRobin(queued.keys)) {
+            if (tryProcessScope(scope, queued.getValue(scope))) {
+                lastServed = scope.toString()
+                return true
+            }
         }
         return false
     }
 
-    private suspend fun tryProcessPlatform(platform: Platform): Boolean {
-        val cooldown = throttlePort.cooldownRemaining(platform)
-        val inCooldown = cooldown != null && cooldown > Duration.ZERO
-        val lockToken = uuidGenerator()
+    /** [scopes] in a stable order, starting after the one served last. */
+    private fun roundRobin(scopes: Collection<CredentialScope>): List<CredentialScope> {
+        val sorted = scopes.sortedBy { it.toString() }
+        val last = lastServed ?: return sorted
+        val (after, upToLast) = sorted.partition { it.toString() > last }
+        return after + upToLast
+    }
 
-        if (inCooldown || !throttlePort.tryAcquireRunSlot(platform, lockToken, config.lockTtl)) {
+    private suspend fun tryProcessScope(scope: CredentialScope, depth: QueueDepth): Boolean {
+        val lockToken = uuidGenerator()
+        if (!isRunnable(scope, depth) || !throttlePort.tryAcquireRunSlot(scope, lockToken, config.lockTtl)) {
             return false
         }
 
         val delivery = try {
-            queueConsumer.fetchNext(platform, config.fetchTimeout)
+            queueConsumer.fetchNext(scope, config.fetchTimeout)
         } catch (e: CancellationException) {
             withContext(NonCancellable) {
-                throttlePort.releaseRunSlot(platform, lockToken)
+                throttlePort.releaseRunSlot(scope, lockToken)
             }
             throw e
         } catch (@Suppress("TooGenericExceptionCaught") e: Exception) {
-            throttlePort.releaseRunSlot(platform, lockToken)
+            throttlePort.releaseRunSlot(scope, lockToken)
             throw e
         }
 
         return if (delivery != null) {
-            processDelivery(delivery, lockToken)
+            processDelivery(delivery, lockToken, scope)
             true
         } else {
-            throttlePort.releaseRunSlot(platform, lockToken)
+            throttlePort.releaseRunSlot(scope, lockToken)
             false
         }
     }
 
-    suspend fun processDelivery(delivery: JobDelivery, lockToken: String = uuidGenerator()) {
-        jobContext.within(delivery.event, delivery.deliveryAttempt) { process(delivery, lockToken) }
+    /**
+     * Not cooling down, and with a job to fetch: one never delivered, or a delivery more than the scope's run slots
+     * hold (one NAKed for a later retry), rather than only jobs already running.
+     */
+    private suspend fun isRunnable(scope: CredentialScope, depth: QueueDepth): Boolean {
+        val cooldown = throttlePort.cooldownRemaining(scope)
+        if (cooldown != null && cooldown > Duration.ZERO) return false
+        return depth.pending > 0 || throttlePort.activeRunSlots(scope) < depth.ackPending
     }
 
-    private suspend fun process(delivery: JobDelivery, lockToken: String) {
+    /** Runs [delivery], holding run slot [lockToken] of [scope], which it releases. */
+    suspend fun processDelivery(
+        delivery: JobDelivery,
+        lockToken: String = uuidGenerator(),
+        scope: CredentialScope = delivery.event.scope,
+    ) {
+        jobContext.within(delivery.event, delivery.deliveryAttempt) { process(delivery, lockToken, scope) }
+    }
+
+    private suspend fun process(delivery: JobDelivery, lockToken: String, scope: CredentialScope) {
         val event = delivery.event
         val repo = event.repo
 
@@ -103,27 +141,27 @@ class ProcessRenovateJobUseCase(
             withContext(NonCancellable) {
                 runCatching { coordinationPort.releaseLock(repo, lockToken, config.queuedTtl) }
                 runCatching { delivery.nack(Duration.ZERO) }
-                runCatching { throttlePort.releaseRunSlot(repo.platform, lockToken) }
+                runCatching { throttlePort.releaseRunSlot(scope, lockToken) }
             }
             throw e
         } catch (@Suppress("TooGenericExceptionCaught", "SwallowedException") e: Exception) {
             try {
                 delivery.nack(computeBackoffDelay(delivery.deliveryAttempt))
             } finally {
-                throttlePort.releaseRunSlot(repo.platform, lockToken)
+                throttlePort.releaseRunSlot(scope, lockToken)
             }
             return
         }
 
         if (acquireResult == AcquireResult.COALESCED) {
-            handleCoalesced(delivery, repo, lockToken)
+            handleCoalesced(delivery, scope, lockToken)
             return
         }
 
-        executeAcquiredJob(delivery, lockToken)
+        executeAcquiredJob(delivery, lockToken, scope)
     }
 
-    private suspend fun handleCoalesced(delivery: JobDelivery, repo: RepoRef, lockToken: String) {
+    private suspend fun handleCoalesced(delivery: JobDelivery, scope: CredentialScope, lockToken: String) {
         try {
             if (delivery.deliveryAttempt <= 1) {
                 delivery.ack()
@@ -132,12 +170,12 @@ class ProcessRenovateJobUseCase(
             }
         } finally {
             withContext(NonCancellable) {
-                throttlePort.releaseRunSlot(repo.platform, lockToken)
+                throttlePort.releaseRunSlot(scope, lockToken)
             }
         }
     }
 
-    private suspend fun executeAcquiredJob(delivery: JobDelivery, lockToken: String) {
+    private suspend fun executeAcquiredJob(delivery: JobDelivery, lockToken: String, scope: CredentialScope) {
         val event = delivery.event
         val repo = event.repo
         var heartbeatJob: Job? = null
@@ -146,13 +184,13 @@ class ProcessRenovateJobUseCase(
             coroutineScope {
                 val executionScope = this
                 val hb = launch {
-                    runHeartbeatLoop(delivery, repo, lockToken) {
+                    runHeartbeatLoop(delivery, scope, lockToken) {
                         executionScope.cancel(LostLockException(repo))
                     }
                 }
                 heartbeatJob = hb
 
-                runExecution(delivery, lockToken, hb)
+                runExecution(delivery, lockToken, scope, hb)
             }
         } catch (@Suppress("SwallowedException") e: LostLockException) {
             withContext(NonCancellable) {
@@ -174,7 +212,7 @@ class ProcessRenovateJobUseCase(
             withContext(NonCancellable) {
                 heartbeatJob?.cancelAndJoin()
                 try {
-                    throttlePort.releaseRunSlot(repo.platform, lockToken)
+                    throttlePort.releaseRunSlot(scope, lockToken)
                 } finally {
                     runCatching { workspaceCleaner.cleanup(repo) }
                 }
@@ -182,7 +220,12 @@ class ProcessRenovateJobUseCase(
         }
     }
 
-    private suspend fun runExecution(delivery: JobDelivery, lockToken: String, heartbeatJob: Job) {
+    private suspend fun runExecution(
+        delivery: JobDelivery,
+        lockToken: String,
+        scope: CredentialScope,
+        heartbeatJob: Job,
+    ) {
         val event = delivery.event
         val repo = event.repo
 
@@ -202,11 +245,11 @@ class ProcessRenovateJobUseCase(
             is JobExecutionResult.Failed,
             is JobExecutionResult.TimedOut,
             -> {
-                handleTerminalResult(delivery, lockToken, result, heartbeatJob)
+                handleTerminalResult(delivery, lockToken, scope, result, heartbeatJob)
             }
 
             is JobExecutionResult.RateLimited -> {
-                handleRateLimited(delivery, lockToken, result, heartbeatJob)
+                handleRateLimited(delivery, lockToken, scope, result, heartbeatJob)
             }
         }
     }
@@ -235,7 +278,7 @@ class ProcessRenovateJobUseCase(
 
     private suspend fun runHeartbeatLoop(
         delivery: JobDelivery,
-        repo: RepoRef,
+        scope: CredentialScope,
         lockToken: String,
         onLostLock: () -> Unit,
     ) {
@@ -244,7 +287,7 @@ class ProcessRenovateJobUseCase(
 
         while (true) {
             delay(config.heartbeatInterval)
-            when (performHeartbeatStep(delivery, repo, lockToken)) {
+            when (performHeartbeatStep(delivery, scope, lockToken)) {
                 HeartbeatStepResult.SUCCESS -> {
                     lastSuccessfulRenewal = timeSource.markNow()
                 }
@@ -266,9 +309,10 @@ class ProcessRenovateJobUseCase(
 
     private suspend fun performHeartbeatStep(
         delivery: JobDelivery,
-        repo: RepoRef,
+        scope: CredentialScope,
         lockToken: String,
     ): HeartbeatStepResult {
+        val repo = delivery.event.repo
         try {
             delivery.heartbeat()
         } catch (e: CancellationException) {
@@ -282,7 +326,7 @@ class ProcessRenovateJobUseCase(
             if (!lockExtended) {
                 HeartbeatStepResult.LOST
             } else {
-                val slotExtended = throttlePort.extendRunSlot(repo.platform, lockToken, config.lockTtl)
+                val slotExtended = throttlePort.extendRunSlot(scope, lockToken, config.lockTtl)
                 if (!slotExtended) HeartbeatStepResult.LOST else HeartbeatStepResult.SUCCESS
             }
         } catch (e: CancellationException) {
@@ -295,6 +339,7 @@ class ProcessRenovateJobUseCase(
     private suspend fun handleTerminalResult(
         delivery: JobDelivery,
         lockToken: String,
+        scope: CredentialScope,
         result: JobExecutionResult,
         heartbeatJob: Job,
     ) {
@@ -311,16 +356,16 @@ class ProcessRenovateJobUseCase(
 
         when (release) {
             ReleaseResult.DIRTY -> {
-                publishDirtyFollowUp(repo)
+                publishDirtyFollowUp(delivery.event)
                 if (result is JobExecutionResult.Success) {
-                    throttlePort.resetBackoff(repo.platform)
+                    throttlePort.resetBackoff(scope)
                 }
                 delivery.ack()
             }
 
             ReleaseResult.CLEAN -> {
                 if (result is JobExecutionResult.Success) {
-                    throttlePort.resetBackoff(repo.platform)
+                    throttlePort.resetBackoff(scope)
                 }
                 delivery.ack()
             }
@@ -338,13 +383,15 @@ class ProcessRenovateJobUseCase(
         delivery.ack()
     }
 
-    private suspend fun publishDirtyFollowUp(repo: RepoRef) {
+    /** The follow-up runs as the same installation, so it's queued in the same scope. */
+    private suspend fun publishDirtyFollowUp(event: RenovateJobEvent) {
         queuePublisher.publish(
             RenovateJobEvent(
-                repo = repo,
+                repo = event.repo,
                 deliveryId = uuidGenerator(),
                 triggerReason = TriggerReason.DIRTY_FOLLOWUP,
                 rateLimitAttempt = 0,
+                installationId = event.installationId,
             ),
         )
     }
@@ -352,6 +399,7 @@ class ProcessRenovateJobUseCase(
     private suspend fun handleRateLimited(
         delivery: JobDelivery,
         lockToken: String,
+        scope: CredentialScope,
         result: JobExecutionResult.RateLimited,
         heartbeatJob: Job,
     ) {
@@ -367,7 +415,7 @@ class ProcessRenovateJobUseCase(
             return
         }
 
-        throttlePort.registerRateLimit(repo.platform, result.retryAfter)
+        throttlePort.registerRateLimit(scope, result.retryAfter)
         if (requeue) {
             queuePublisher.publish(
                 RenovateJobEvent(
@@ -375,6 +423,7 @@ class ProcessRenovateJobUseCase(
                     deliveryId = uuidGenerator(),
                     triggerReason = TriggerReason.RATE_LIMIT_REQUEUE,
                     rateLimitAttempt = event.rateLimitAttempt + 1,
+                    installationId = event.installationId,
                 ),
             )
         } else {

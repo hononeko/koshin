@@ -111,10 +111,13 @@ koshin/
 @Serializable enum class Platform { GITHUB, GITLAB }
 @Serializable enum class TriggerReason { WEBHOOK, SCHEDULE, DIRTY_FOLLOWUP, RATE_LIMIT_REQUEUE }
 @Serializable data class RepoRef(val platform: Platform, val repository: String)
-sealed interface CredentialScope { // e.g. github:inst-<id>, github:pat, gitlab:pat (KSH-24)
+sealed interface CredentialScope { // github:inst-<id>, github:pat, gitlab:pat (KSH-24)
     val platform: Platform
-    val token: String              // subject/cache token: inst-<id> or pat
+    val token: String              // subject/consumer/cache token: inst-<id> or pat
+    data class Installation(val installationId: Long) : CredentialScope // GitHub App installation
+    data class Token(override val platform: Platform) : CredentialScope  // GITHUB_TOKEN / GITLAB_TOKEN
 }
+data class RepoTarget(val repo: RepoRef, val installationId: Long? = null) // discovery & triggers (KSH-24)
 @Serializable data class RenovateJobEvent(
     val repo: RepoRef,
     val deliveryId: String,          // webhook delivery ID, otherwise ALWAYS a fresh UUID
@@ -140,8 +143,7 @@ interface JobDelivery {
     suspend fun ack(); suspend fun nack(delay: Duration = Duration.ZERO); suspend fun heartbeat()
 }
 interface JobQueueConsumer {
-    suspend fun activeScopes(platforms: Collection<Platform>): List<CredentialScope>
-    suspend fun fetchNext(scope: CredentialScope, timeout: Duration): JobDelivery?
+    suspend fun fetchNext(scope: CredentialScope, timeout: Duration): JobDelivery? // scopes come from QueueDepthPort
 }
 
 enum class EnqueueDecision { ENQUEUE, ALREADY_QUEUED, MARKED_DIRTY } // KSH-30
@@ -171,7 +173,7 @@ interface RepoCachePort {
 }
 interface PlatformCredentialsPort { suspend fun credentialsFor(repo: RepoRef): PlatformCredentials }
 interface InstallationPolicyPort { suspend fun isAllowed(accountId: Long, login: String): Boolean }
-interface RepositoryDiscoveryPort { suspend fun discover(): List<RepoRef> }
+interface RepositoryDiscoveryPort { suspend fun discover(): List<RepoTarget> }
 interface CliExecutorPort { suspend fun execute(repo: RepoRef, creds: PlatformCredentials, timeout: Duration): JobExecutionResult }
 interface WorkspaceCleanerPort { suspend fun cleanup(repo: RepoRef); suspend fun purgeAll() }
 
@@ -179,7 +181,7 @@ interface WorkspaceCleanerPort { suspend fun cleanup(repo: RepoRef); suspend fun
 interface WarmWorkerPort { suspend fun renew(workerId: String, ttl: Duration); suspend fun remove(workerId: String); suspend fun liveCount(): Int }
 interface LeaderLeasePort { suspend fun acquireOrRenew(holderId: String, ttl: Duration): Boolean; suspend fun release(holderId: String) }
 data class QueueDepth(val pending: Long, val ackPending: Long)
-interface QueueDepthPort { suspend fun depth(scope: CredentialScope): QueueDepth }
+interface QueueDepthPort { suspend fun depths(platforms: Collection<Platform>): Map<CredentialScope, QueueDepth> } // dispatcher + worker
 interface BurstWorkerPort { suspend fun active(): Int; suspend fun start(count: Int) }
 ```
 
@@ -289,18 +291,19 @@ return 1
 | SIGTERM | kill CLI, `releaseLock` (keep dirty, re-arm `queued`) | not persisted | NAK(0) |
 
 5. Always: cancel the heartbeat, `WorkspaceCleanerPort.cleanup(repo)` (deleting both `repos/` and `cache/`), `releaseRunSlot`.
-6. **`MaxDeliver` exhaustion → DLQ (KSH-18, KSH-30):** `:proxy` (always on, so this works with `0` worker pods) creates the durable pull consumers and runs a forwarder subscribed to `$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.RENOVATE_JOBS.*` in **queue group `koshin-dlq-forwarders`**, so exactly one proxy replica handles each advisory.
+6. **`MaxDeliver` exhaustion → DLQ (KSH-18, KSH-30):** `:proxy` (always on, so this works with `0` worker pods) runs a forwarder subscribed to `$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.RENOVATE_JOBS.*` in **queue group `koshin-dlq-forwarders`**, so exactly one proxy replica handles each advisory.
    * The advisory carries only metadata, so the forwarder reads `stream_seq` from it.
    * WorkQueue streams only delete on ACK, so the exhausted message is still stored there. It reads the original message with `jsm.getMessage("RENOVATE_JOBS", stream_seq)`.
    * It republishes to `renovate.dlq.<platform>` (`Nats-Msg-Id = dlq:RENOVATE_JOBS:<stream_seq>`, so retries can't duplicate), calls `jsm.deleteMessage`, and clears the repo's `:queued` mark.
-   * **Sweep for missed advisories (KSH-18, KSH-24):** the advisory is core NATS, delivered at most once, so it's lost when no forwarder is subscribed (a rolling deployment) or the forwarder keeps failing. Every `NATS_EXHAUSTED_SWEEP_SECONDS` each proxy replica iterates all consumers on `RENOVATE_JOBS` (`jsm.getConsumers`) and scans each consumer's `filterSubject` the same way. WorkQueue streams delete ACKed messages, and running jobs and jobs waiting for redelivery are ACK-pending and hold the consumer's ack floor back, while exhausted ones aren't and don't. So a job still stored is exhausted if it's at or below the ack floor, or, when nothing is ACK-pending, at or below the last delivered sequence (an exhausted job at the end of the queue never gets a later ACK to move the floor). Candidates are moved after a few seconds and only if still stored, since a just-ACKed job can stay visible briefly in a cluster. DLQ entries carry `Koshin-Dlq-Source: advisory` or `sweep`, and the DLQ deduplicates them for a day, so a move that failed after publishing can't create a second entry. Empty consumers inactive past 7 days are garbage-collected so uninstalled tenants leave no stale state.
+   * **Sweep for missed advisories (KSH-18, KSH-24):** the advisory is core NATS, delivered at most once, so it's lost when no forwarder is subscribed (a rolling deployment) or the forwarder keeps failing. Every `NATS_EXHAUSTED_SWEEP_SECONDS` each proxy replica iterates all consumers on `RENOVATE_JOBS` (`jsm.getConsumers`) and scans each consumer's `filterSubject` the same way. WorkQueue streams delete ACKed messages, and running jobs and jobs waiting for redelivery are ACK-pending and hold the consumer's ack floor back, while exhausted ones aren't and don't. So a job still stored is exhausted if it's at or below the ack floor, or, when nothing is ACK-pending, at or below the last delivered sequence (an exhausted job at the end of the queue never gets a later ACK to move the floor). Candidates are moved after a few seconds and only if still stored, since a just-ACKed job can stay visible briefly in a cluster. DLQ entries carry `Koshin-Dlq-Source: advisory` or `sweep`, and the DLQ deduplicates them for a day, so a move that failed after publishing can't create a second entry. The same pass tidies the per-scope consumers (KSH-24): it moves jobs off the legacy per-platform subject, deletes consumers with no job, waiting fetch, delivery or ACK for `NATS_CONSUMER_IDLE_TTL_DAYS` (7) so uninstalled tenants leave no stale state, and then creates the consumer of any scope with stored jobs but none (a job published as its consumer was deleted).
 
 ## 7. Rate Limiting & Multi-Tenancy
 
 * **Prevention (two-tier run slots, KSH-24):** two Valkey ZSET semaphores with leases renewed by the heartbeat—a global concurrency cap (`MAX_CONCURRENT_RUNS_GLOBAL`, `koshin:{throttle:global}:slots`) plus a per-credential cap (`MAX_CONCURRENT_RUNS_PER_CREDENTIAL`, `koshin:{throttle:<scope>}:slots`, where `<scope>` is `github:inst-<id>`, `github:pat`, or `gitlab:pat`)—paired with Renovate `hostRules` (`maxRequestsPerSecond`, `concurrentRequestLimit`) injected per run. Per-tenant API budget ≈ per-credential run slots × requests/s per run.
 * **Server-side clock:** the ZSET lease scripts stay single-hash-tag and read `redis.call('TIME')` inside Lua to compute "now" and expiry, never a JVM timestamp passed as an ARGV, so pod clock skew can't corrupt leases.
 * **Detection:** the CLI executor parses Renovate JSON logs for rate-limit errors (configurable pattern), since Renovate exits 0 when it aborts a repository on a rate limit: `Rate limit exceeded - aborting` on GitHub, a `Host error` with `hostType` = the platform and status 429 on GitLab. `Retry-After` / `x-ratelimit-reset` come from the logged response headers when present (secondary limits, GitLab 429s). Rate-limit signals for koshin's own HTTP calls: **429**, **403 + `x-ratelimit-remaining: 0`**, and GitHub secondary-limit responses.
-* **Per-credential backoff, queue partitioning & dispatch (KSH-24, KSH-32):** rate limits set `koshin:{throttle:<scope>}:cooldown` lasting `Retry-After`/reset time if known, otherwise `min(base × 2^n, max) ± 20% jitter` (`n` in `:backoff_n` resets on a successful run for that scope), so one installation's 403/429 never pauses other installations. Jobs publish to `renovate.jobs.<platform>.<scopeToken>` (`inst-<id>` or `pat`) on `RENOVATE_JOBS` (`WorkQueue`), each backed by its own disjoint durable pull consumer `koshin-workers-<platform>-<scopeToken>`. Cooled-down scopes are skipped by both `:proxy`'s `Job` dispatcher (`0` worker demand, so a cooldown starts no idle pods) and `:worker`'s pull loop: workers round-robin across non-cooled-down scopes before calling `fetchNext`, so pending jobs for a cooled-down installation stay at `num_delivered = 0` (`MaxDeliver` untouched) and a tenant with hundreds of queued repos can't starve other tenants.
+* **Per-credential backoff, queue partitioning & dispatch (KSH-24, KSH-32):** rate limits set `koshin:{throttle:<scope>}:cooldown` lasting `Retry-After`/reset time if known, otherwise `min(base × 2^n, max) ± 20% jitter` (`n` in `:backoff_n` resets on a successful run for that scope), so one installation's 403/429 never pauses other installations. Jobs publish to `renovate.jobs.<platform>.<scopeToken>` (`inst-<id>` or `pat`) on `RENOVATE_JOBS` (`WorkQueue`), each backed by its own disjoint durable pull consumer `koshin-workers-<platform>-<scopeToken>`, which the publisher (`:proxy`, or `:worker` for follow-ups) ensures before publishing, re-checking each scope at most once a minute. A job's installation comes from the GitHub App webhook's `installation.id`, from `GitHubAppRepositoryDiscovery`, or, for an explicitly triggered repository, from a `/repos/{owner}/{repo}/installation` lookup cached per owner for an hour; `DIRTY_FOLLOWUP` and `RATE_LIMIT_REQUEUE` copy it. Without App auth on `:proxy` every GitHub job is `github:pat`. Workers list the scopes with queued jobs and their depths (`jsm.getConsumers`, one call per poll) and fetch with a short timeout only from scopes not cooling down that have an undelivered job or more deliveries than run slots (one NAKed for a retry). Cooled-down scopes are skipped by both `:proxy`'s `Job` dispatcher (`0` worker demand, so a cooldown starts no idle pods) and `:worker`'s pull loop: workers round-robin across non-cooled-down scopes before calling `fetchNext`, so pending jobs for a cooled-down installation stay at `num_delivered = 0` (`MaxDeliver` untouched) and a tenant with hundreds of queued repos can't starve other tenants.
+* **Upgrading from per-platform queues:** `:proxy` deletes the legacy `koshin-workers-<platform>` consumers and moves jobs stored on `renovate.jobs.<platform>` to their scope's subject (new `Nats-Msg-Id` `migrated:<stream>:<seq>`) at bootstrap and on every housekeeping pass, so jobs still published by pods of an earlier version during a rolling upgrade are moved too; a job an earlier worker is running may then run once more. `MAX_CONCURRENT_RUNS_PER_PLATFORM` is read as the per-credential cap.
 * **Requeue cap:** a rate-limited job is republished at most `MAX_RATE_LIMIT_REQUEUES` (default 5) times, tracked in `RenovateJobEvent.rateLimitAttempt`, then dead-lettered. Without the cap, a permanent failure that matches the rate-limit pattern would loop across cooldowns forever.
 * **koshin's own HTTP calls** (GitHub App tokens, discovery) use a shared Ktor client with `HttpRequestRetry` + `exponentialDelay()` and honor `Retry-After`.
 
@@ -355,14 +358,15 @@ Packaged as a Helm chart (`charts/koshin`, KSH-13), the primary install path: `p
 | `NATS_STREAM_REPLICAS` | Both | `1` | Stream / Object Store replicas (`3` in HA) |
 | `NATS_ACK_WAIT_SECONDS` | Both | `60` | Must be > `LOCK_TTL_SECONDS` |
 | `NATS_MAX_DELIVER` | Both | `5` | Redelivery cap before DLQ |
-| `NATS_EXHAUSTED_SWEEP_SECONDS` | Proxy | `300` | How often to move exhausted jobs whose MaxDeliver advisory was missed to the DLQ (and GC idle consumers); `0` turns it off |
+| `NATS_EXHAUSTED_SWEEP_SECONDS` | Proxy | `300` | How often to move exhausted jobs whose MaxDeliver advisory was missed to the DLQ and tidy the per-scope consumers; `0` turns it off |
+| `NATS_CONSUMER_IDLE_TTL_DAYS` | Proxy | `7` | Delete a credential scope's consumer once it's had no job for this long (KSH-24); `0` keeps them all |
 | `GITHUB_WEBHOOK_SECRET` | Proxy | — | HMAC secret for `X-Hub-Signature-256` (GitHub App webhook secret) |
 | `GITLAB_WEBHOOK_SECRET` | Proxy | — | Shared token for `X-Gitlab-Token` (constant-time compare) |
 | `INTERNAL_TRIGGER_TOKEN` | Proxy | — | Bearer token for `POST /api/v1/trigger` |
 | `WORKER_DISPATCHER_ENABLED` | Proxy | `false` | Dispatch burst worker `Job`s from the worker `PodTemplate` (KSH-32); `true` in Helm with `worker.autoscaling.enabled` and in Kustomize |
 | `WORKER_POD_TEMPLATE_NAME` | Proxy | `koshin-worker` | `v1/PodTemplate` the burst `Job`s embed (`<fullname>-worker` in Helm) |
 | `POD_NAMESPACE` | Proxy | the ServiceAccount's namespace | Namespace of the `PodTemplate` and `Job`s (downward API) |
-| `WORKER_MAX_REPLICAS` | Proxy | run slots × platforms | Cap on warm + burst workers (`worker.autoscaling.maxReplicas`) |
+| `WORKER_MAX_REPLICAS` | Proxy | `MAX_CONCURRENT_RUNS_GLOBAL` | Cap on warm + burst workers (`worker.autoscaling.maxReplicas`) |
 | `MIN_WARM_WORKERS` | Proxy | `0` | Warm workers assumed when their Valkey count can't be read (`worker.autoscaling.minReplicas`) |
 | `WORKER_DISPATCH_INTERVAL_SECONDS` | Proxy | `5` | Reconciliation interval without publishes; the leader lease lasts 3 × it |
 | `WORKER_JOB_ACTIVE_DEADLINE_SECONDS` | Proxy | `21600` | `activeDeadlineSeconds` of burst `Job`s; keep it above `WORKER_MAX_LIFETIME_SECONDS` |
@@ -390,7 +394,7 @@ Packaged as a Helm chart (`charts/koshin`, KSH-13), the primary install path: `p
 | `REPO_CACHE_TTL_DAYS` | Worker | — (forever) | Drops caches of repos without a successful run for this long |
 | `RENOVATE_CACHE_DIR` | Worker | `$RENOVATE_BASE_DIR/cache` | Renovate's cache dir; wiped after every run once `persist` completes |
 | `RENOVATE_REPOSITORY_CACHE_TYPE` / `RENOVATE_S3_ENDPOINT` / `RENOVATE_S3_PATH_STYLE` | Worker | — / — / `true` | Used when `REPO_CACHE_PROVIDER=s3` (`s3://<bucket>/<prefix>/`); the legacy `RENOVATE_X_S3_*` names are accepted |
-| `MAX_CONCURRENT_RUNS_GLOBAL` | Worker | `6` | Global run-slot cap across all credentials |
+| `MAX_CONCURRENT_RUNS_GLOBAL` | Both | `6` | Global run-slot cap across all credentials (the dispatcher caps its demand with it too) |
 | `MAX_CONCURRENT_RUNS_PER_CREDENTIAL` | Both | `2` | Per-credential (`github:inst-<id>`, `github:pat`, `gitlab:pat`) run-slot cap (`MAX_CONCURRENT_RUNS_PER_PLATFORM` accepted as legacy alias) |
 | `RENOVATE_MAX_REQUESTS_PER_SECOND` | Worker | — | Injected into Renovate `hostRules` |
 | `RENOVATE_CONCURRENT_REQUEST_LIMIT` | Worker | — | Injected into Renovate `hostRules` |
@@ -431,3 +435,4 @@ Packaged as a Helm chart (`charts/koshin`, KSH-13), the primary install path: `p
 * Pre-queue coalescing in `:proxy` (`queued` state, `enqueueOrCoalesce`, fail-open ingest) and NATS consumer bootstrap / DLQ housekeeping moved from workers to `:proxy` (KSH-30).
 * Drain-then-exit workers (`WORKER_IDLE_TIMEOUT_SECONDS`, `WORKER_MAX_LIFETIME_SECONDS`), warm-worker presence lease, and no Kubernetes API access for workers (`pod-deletion-cost`, its token, RBAC and `ValidatingAdmissionPolicy` removed) (KSH-31).
 * KEDA removed: `:proxy` dispatches burst `batch/v1` `Job`s from a chart-rendered `v1/PodTemplate`, leader-elected through Valkey, with `worker.autoscaling.minReplicas: 0` (scale to zero) or `1` (one warm `Deployment` pod) (KSH-32).
+* Credential scopes (KSH-24): `installationId` on jobs; global + per-credential run slots and per-credential cooldowns; per-scope subjects and consumers (created on publish, tidied by `:proxy`, legacy per-platform queue migrated); round-robin worker polling and per-scope dispatch demand.

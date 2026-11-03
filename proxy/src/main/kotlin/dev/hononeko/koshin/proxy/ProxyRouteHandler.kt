@@ -2,6 +2,7 @@ package dev.hononeko.koshin.proxy
 
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RepoRef
+import dev.hononeko.koshin.core.model.RepoTarget
 import dev.hononeko.koshin.core.model.TriggerReason
 import dev.hononeko.koshin.core.ports.EnqueueDecision
 import dev.hononeko.koshin.core.ports.RepositoryDiscoveryPort
@@ -83,10 +84,10 @@ internal class ProxyRouteHandler(
 
         val bodyBytes = call.receiveBoundedBytes(config.maxRequestBodyBytes) ?: return
         val rawBody = bodyBytes.toString(Charsets.UTF_8)
-        val targetRepos = resolveTriggerRepositories(call, rawBody)
-        if (targetRepos != null) {
+        val targets = resolveTriggerRepositories(call, rawBody)
+        if (targets != null) {
             // Accounts that may not use the GitHub App (KSH-17) get no runs, whoever asks
-            enqueueScheduledRepositories(call, gitHubApp.allowedRepositories(targetRepos))
+            enqueueScheduledRepositories(call, gitHubApp.resolveTargets(targets))
         }
     }
 
@@ -111,7 +112,8 @@ internal class ProxyRouteHandler(
 
             is WebhookDecision.Enqueue -> {
                 if (isAllowed(platform, decision.account)) {
-                    enqueueWebhookEvent(call, platform, decision.repository, deliveryId)
+                    val installationId = scoped(decision.installationId)
+                    enqueueWebhookEvent(call, platform, decision.repository, deliveryId, installationId)
                 } else {
                     respondDisallowed(call, decision.account)
                 }
@@ -129,7 +131,8 @@ internal class ProxyRouteHandler(
                         WebhookResponse(status = "ignored", enqueued = false, reason = "no repositories to run"),
                     )
                 } else {
-                    enqueueInstalledRepositories(call, decision.repositories, deliveryId)
+                    val installationId = scoped(decision.installationId)
+                    enqueueInstalledRepositories(call, decision.repositories, deliveryId, installationId)
                 }
             }
 
@@ -144,12 +147,16 @@ internal class ProxyRouteHandler(
         }
     }
 
+    /** The installation a webhook names, if jobs run as the App's installations; else the token's scope (KSH-24). */
+    private fun scoped(installationId: Long?): Long? = installationId?.takeIf { gitHubApp.usesInstallations }
+
     @Suppress("TooGenericExceptionCaught")
     private suspend fun enqueueWebhookEvent(
         call: ApplicationCall,
         platform: Platform,
         repository: String,
         deliveryId: String?,
+        installationId: Long?,
     ) {
         val validatedRepo = try {
             RepoRef(platform, repository.trim())
@@ -165,6 +172,7 @@ internal class ProxyRouteHandler(
                 repository = validatedRepo.repository,
                 deliveryId = deliveryId,
                 triggerReason = TriggerReason.WEBHOOK,
+                installationId = installationId,
             )
             val response = when (result.decision) {
                 EnqueueDecision.ENQUEUE -> WebhookResponse(
@@ -225,6 +233,7 @@ internal class ProxyRouteHandler(
         call: ApplicationCall,
         repositories: List<String>,
         deliveryId: String?,
+        installationId: Long?,
     ) {
         val repos = try {
             repositories.map { RepoRef(Platform.GITHUB, it.trim()) }
@@ -234,7 +243,13 @@ internal class ProxyRouteHandler(
         }
         try {
             val published = repos.count { repo ->
-                ingestUseCase.execute(repo.platform, repo.repository, deliveryId, TriggerReason.SCHEDULE).published
+                ingestUseCase.execute(
+                    platform = repo.platform,
+                    repository = repo.repository,
+                    deliveryId = deliveryId,
+                    triggerReason = TriggerReason.SCHEDULE,
+                    installationId = installationId,
+                ).published
             }
             logger.info("GitHub App installed on {} repositories; enqueued initial runs for {}", repos.size, published)
             call.respond(
@@ -249,13 +264,14 @@ internal class ProxyRouteHandler(
         }
     }
 
-    private suspend fun resolveTriggerRepositories(call: ApplicationCall, rawBody: String): List<RepoRef>? {
+    /** One target per repository, a discovered one (which knows its installation) over a requested one. */
+    private suspend fun resolveTriggerRepositories(call: ApplicationCall, rawBody: String): List<RepoTarget>? {
         val parsedRequest = parseAndValidateTriggerRequest(call, rawBody) ?: return null
-        return if (!parsedRequest.discover) {
-            parsedRequest.explicitRepos.distinct()
-        } else {
-            val discovered = discoverEnabledRepositories(call)
-            discovered?.let { (parsedRequest.explicitRepos + it).distinct() }
+        val discovered = if (parsedRequest.discover) discoverEnabledRepositories(call) else emptyList()
+        return discovered?.let { found ->
+            val known = found.associateBy { it.repo }
+            val explicit = parsedRequest.explicitRepos.map { repo -> known[repo] ?: RepoTarget(repo) }
+            (explicit + found).distinctBy { it.repo }
         }
     }
 
@@ -288,7 +304,7 @@ internal class ProxyRouteHandler(
     }
 
     @Suppress("TooGenericExceptionCaught")
-    private suspend fun discoverEnabledRepositories(call: ApplicationCall): List<RepoRef>? {
+    private suspend fun discoverEnabledRepositories(call: ApplicationCall): List<RepoTarget>? {
         val port = discoveryPort
         if (port == null) {
             logger.warn("Rejected /api/v1/trigger discover=true because repository discovery is not configured")
@@ -299,7 +315,7 @@ internal class ProxyRouteHandler(
             return null
         }
         return try {
-            port.discover().filter { config.isPlatformEnabled(it.platform) }
+            port.discover().filter { config.isPlatformEnabled(it.repo.platform) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -313,19 +329,20 @@ internal class ProxyRouteHandler(
     }
 
     @Suppress("TooGenericExceptionCaught")
-    private suspend fun enqueueScheduledRepositories(call: ApplicationCall, targetRepos: List<RepoRef>) {
+    private suspend fun enqueueScheduledRepositories(call: ApplicationCall, targets: List<RepoTarget>) {
         try {
-            val published = targetRepos.count { repoRef ->
+            val published = targets.count { target ->
                 ingestUseCase.execute(
-                    platform = repoRef.platform,
-                    repository = repoRef.repository,
+                    platform = target.repo.platform,
+                    repository = target.repo.repository,
                     deliveryId = null,
                     triggerReason = TriggerReason.SCHEDULE,
+                    installationId = scoped(target.installationId),
                 ).published
             }
             call.respond(
                 HttpStatusCode.Accepted,
-                TriggerResponse(status = "accepted", enqueued = published, coalesced = targetRepos.size - published),
+                TriggerResponse(status = "accepted", enqueued = published, coalesced = targets.size - published),
             )
         } catch (e: CancellationException) {
             throw e

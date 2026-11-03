@@ -1,6 +1,8 @@
 package dev.hononeko.koshin.e2e
 
+import dev.hononeko.koshin.core.model.CredentialScope
 import dev.hononeko.koshin.core.model.Platform
+import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.model.RepoRef
 import dev.hononeko.koshin.core.model.TriggerReason
 import dev.hononeko.koshin.core.ports.AcquireResult
@@ -56,6 +58,23 @@ class EndToEndIntegrationTest {
         assertEquals(2, deliveries.size, "1 webhook + 1 follow-up")
         assertTrue(deliveries.all { it.settlement == Settlement.Ack })
         assertEquals(1, deliveries.count { it.event.triggerReason == TriggerReason.DIRTY_FOLLOWUP })
+    }
+
+    @Test
+    fun `an installation with a backlog doesn't starve another installation's job`() {
+        fun job(repo: RepoRef, installationId: Long) =
+            RenovateJobEvent(repo, "delivery-$repo", TriggerReason.WEBHOOK, installationId = installationId)
+        val busy = (1..5).map { RepoRef(Platform.GITHUB, "busy/repo-$it") }
+        busy.forEach { cluster.publish(job(it, installationId = 1)) }
+        val quiet = RepoRef(Platform.GITHUB, "quiet/repo")
+        cluster.publish(job(quiet, installationId = 2))
+
+        val worker = cluster.startWorker("worker-1")
+        awaitUntil("every job to run") { worker.runs().count { it.state == CliRun.State.COMPLETED } == 6 }
+
+        val order = worker.runs().map { it.repo }
+        assertTrue(order.indexOf(quiet) <= 1, "the quiet installation's job runs in the first round: $order")
+        assertEquals((busy + quiet).toSet(), order.toSet())
     }
 
     @Test
@@ -142,7 +161,8 @@ class EndToEndIntegrationTest {
 
         assertTrue(proxy.push(repo).enqueued)
         cluster.consumer().use { consumer ->
-            runBlocking { checkNotNull(consumer.fetchNext(Platform.GITHUB, 5.seconds)).nack(Duration.ZERO) }
+            val scope = CredentialScope.Token(Platform.GITHUB)
+            runBlocking { checkNotNull(consumer.fetchNext(scope, 5.seconds)).nack(Duration.ZERO) }
         }
 
         val worker = cluster.startWorker("worker-1")

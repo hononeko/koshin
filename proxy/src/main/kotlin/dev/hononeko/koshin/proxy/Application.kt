@@ -5,7 +5,7 @@ import dev.hononeko.koshin.adapters.github.GitHubApp
 import dev.hononeko.koshin.adapters.github.GitHubAppConfig
 import dev.hononeko.koshin.adapters.nats.NatsConfig
 import dev.hononeko.koshin.adapters.valkey.ValkeyConfig
-import dev.hononeko.koshin.core.model.RepoRef
+import dev.hononeko.koshin.core.model.RepoTarget
 import dev.hononeko.koshin.core.ports.InstallationPolicyPort
 import dev.hononeko.koshin.core.ports.JobQueuePublisher
 import dev.hononeko.koshin.core.ports.RepoCoordinationPort
@@ -150,14 +150,17 @@ suspend fun ApplicationCall.receiveBoundedBytes(maxBytes: Int): ByteArray? {
 /**
  * What the proxy does as a GitHub App: ignore its bot's webhooks, forget a gone installation's tokens, and serve only
  * accounts the [policy] allows (KSH-17): [onDisallowedInstallation] applies `GITHUB_APP_DISALLOWED_ACTION` to a new
- * installation by another account, and [allowedRepositories] drops such accounts' repositories from triggers.
+ * installation by another account, and [resolveTargets] drops such accounts' repositories from triggers. With
+ * [usesInstallations], GitHub jobs run as the App's installations and are queued in their scopes (KSH-24):
+ * [resolveTargets] fills in the installation of a triggered repository.
  */
 class ProxyGitHubApp(
     val botLogins: () -> Collection<String> = { emptyList() },
     val onInstallationGone: (Long) -> Unit = {},
     val policy: InstallationPolicyPort? = null,
     val onDisallowedInstallation: suspend (installationId: Long, account: WebhookAccount) -> Unit = { _, _ -> },
-    val allowedRepositories: suspend (List<RepoRef>) -> List<RepoRef> = { it },
+    val resolveTargets: suspend (List<RepoTarget>) -> List<RepoTarget> = { it },
+    val usesInstallations: Boolean = false,
 )
 
 @Suppress("LongParameterList") // The server's wiring: every parameter but the first two has a default
@@ -246,13 +249,14 @@ fun main() {
         },
         gitHubApp = ProxyGitHubApp(
             botLogins = { listOfNotNull(botLogin?.get()) },
-            onInstallationGone = { gitHubApp?.tokens?.evict(it) },
+            onInstallationGone = { gitHubApp?.forgetInstallation(it) },
             // Only with an allow-list: unset, every account is served
             policy = gitHubApp?.allowList?.takeUnless { it.allowsAll },
             onDisallowedInstallation = { id, account ->
                 gitHubApp?.applyDisallowedAction(id, AccountInfo(account.id, account.login))
             },
-            allowedRepositories = { repos -> gitHubApp?.withoutDisallowed(repos) ?: repos },
+            resolveTargets = { targets -> gitHubApp?.resolve(targets) ?: targets },
+            usesInstallations = gitHubApp != null,
         ),
         coordination = valkey.coordination,
     ).start(wait = true)

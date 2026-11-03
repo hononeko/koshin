@@ -4,15 +4,18 @@ import dev.hononeko.koshin.adapters.nats.NatsConfig
 import dev.hononeko.koshin.adapters.nats.NatsJetStreamBootstrap
 import dev.hononeko.koshin.adapters.nats.NatsJobQueueConsumer
 import dev.hononeko.koshin.adapters.nats.NatsJobQueuePublisher
+import dev.hononeko.koshin.adapters.nats.NatsQueueDepth
 import dev.hononeko.koshin.adapters.nats.NatsRepoCacheConfig
 import dev.hononeko.koshin.adapters.valkey.PlatformThrottleConfig
 import dev.hononeko.koshin.adapters.valkey.ValkeyConfig
 import dev.hononeko.koshin.adapters.valkey.ValkeyPlatformThrottleAdapter
 import dev.hononeko.koshin.adapters.valkey.ValkeyRepoCoordinationAdapter
 import dev.hononeko.koshin.adapters.valkey.ValkeyWarmWorkerAdapter
+import dev.hononeko.koshin.core.model.CredentialScope
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.model.RepoRef
+import dev.hononeko.koshin.core.ports.QueueDepth
 import dev.hononeko.koshin.core.usecase.WorkerConfig
 import io.lettuce.core.RedisClient
 import io.nats.client.Nats
@@ -85,6 +88,7 @@ class E2eCluster(
 
     private val nats = Nats.connect(Containers.natsUrl)
     private val jsm = nats.jetStreamManagement()
+    private val queueDepth = NatsQueueDepth(jsm, natsConfig)
     private val publisher = NatsJobQueuePublisher(nats, natsConfig)
     private val redisClient = RedisClient.create(valkeyConfig.toRedisUri())
     private val redis = redisClient.connect()
@@ -100,7 +104,7 @@ class E2eCluster(
     fun liveWarmWorkers(): Int = runBlocking { warmWorkers.liveCount() }
 
     init {
-        NatsJetStreamBootstrap(nats, natsConfig).bootstrap(Platform.entries)
+        NatsJetStreamBootstrap(nats, natsConfig).bootstrap()
     }
 
     /** With [coalescing] off, the proxy publishes every webhook, as when Valkey is down and it fails open. */
@@ -133,8 +137,8 @@ class E2eCluster(
 
     fun isQueued(repo: RepoRef): Boolean = redis.sync().exists(valkeyConfig.queuedKeyFor(repo)) > 0
 
-    fun hasBackoff(platform: Platform): Boolean =
-        redis.sync().exists(valkeyConfig.throttleKeyFor(platform, "backoff_n")) > 0
+    fun hasBackoff(scope: CredentialScope): Boolean =
+        redis.sync().exists(valkeyConfig.throttleKeyFor(scope, "backoff_n")) > 0
 
     fun deadLetters(): List<RenovateJobEvent> {
         val state = jsm.getStreamInfo(natsConfig.dlqStreamName).streamState
@@ -153,26 +157,38 @@ class E2eCluster(
         return ByteArrayOutputStream().also { store.get(name, it) }.toString(Charsets.UTF_8)
     }
 
-    fun pendingJobs(platform: Platform): Long =
-        jsm.getConsumerInfo(natsConfig.jobsStreamName, natsConfig.consumerNameFor(platform)).numPending
+    fun pendingJobs(scope: CredentialScope): Long = queueDepth(scope).pending
+
+    /** [scope]'s queue; empty while it has no consumer. */
+    fun queueDepth(scope: CredentialScope): QueueDepth =
+        runBlocking { queueDepth.depths(listOf(scope.platform))[scope] } ?: QueueDepth(0, 0)
+
+    /** Each delivery of [scope]'s consumer so far, counting redeliveries. */
+    fun deliveredCount(scope: CredentialScope): Long =
+        jsm.getConsumerInfo(natsConfig.jobsStreamName, natsConfig.consumerNameFor(scope)).delivered.consumerSequence
 
     fun publishedCount(): Long = jsm.getStreamInfo(natsConfig.jobsStreamName).streamState.lastSequence
 
-    /** Waits until no job is queued or in flight and the repo has no lock, dirty flag or queued mark. */
-    fun awaitQuiescent(repo: RepoRef) {
+    /**
+     * Waits until no job is queued or in flight and the repo has no lock, dirty flag or queued mark. Only [scope]'s
+     * queue counts if it's given, else every queue of the repo's platform.
+     */
+    fun awaitQuiescent(repo: RepoRef, scope: CredentialScope? = null) {
         var calmSince: TimeSource.Monotonic.ValueTimeMark? = null
         var state = ""
         try {
             awaitUntil("all jobs for $repo to drain", QUIESCENCE_TIMEOUT) {
-                val consumer = jsm.getConsumerInfo(natsConfig.jobsStreamName, natsConfig.consumerNameFor(repo.platform))
+                val queues = runBlocking { queueDepth.depths(listOf(repo.platform)) }
+                    .filterKeys { scope == null || it == scope }
+                    .values
+                val consumer = QueueDepth(queues.sumOf { it.pending }, queues.sumOf { it.ackPending })
                 val lock = lockHolder(repo)
                 val dirty = isDirty(repo)
                 val queued = isQueued(repo)
                 val running = runs.filter { it.state == CliRun.State.RUNNING }.map { it.worker }
-                state = "pending=${consumer.numPending}, ackPending=${consumer.numAckPending}, lock=$lock, " +
+                state = "pending=${consumer.pending}, ackPending=${consumer.ackPending}, lock=$lock, " +
                     "dirty=$dirty, queued=$queued, running=$running"
-                val calm = consumer.numPending == 0L &&
-                    consumer.numAckPending == 0L &&
+                val calm = consumer.isEmpty &&
                     lock == null &&
                     !dirty &&
                     !queued &&

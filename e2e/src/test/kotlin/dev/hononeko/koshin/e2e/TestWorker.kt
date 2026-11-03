@@ -43,7 +43,6 @@ class TestWorker(
     private val nats = WorkerBackends.connectNats(
         url = Containers.natsUrl,
         config = cluster.natsConfig,
-        platforms = Platform.entries,
         repoCache = cluster.repoCacheConfig,
         cacheDir = cacheDir,
     )
@@ -56,6 +55,7 @@ class TestWorker(
 
     private val useCase = ProcessRenovateJobUseCase(
         queueConsumer = consumer,
+        queueDepth = nats.queueDepth,
         queuePublisher = nats.publisher,
         coordinationPort = coordination,
         throttlePort = throttle,

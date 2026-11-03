@@ -1,5 +1,6 @@
 package dev.hononeko.koshin.adapters.nats
 
+import dev.hononeko.koshin.core.model.CredentialScope
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.ports.JobDelivery
@@ -36,18 +37,28 @@ class NatsJobQueueConsumer(
     ) : this(connection.jetStream(), config, json, ioDispatcher)
 
     private val logger = LoggerFactory.getLogger(NatsJobQueueConsumer::class.java)
-    private val subscriptions = ConcurrentHashMap<Platform, JetStreamSubscription>()
+    private val subscriptions = ConcurrentHashMap<CredentialScope, JetStreamSubscription>()
 
-    override suspend fun fetchNext(platform: Platform, timeout: Duration): JobDelivery? {
+    override suspend fun fetchNext(scope: CredentialScope, timeout: Duration): JobDelivery? {
         if (timeout <= Duration.ZERO) {
             return null
         }
 
         return withContext(ioDispatcher) {
-            val sub = getSubscription(platform)
-            val msg = sub.fetch(1, timeout.toJavaDuration()).firstOrNull() ?: return@withContext null
-            parseDeliveryOrHandlePoisonPill(msg, platform)
+            val sub = getSubscription(scope)
+            val msg = try {
+                sub.fetch(1, timeout.toJavaDuration()).firstOrNull()
+            } catch (@Suppress("TooGenericExceptionCaught") e: Exception) {
+                // e.g. the consumer was deleted: bind again next time
+                forget(scope, sub)
+                throw e
+            } ?: return@withContext null
+            parseDeliveryOrHandlePoisonPill(msg, scope.platform)
         }
+    }
+
+    private fun forget(scope: CredentialScope, sub: JetStreamSubscription) {
+        if (subscriptions.remove(scope, sub)) runCatching { sub.unsubscribe() }
     }
 
     private fun parseDeliveryOrHandlePoisonPill(msg: Message, platform: Platform): NatsJobDelivery? {
@@ -116,9 +127,9 @@ class NatsJobQueueConsumer(
         }
     }
 
-    private fun getSubscription(platform: Platform): JetStreamSubscription = subscriptions.computeIfAbsent(platform) {
-        val durable = config.consumerNameFor(platform)
-        val filterSubject = config.jobsSubjectFor(platform)
+    private fun getSubscription(scope: CredentialScope): JetStreamSubscription = subscriptions.computeIfAbsent(scope) {
+        val durable = config.consumerNameFor(scope)
+        val filterSubject = config.jobsSubjectFor(scope)
         val pso = PullSubscribeOptions.builder()
             .stream(config.jobsStreamName)
             .durable(durable)

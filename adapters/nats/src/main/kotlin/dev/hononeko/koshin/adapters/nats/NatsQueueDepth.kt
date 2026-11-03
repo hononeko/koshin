@@ -1,5 +1,6 @@
 package dev.hononeko.koshin.adapters.nats
 
+import dev.hononeko.koshin.core.model.CredentialScope
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.ports.QueueDepth
 import dev.hononeko.koshin.core.ports.QueueDepthPort
@@ -9,24 +10,24 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** A platform consumer's `num_pending` and `num_ack_pending`; zero while the consumer doesn't exist yet. */
+/** Each scope consumer's `num_pending` and `num_ack_pending` (KSH-24), in one listing; none while there's no stream. */
 class NatsQueueDepth(
     private val jsm: JetStreamManagement,
     private val config: NatsConfig = NatsConfig(),
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val consumers: NatsScopeConsumers = NatsScopeConsumers(jsm, config),
 ) : QueueDepthPort {
-    override suspend fun depth(platform: Platform): QueueDepth = withContext(ioDispatcher) {
-        try {
-            val info = jsm.getConsumerInfo(config.jobsStreamName, config.consumerNameFor(platform))
-            QueueDepth(pending = info.numPending, ackPending = info.numAckPending)
-        } catch (e: JetStreamApiException) {
-            if (e.apiErrorCode !in NOT_FOUND_CODES && e.errorCode !in NOT_FOUND_CODES) throw e
-            QueueDepth(0, 0)
+    override suspend fun depths(platforms: Collection<Platform>): Map<CredentialScope, QueueDepth> =
+        withContext(ioDispatcher) {
+            try {
+                consumers.list(platforms).mapValues { (_, info) -> QueueDepth(info.numPending, info.numAckPending) }
+            } catch (e: JetStreamApiException) {
+                if (e.apiErrorCode != STREAM_NOT_FOUND && e.errorCode != STREAM_NOT_FOUND) throw e
+                emptyMap()
+            }
         }
-    }
 
     private companion object {
-        /** No consumer, no stream. */
-        val NOT_FOUND_CODES = setOf(10014, 10059)
+        const val STREAM_NOT_FOUND = 10059
     }
 }

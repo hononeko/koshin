@@ -237,7 +237,7 @@ Image reference; pass (dict "ctx" $ "image" .Values.proxy.image). Without a `reg
 
 {{/* Warm and burst workers together: more than the run slots would only wait for one */}}
 {{- define "koshin.workerMaxReplicas" -}}
-{{- .Values.worker.autoscaling.maxReplicas | default (mul .Values.worker.rateLimits.maxConcurrentRunsPerPlatform (len .Values.platforms)) }}
+{{- .Values.worker.autoscaling.maxReplicas | default .Values.worker.rateLimits.maxConcurrentRunsGlobal }}
 {{- end }}
 
 {{/* What automountServiceAccountToken would mount, but short-lived; mount it at kube-api-access's usual path */}}

@@ -15,7 +15,8 @@ data class WorkerConfig(
     val heartbeatInterval: Duration = 15.seconds,
     val lockCollisionRetryDelay: Duration = 30.seconds,
     val maxRateLimitRequeues: Int = 5,
-    val fetchTimeout: Duration = 5.seconds,
+    /** How long a fetch waits on a scope's queue: it's only tried while the scope has jobs (KSH-24). */
+    val fetchTimeout: Duration = 1.seconds,
     val infraErrorBackoffBase: Duration = 1.seconds,
     val infraErrorBackoffMax: Duration = 30.seconds,
 ) {

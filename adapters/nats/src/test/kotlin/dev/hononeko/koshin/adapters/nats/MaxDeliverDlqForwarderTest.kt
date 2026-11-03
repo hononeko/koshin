@@ -60,6 +60,16 @@ class MaxDeliverDlqForwarderTest {
     }
 
     @Test
+    fun `a job another replica deleted first counts as moved, without retrying the delete`() {
+        stored(7)
+        every { jsm.deleteMessage(config.jobsStreamName, 7) } throws ApiError(10043)
+
+        assertTrue(forwarder.moveToDeadLetter(7, 5, MaxDeliverDlqForwarder.SOURCE_SWEEP))
+
+        verify(exactly = 1) { jsm.deleteMessage(config.jobsStreamName, 7) }
+    }
+
+    @Test
     fun `a job that's already gone is left alone`() {
         every { jsm.getMessage(config.jobsStreamName, 3) } throws ApiError(10037)
 

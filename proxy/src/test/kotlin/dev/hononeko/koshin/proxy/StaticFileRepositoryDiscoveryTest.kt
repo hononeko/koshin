@@ -43,7 +43,7 @@ class StaticFileRepositoryDiscoveryTest {
             """.trimIndent(),
         )
 
-        val discovered = StaticFileRepositoryDiscovery(jsonFile.toString()).discover()
+        val discovered = StaticFileRepositoryDiscovery(jsonFile.toString()).discover().map { it.repo }
         assertEquals(
             listOf(
                 RepoRef(Platform.GITHUB, "hononeko/koshin"),
@@ -71,7 +71,7 @@ class StaticFileRepositoryDiscoveryTest {
             """.trimIndent(),
         )
 
-        val discovered = StaticFileRepositoryDiscovery(txtFile).discover()
+        val discovered = StaticFileRepositoryDiscovery(txtFile).discover().map { it.repo }
         assertEquals(
             listOf(
                 RepoRef(Platform.GITHUB, "hononeko/koshin"),

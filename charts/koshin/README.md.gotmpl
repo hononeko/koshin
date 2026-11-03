@@ -131,9 +131,10 @@ With `worker.autoscaling.enabled` (the default), no autoscaler is involved: the 
 (KSH-32). It reconciles right after it publishes a job and every `autoscaling.dispatchIntervalSeconds`, and only the
 proxy replica holding a Valkey lease does, so replicas never double up.
 
-* **Demand:** jobs it can run now, per platform, up to `rateLimits.maxConcurrentRunsPerPlatform` runs each and
-  `autoscaling.maxReplicas` workers in all. A platform in a rate-limit cooldown adds none, so a cooldown starts no idle
-  workers.
+* **Demand:** jobs it can run now, per credential scope (a GitHub App installation, or a platform's token), up to
+  `rateLimits.maxConcurrentRunsPerCredential` runs each, `rateLimits.maxConcurrentRunsGlobal` in all and
+  `autoscaling.maxReplicas` workers. A scope in a rate-limit cooldown adds none, so one installation's cooldown starts
+  no idle workers and holds up no other installation.
 * **Burst workers** run jobs back to back and exit 0 once none was runnable for `autoscaling.idleTimeoutSeconds`, or
   after the run in flight once they're `autoscaling.maxLifetimeSeconds` old (below the Job's
   `autoscaling.jobActiveDeadlineSeconds`). Finished Jobs go after `autoscaling.jobTtlSecondsAfterFinished`. The proxy
@@ -245,9 +246,9 @@ JetStream storage is mostly the repo cache: jobs are small and leave the stream 
 the job streams always have room. With `ha` you can raise it to a few Gi. When you raise `fileStore.maxSize`, raise
 `fileStore.pvc.size` with it: the PVC needs about 20% headroom for indexes and consumer state.
 
-The API budget is roughly run slots × requests per second per run. Keep `worker.autoscaling.maxReplicas` near
-`worker.rateLimits.maxConcurrentRunsPerPlatform` × platforms (the default): extra workers only wait for a slot. During
-a rate-limit cooldown the proxy starts no worker for that platform's jobs.
+A credential scope's API budget is roughly its run slots × requests per second per run. Keep
+`worker.autoscaling.maxReplicas` near `worker.rateLimits.maxConcurrentRunsGlobal` (the default): extra workers only wait
+for a slot. During a rate-limit cooldown the proxy starts no worker for that scope's jobs.
 
 ## Backups and recovery
 

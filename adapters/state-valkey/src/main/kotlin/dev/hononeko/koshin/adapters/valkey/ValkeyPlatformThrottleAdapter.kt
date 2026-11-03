@@ -1,6 +1,6 @@
 package dev.hononeko.koshin.adapters.valkey
 
-import dev.hononeko.koshin.core.model.Platform
+import dev.hononeko.koshin.core.model.CredentialScope
 import dev.hononeko.koshin.core.ports.PlatformThrottlePort
 import io.lettuce.core.ExperimentalLettuceCoroutinesApi
 import io.lettuce.core.api.StatefulRedisConnection
@@ -13,13 +13,19 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
+/**
+ * Run-slot caps (KSH-24): [maxRunsPerCredential] runs per credential scope (`MAX_CONCURRENT_RUNS_PER_CREDENTIAL`) and
+ * [maxRunsGlobal] across them all (`MAX_CONCURRENT_RUNS_GLOBAL`), plus the rate-limit cooldown's backoff.
+ */
 data class PlatformThrottleConfig(
-    val maxConcurrentRuns: Int = DEFAULT_MAX_CONCURRENT_RUNS,
+    val maxRunsPerCredential: Int = DEFAULT_MAX_RUNS_PER_CREDENTIAL,
+    val maxRunsGlobal: Int = DEFAULT_MAX_RUNS_GLOBAL,
     val backoffBase: Duration = DEFAULT_BACKOFF_BASE,
     val backoffMax: Duration = DEFAULT_BACKOFF_MAX,
 ) {
     init {
-        require(maxConcurrentRuns >= 1) { "maxConcurrentRuns must be at least 1: $maxConcurrentRuns" }
+        require(maxRunsPerCredential >= 1) { "maxRunsPerCredential must be at least 1: $maxRunsPerCredential" }
+        require(maxRunsGlobal >= 1) { "maxRunsGlobal must be at least 1: $maxRunsGlobal" }
         require(backoffBase.isPositive() && backoffBase.isFinite()) { "backoffBase must be positive: $backoffBase" }
         require(backoffMax >= backoffBase && backoffMax.isFinite()) {
             "backoffMax ($backoffMax) must be >= backoffBase ($backoffBase)"
@@ -27,15 +33,19 @@ data class PlatformThrottleConfig(
     }
 
     companion object {
-        const val DEFAULT_MAX_CONCURRENT_RUNS = 3
+        const val DEFAULT_MAX_RUNS_PER_CREDENTIAL = 2
+        const val DEFAULT_MAX_RUNS_GLOBAL = 6
         val DEFAULT_BACKOFF_BASE: Duration = 60.seconds
         val DEFAULT_BACKOFF_MAX: Duration = 3600.seconds
     }
 }
 
 /**
- * Per-platform run slots (a ZSET of `token → lease expiry`) and rate-limit cooldown. Lease expiry is computed from
- * Valkey's own clock (`TIME`) inside the scripts, so clock skew between worker pods can't expire other pods' leases.
+ * Run slots and rate-limit cooldowns per credential scope (KSH-24). A run slot is a lease in two ZSETs of
+ * `token → lease expiry`: the scope's (`koshin:{throttle:<scope>}:slots`) and the global one
+ * (`koshin:{throttle:global}:slots`). They're in different hash slots, so they're leased one after the other and the
+ * first given back if the second fails. Lease expiry is computed from Valkey's own clock (`TIME`) inside the scripts,
+ * so clock skew between worker pods can't expire other pods' leases.
  */
 @OptIn(ExperimentalLettuceCoroutinesApi::class)
 class ValkeyPlatformThrottleAdapter(
@@ -62,35 +72,56 @@ class ValkeyPlatformThrottleAdapter(
         countSlotsScript.load()
     }
 
-    override suspend fun tryAcquireRunSlot(platform: Platform, token: String, ttl: Duration): Boolean {
+    /** The scope's lease first: a full scope then never holds a global slot, even briefly. */
+    override suspend fun tryAcquireRunSlot(scope: CredentialScope, token: String, ttl: Duration): Boolean {
         require(token.isNotBlank()) { "token cannot be blank" }
-        val keys = arrayOf(config.throttleKeyFor(platform, SLOTS))
-        return acquireSlotScript.evalLong(keys, token, ttl.toLeaseMillis(), throttle.maxConcurrentRuns.toString()) == 1L
+        val millis = ttl.toLeaseMillis()
+        val scopeKey = config.throttleKeyFor(scope, SLOTS)
+        if (!lease(scopeKey, token, millis, throttle.maxRunsPerCredential)) return false
+        val global = try {
+            lease(config.globalSlotsKey(), token, millis, throttle.maxRunsGlobal)
+        } catch (@Suppress("TooGenericExceptionCaught") e: Throwable) {
+            // The global lease may have been taken before the reply was lost
+            withContext(NonCancellable) { runCatching { releaseRunSlot(scope, token) } }
+            throw e
+        }
+        if (!global) withContext(NonCancellable) { commands.zrem(scopeKey, token) }
+        return global
     }
 
-    override suspend fun extendRunSlot(platform: Platform, token: String, ttl: Duration): Boolean {
+    private suspend fun lease(key: String, token: String, millis: String, max: Int): Boolean =
+        acquireSlotScript.evalLong(arrayOf(key), token, millis, max.toString()) == 1L
+
+    override suspend fun extendRunSlot(scope: CredentialScope, token: String, ttl: Duration): Boolean {
         require(token.isNotBlank()) { "token cannot be blank" }
-        val keys = arrayOf(config.throttleKeyFor(platform, SLOTS))
-        return extendSlotScript.evalLong(keys, token, ttl.toLeaseMillis()) == 1L
+        val millis = ttl.toLeaseMillis()
+        return extend(config.throttleKeyFor(scope, SLOTS), token, millis) &&
+            extend(config.globalSlotsKey(), token, millis)
     }
 
-    override suspend fun releaseRunSlot(platform: Platform, token: String) {
+    private suspend fun extend(key: String, token: String, millis: String): Boolean =
+        extendSlotScript.evalLong(arrayOf(key), token, millis) == 1L
+
+    /** Both leases, the global one even if releasing the scope's fails. */
+    override suspend fun releaseRunSlot(scope: CredentialScope, token: String) {
         withContext(NonCancellable) {
-            commands.zrem(config.throttleKeyFor(platform, SLOTS), token)
+            val scopeRelease = runCatching { commands.zrem(config.throttleKeyFor(scope, SLOTS), token) }
+            commands.zrem(config.globalSlotsKey(), token)
+            scopeRelease.getOrThrow()
         }
     }
 
-    override suspend fun activeRunSlots(platform: Platform): Int =
-        countSlotsScript.evalLong(arrayOf(config.throttleKeyFor(platform, SLOTS))).toInt()
+    override suspend fun activeRunSlots(scope: CredentialScope): Int =
+        countSlotsScript.evalLong(arrayOf(config.throttleKeyFor(scope, SLOTS))).toInt()
 
-    override suspend fun cooldownRemaining(platform: Platform): Duration? {
-        val millis = commands.pttl(config.throttleKeyFor(platform, COOLDOWN)) ?: return null
+    override suspend fun cooldownRemaining(scope: CredentialScope): Duration? {
+        val millis = commands.pttl(config.throttleKeyFor(scope, COOLDOWN)) ?: return null
         return if (millis > 0) millis.milliseconds else null
     }
 
     /** Cooldown for `retryAfter` if known, else `min(base × 2^n, max) ± 20%`; never shortens a longer cooldown. */
-    override suspend fun registerRateLimit(platform: Platform, retryAfter: Duration?): Duration {
-        val keys = arrayOf(config.throttleKeyFor(platform, COOLDOWN), config.throttleKeyFor(platform, BACKOFF_N))
+    override suspend fun registerRateLimit(scope: CredentialScope, retryAfter: Duration?): Duration {
+        val keys = arrayOf(config.throttleKeyFor(scope, COOLDOWN), config.throttleKeyFor(scope, BACKOFF_N))
         val retryAfterMillis = retryAfter?.takeIf { it.isPositive() }?.toLeaseMillis() ?: UNKNOWN
         val jitter = 1 + (random.nextDouble() * 2 - 1) * JITTER
         return registerRateLimitScript.evalLong(
@@ -102,8 +133,8 @@ class ValkeyPlatformThrottleAdapter(
         ).milliseconds
     }
 
-    override suspend fun resetBackoff(platform: Platform) {
-        commands.del(config.throttleKeyFor(platform, BACKOFF_N))
+    override suspend fun resetBackoff(scope: CredentialScope) {
+        commands.del(config.throttleKeyFor(scope, BACKOFF_N))
     }
 
     private fun Duration.toLeaseMillis(): String {

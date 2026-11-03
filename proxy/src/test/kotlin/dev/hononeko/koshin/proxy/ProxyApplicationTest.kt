@@ -3,6 +3,7 @@ package dev.hononeko.koshin.proxy
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.model.RepoRef
+import dev.hononeko.koshin.core.model.RepoTarget
 import dev.hononeko.koshin.core.model.TriggerReason
 import dev.hononeko.koshin.core.ports.JobQueuePublisher
 import dev.hononeko.koshin.core.ports.RepositoryDiscoveryPort
@@ -334,9 +335,9 @@ class ProxyApplicationTest {
     fun `trigger API with discover true filters enabled platforms and handles discovery errors`() = testApplication {
         val publisher = RecordingPublisher()
         val discoveryPort = object : RepositoryDiscoveryPort {
-            override suspend fun discover(): List<RepoRef> = listOf(
-                RepoRef(Platform.GITHUB, "hononeko/discovered-1"),
-                RepoRef(Platform.GITLAB, "gitlab-org/discovered-2"),
+            override suspend fun discover(): List<RepoTarget> = listOf(
+                RepoTarget(RepoRef(Platform.GITHUB, "hononeko/discovered-1")),
+                RepoTarget(RepoRef(Platform.GITLAB, "gitlab-org/discovered-2")),
             )
         }
 
@@ -380,7 +381,7 @@ class ProxyApplicationTest {
     fun `trigger API returns 503 when discovery is unconfigured and 500 when discovery throws`() = testApplication {
         var shouldThrow = false
         val failingDiscovery = object : RepositoryDiscoveryPort {
-            override suspend fun discover(): List<RepoRef> {
+            override suspend fun discover(): List<RepoTarget> {
                 if (shouldThrow) {
                     throw IOException("Failed to read sweep file")
                 }
