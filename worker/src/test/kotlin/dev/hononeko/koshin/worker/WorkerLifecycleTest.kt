@@ -6,11 +6,13 @@ import dev.hononeko.koshin.core.usecase.ProcessRenovateJobUseCase
 import io.mockk.coEvery
 import io.mockk.mockk
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import java.util.concurrent.CopyOnWriteArrayList
+import kotlin.io.path.createTempDirectory
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -108,5 +110,40 @@ class WorkerLifecycleTest {
         assertTrue(finished)
         assertEquals(listOf("backends closed"), stoppedHooks)
         assertEquals(listOf("w"), leases.removals)
+    }
+
+    @Test
+    fun `only a daemon-mode worker keeps a warm lease`() {
+        val backends = WorkerBackends(connectNats = { error("unused") }, connectValkey = { error("unused") })
+
+        assertTrue(warmPresence(WorkerSettings(), backends) != null)
+        assertTrue(warmPresence(WorkerSettings(idleTimeout = 10.seconds), backends) == null)
+    }
+
+    @Test
+    fun `the job use case is wired to the connected ports`() {
+        val ports = WorkerBackends.Ports(
+            consumer = mockk(),
+            publisher = mockk(),
+            coordination = mockk(),
+            throttle = mockk(),
+            repoCache = NoOpRepoCache,
+            warmWorkers = NoWarmWorkers,
+        )
+        val useCase = jobUseCase(
+            WorkerSettings(),
+            ports,
+            workerCredentials(WorkerSettings(), null),
+            mockk(),
+            WorkspaceCleaner(createTempDirectory()),
+        )
+        assertTrue(useCase.computeBackoffDelay(1).isPositive())
+    }
+
+    @Test
+    fun `NoWarmWorkers keeps no lease`() = runBlocking {
+        NoWarmWorkers.renew("w", 1.seconds)
+        NoWarmWorkers.remove("w")
+        assertEquals(0, NoWarmWorkers.liveCount())
     }
 }

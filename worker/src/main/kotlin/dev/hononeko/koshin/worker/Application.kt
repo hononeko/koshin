@@ -214,7 +214,7 @@ fun main() {
 }
 
 /** A daemon-mode worker tells the Job dispatcher it's ready (KSH-31); a burst Job pod drains and exits instead. */
-private fun warmPresence(settings: WorkerSettings, backends: WorkerBackends): WarmPresence? =
+internal fun warmPresence(settings: WorkerSettings, backends: WorkerBackends): WarmPresence? =
     if (settings.idleTimeout.isPositive()) {
         null
     } else {
@@ -223,7 +223,7 @@ private fun warmPresence(settings: WorkerSettings, backends: WorkerBackends): Wa
         }
     }
 
-private fun jobUseCase(
+internal fun jobUseCase(
     settings: WorkerSettings,
     ports: WorkerBackends.Ports,
     credentials: WorkerCredentials,
