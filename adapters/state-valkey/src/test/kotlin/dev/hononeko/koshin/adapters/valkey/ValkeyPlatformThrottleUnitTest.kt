@@ -95,11 +95,18 @@ class ValkeyPlatformThrottleUnitTest {
     }
 
     @Test
-    fun `preloadScripts loads the three throttle scripts`() = runTest {
+    fun `preloadScripts loads the throttle scripts`() = runTest {
         adapter.preloadScripts()
         coVerify { commands.scriptLoad(ValkeyPlatformThrottleAdapter.ACQUIRE_SLOT_SCRIPT) }
         coVerify { commands.scriptLoad(ValkeyPlatformThrottleAdapter.EXTEND_SLOT_SCRIPT) }
         coVerify { commands.scriptLoad(ValkeyPlatformThrottleAdapter.REGISTER_RATE_LIMIT_SCRIPT) }
+        coVerify { commands.scriptLoad(ValkeyPlatformThrottleAdapter.COUNT_SLOTS_SCRIPT) }
+    }
+
+    @Test
+    fun `activeRunSlots counts the leases of the platform's slots`() = runTest {
+        coEvery { commands.evalsha<Long>(any(), ScriptOutputType.INTEGER, arrayOf(slotsKey)) } returns 2L
+        assertEquals(2, adapter.activeRunSlots(Platform.GITHUB))
     }
 
     @Test

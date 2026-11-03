@@ -4,12 +4,15 @@ import dev.hononeko.koshin.adapters.nats.NatsConfig
 import dev.hononeko.koshin.adapters.nats.NatsDlqHousekeeping
 import dev.hononeko.koshin.adapters.nats.NatsJetStreamBootstrap
 import dev.hononeko.koshin.adapters.nats.NatsJobQueuePublisher
+import dev.hononeko.koshin.adapters.nats.NatsQueueDepth
 import dev.hononeko.koshin.adapters.nats.NatsReconnectBootstrapper
 import dev.hononeko.koshin.adapters.nats.isConnected
 import dev.hononeko.koshin.adapters.nats.slf4jLogging
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.ports.JobQueuePublisher
+import dev.hononeko.koshin.core.ports.QueueDepth
+import dev.hononeko.koshin.core.ports.QueueDepthPort
 import io.nats.client.Connection
 import io.nats.client.ConnectionListener
 import io.nats.client.Nats
@@ -102,6 +105,15 @@ class ProxyNatsLifecycle(
                     delay(retryDelay)
                 }
             }
+        }
+    }
+
+    /** The job consumers' depth, for the worker dispatcher; fails until NATS is connected. */
+    val queueDepth: QueueDepthPort = object : QueueDepthPort {
+        override suspend fun depth(platform: Platform): QueueDepth {
+            val conn = connectionRef.get()?.takeIf { bootstrapped.get() }
+                ?: throw IOException("NATS is not connected yet")
+            return NatsQueueDepth(conn.jetStreamManagement(), natsConfig, ioDispatcher).depth(platform)
         }
     }
 

@@ -1,4 +1,4 @@
-{{- if and .Values.tests.jobProcessing.enabled (include "koshin.triggerToken" .) }}
+{{- if and .Values.tests.jobProcessing.enabled (include "koshin.triggerToken" .) .Values.nats.enabled }}
 # Triggers one Renovate run through the proxy and waits until a worker settles it: the WorkQueue stream only drops a
 # job once a worker ACKs it, or once it's dead-lettered, which fails the test. A run that Renovate itself fails (e.g.
 # on a token the platform rejects) is still ACKed, so CI exercises the whole path without real credentials.

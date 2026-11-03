@@ -36,6 +36,7 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "koshin.fullname" . }}-proxy
+      # The worker dispatcher gets a short-lived token (kube-api-access) instead
       automountServiceAccountToken: false
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -86,6 +87,29 @@ spec:
               value: /etc/koshin/repositories/repositories.txt
             # VALKEY_URL comes from the ConfigMap: the proxy coalesces webhooks before publishing (KSH-30)
             {{- with include "koshin.sentinelPasswordEnv" . }}{{ . | nindent 12 }}{{- end }}
+            {{- with .Values.worker.autoscaling }}
+            # Burst worker Jobs from the worker PodTemplate (KSH-32)
+            - name: WORKER_DISPATCHER_ENABLED
+              value: {{ .enabled | quote }}
+            {{- if .enabled }}
+            - name: WORKER_POD_TEMPLATE_NAME
+              value: {{ printf "%s-worker" (include "koshin.fullname" $) | quote }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: WORKER_MAX_REPLICAS
+              value: {{ include "koshin.workerMaxReplicas" $ | quote }}
+            - name: MIN_WARM_WORKERS
+              value: {{ .minReplicas | quote }}
+            - name: WORKER_DISPATCH_INTERVAL_SECONDS
+              value: {{ .dispatchIntervalSeconds | quote }}
+            - name: WORKER_JOB_ACTIVE_DEADLINE_SECONDS
+              value: {{ .jobActiveDeadlineSeconds | quote }}
+            - name: WORKER_JOB_TTL_SECONDS
+              value: {{ .jobTtlSecondsAfterFinished | quote }}
+            {{- end }}
+            {{- end }}
             {{- with .Values.proxy.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -110,6 +134,11 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.worker.autoscaling.enabled }}
+            - name: kube-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+            {{- end }}
             {{- with include "koshin.githubAppVolumeMount" . }}{{ . | nindent 12 }}{{- end }}
       volumes:
         - name: repositories
@@ -117,4 +146,7 @@ spec:
             name: {{ include "koshin.fullname" . }}-repositories
         - name: tmp
           emptyDir: {}
+        {{- if .Values.worker.autoscaling.enabled }}
+        {{- include "koshin.kubeApiAccessVolume" . | nindent 8 }}
+        {{- end }}
         {{- with include "koshin.githubAppVolume" . }}{{ . | nindent 8 }}{{- end }}

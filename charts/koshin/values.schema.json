@@ -355,6 +355,10 @@
           "properties": {
             "annotations": {
               "type": "object"
+            },
+            "tokenExpirationSeconds": {
+              "type": "integer",
+              "minimum": 600
             }
           },
           "additionalProperties": false
@@ -529,7 +533,10 @@
             },
             "minReplicas": {
               "type": "integer",
-              "minimum": 0
+              "enum": [
+                0,
+                1
+              ]
             },
             "maxReplicas": {
               "type": [
@@ -538,16 +545,25 @@
               ],
               "minimum": 1
             },
-            "pollingInterval": {
+            "idleTimeoutSeconds": {
               "type": "integer",
               "minimum": 1
             },
-            "scaleDownStabilizationSeconds": {
+            "maxLifetimeSeconds": {
               "type": "integer",
               "minimum": 0
             },
-            "natsAccount": {
-              "type": "string"
+            "jobActiveDeadlineSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "jobTtlSecondsAfterFinished": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "dispatchIntervalSeconds": {
+              "type": "integer",
+              "minimum": 1
             }
           },
           "additionalProperties": false
@@ -689,9 +705,6 @@
         "enabled": {
           "type": "boolean"
         },
-        "kedaNamespaceSelector": {
-          "type": "object"
-        },
         "proxyFrom": {
           "type": "array"
         }
@@ -705,9 +718,6 @@
       "type": "object",
       "properties": {
         "url": {
-          "type": "string"
-        },
-        "monitoringEndpoint": {
           "type": "string"
         }
       },

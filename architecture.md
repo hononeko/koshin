@@ -1,19 +1,19 @@
-# System Architecture v3.1: `hononeko/koshin`
-**Stateless, Horizontally Scalable Renovate CLI Orchestrator (Choreography & Hexagonal Design)**
+# System Architecture v3.2: `hononeko/koshin`
+**Stateless, Scale-to-Zero / Warm-Baseline Renovate CLI Orchestrator (Lightweight Proxy Dispatch & Hexagonal Design)**
 
 ## 1. System Overview & Core Principles
 
-`hononeko/koshin` is a cloud-native, event-driven orchestrator for the open-source Mend Renovate CLI (`renovate-cli`). It overcomes the single-instance limitation of Renovate Community Edition without relying on heavy Kubernetes Job cold starts or centralized stateful coordinators.
+`hononeko/koshin` is a cloud-native, event-driven orchestrator for the open-source Mend Renovate CLI (`renovate-cli`). It overcomes the single-instance limitation of Renovate Community Edition with configurable scale-to-zero (`minReplicas: 0`) or single warm-worker (`minReplicas: 1`) operation, burst Kubernetes `Job` workers, pre-queue duplicate coalescing, and zero external autoscaler dependencies (no KEDA).
 
 **Monorepo:** everything lives in a single repository, **`github.com/hononeko/koshin`**: all Gradle modules, Dockerfiles, Kustomize manifests, the Helm chart, docs and CI workflows. One Conventional-Commits version (via `hononeko/actions`) covers both images and the chart.
 
 ### Architectural Pillars
-1. **Choreography over Orchestration:** No central brain. A **Stateless Thin Proxy** (`:proxy`) validates and translates webhooks into queue events; **Autonomous Stateless Workers** (`:worker`) pull jobs, coordinate per-repository locks, and invoke `renovate-cli`.
-2. **Hexagonal Architecture (Ports & Adapters):** Queueing, repository coordination, throttling, repo-cache sync and platform credentials live behind Kotlin interfaces in `:core`. NATS JetStream and Valkey are pluggable adapters. The queue ports follow JetStream semantics (per-message ack, in-progress heartbeat, delayed NAK); Valkey Streams fits them, while Kafka/RabbitMQ would need semantic shims.
-3. **Stateless Compute:** `:proxy` and `:worker` are plain `Deployment`s with no PVCs. Workers use an `emptyDir` at `/tmp/renovate` and **delete each repo workspace and local cache after the run**. The Renovate toolchain ships in the pinned upstream `renovate:full` image (`RENOVATE_BINARYSOURCE=global`) that the worker pod's `renovate` sidecar runs; in-cluster **Spegel** distributes its layers P2P so cold worker pods start fast. Backing services (NATS, Valkey) come in two deployment profiles (§8).
+1. **Lightweight Proxy Coordinator + Autonomous Workers:** An always-on **Lightweight Proxy** (`:proxy`, ~150 MB JRE) validates webhooks, performs fail-open pre-queue Valkey coalescing (`QUEUED` / `RUNNING` + `DIRTY`, KSH-30), runs NATS consumer/DLQ housekeeping, and directly dispatches burst Kubernetes `batch/v1` `Job` workers cloned from a `v1/PodTemplate` (KSH-32). **Workers** (`:worker`, KSH-31) operate either as burst `Job`s (`0..maxReplicas`) that drain runnable work back-to-back and voluntarily exit `0` once idle (`WORKER_IDLE_TIMEOUT_SECONDS`), plus an optional fixed `replicas: 1` warm `Deployment` pod (`worker.autoscaling.minReplicas: 1`, `WORKER_IDLE_TIMEOUT_SECONDS=0`) for zero-cold-start single-job pickup—requiring zero KEDA CRDs and zero `Deployment` scale-in coordination.
+2. **Hexagonal Architecture (Ports & Adapters):** Queueing, repository coordination, throttling, repo-cache sync, worker dispatch and platform credentials live behind Kotlin interfaces in `:core`. NATS JetStream and Valkey are pluggable adapters. The queue ports follow JetStream semantics (per-message ack, in-progress heartbeat, delayed NAK); Valkey Streams fits them, while Kafka/RabbitMQ would need semantic shims.
+3. **Stateless Compute (`minReplicas: 0 | 1`):** `:proxy` is a plain `Deployment`. When `worker.autoscaling.minReplicas=0`, `0` worker pods run when idle and `:proxy` spawns `1..maxReplicas` `batch/v1` `Job` pods on demand. When `minReplicas=1`, a fixed 1-replica `Deployment` stays warm (rolling cleanly on `helm upgrade` / image bumps with zero churn) while `:proxy` spawns `0..(maxReplicas - 1)` burst `Job` pods during sweeps/bursts. No PVCs. Workers use an `emptyDir` at `/tmp/renovate` and **delete each repo workspace and local cache after the run**. The Renovate toolchain ships in the pinned upstream `renovate:full` image (`RENOVATE_BINARYSOURCE=global`) that the worker pod's `renovate` sidecar runs; in-cluster **Spegel** distributes its layers P2P so cold worker pods start fast. Backing services (NATS, Valkey) come in two deployment profiles (§8).
 4. **Zero Dropped Commits (Pre-Queue + Dirty-Flag Coalescing):** `:proxy` atomically coalesces duplicates before publishing (`IDLE` → `QUEUED` + publish; `QUEUED` → drop duplicate; `RUNNING` → set `dirty=1`), failing open to direct NATS publish if Valkey is unreachable during a Sentinel failover (KSH-30). On the worker side, `acquireOrMarkDirty` clears `queued`, acquires `:lock` (or marks `:dirty` if a fail-open duplicate arrived), and `releaseLockAndTakeDirty` atomically schedules a single `DIRTY_FOLLOWUP` run.
 5. **In-Flight Heartbeats & Fast Crash Recovery:** A heartbeat coroutine every 15s sends `msg.inProgress()` and extends the owner-tokened Valkey lock (TTL 45s). AckWait (60s) is longer than the lock TTL, so a crashed worker's lock has always expired by the time its job is redelivered. A worker that loses its lock kills its CLI process immediately.
-6. **Rate-Limit Aware & Tenant-Isolated:** A global concurrency cap plus per-credential run-slot caps (`github:inst-<id>`, `github:pat`, `gitlab:pat`), Renovate per-host request limits, and per-credential exponential cooldowns keep workers from hammering Git provider APIs while isolating tenants from one another (§7).
+6. **Rate-Limit Aware & Tenant-Isolated:** A global concurrency cap plus per-credential run-slot caps (`github:inst-<id>`, `github:pat`, `gitlab:pat`), Renovate per-host request limits, per-credential exponential cooldowns, and cooldown-aware `Job` dispatch keep workers from hammering Git provider APIs or spawning idle pods during rate-limit windows while isolating tenants from one another (§7).
 
 ## 2. Reference Tech Stack
 
@@ -26,11 +26,11 @@
 
   Verified in Ktor 3.6.0: `enableHttp2` defaults to `true`, `enableH2c` to `false`.
 * **HTTP/3 (best effort):** Ktor's engine builder doesn't expose Netty's QUIC/HTTP/3 codecs. HTTP/3 (QUIC) is terminated at the ingress/gateway (e.g. Traefik/Envoy), which routes to the proxy over h2c. A time-boxed spike (KSH-6) explores serving it directly.
-* **HTTP Client & Async:** Ktor Client (`Java` engine, HTTP/2), Kotlin Coroutines, `kotlinx.serialization`.
+* **HTTP Client & Async:** Ktor Client (`CIO` engine for GitHub; `Java` engine, i.e. JDK TLS trusting the ServiceAccount CA, for the dispatcher's in-cluster Kubernetes API client), Kotlin Coroutines, `kotlinx.serialization`.
 * **Message Broker:** **NATS JetStream** (`io.nats:jnats`): `RENOVATE_JOBS` WorkQueue stream partitioned by credential scope (`renovate.jobs.<platform>.<scope>`), `RENOVATE_DLQ` stream; **JetStream Object Store** bucket `koshin-repo-cache` for Renovate repository caches.
-* **State & Cache:** **Valkey** via Lettuce (coroutines), used for coordination (locks, dirty flags, run slots, cooldowns) and Renovate's package cache (`RENOVATE_REDIS_URL`). These can be separate instances.
+* **State & Cache:** **Valkey** via Lettuce (coroutines), used for coordination (queued/lock/dirty state, run slots, cooldowns, warm-worker presence, `:proxy` dispatcher leader lease) and Renovate's package cache (`RENOVATE_REDIS_URL`). These can be separate instances.
 * **Git Provider & Registry Auth:** **GitHub App** (installation tokens minted per installation and reused while at least `CLI_TIMEOUT_MINUTES + 5` minutes remain; public visibility gated by `GITHUB_APP_ALLOWED_ACCOUNTS`) or PAT; GitLab PAT or group token; Renovate OpenPGP-encrypted secrets (`RENOVATE_PRIVATE_KEY_PATH`) for tenant-supplied private registries.
-* **Autoscaling:** **KEDA** `ScaledObject` (`metrics-api` trigger against NATS `/jsz?streams=true` `state.messages`, `targetValue: "1"`).
+* **Autoscaling & Worker Dispatch (KSH-31, KSH-32):** Built-in Kubernetes `batch/v1` `Job` dispatcher in `:proxy` (Valkey leader-elected across replicas), cloning burst worker pods from a chart-rendered `v1/PodTemplate` (`<fullname>-worker`) based on runnable non-cooled-down queue demand minus live warm baseline capacity (`worker.autoscaling.minReplicas: 0 | 1`). No external KEDA dependency.
 * **Packaging:** a Helm chart with `minimal` / `ha` profiles (primary), plus a Kustomize `minimal` reference.
 * **CI/CD:** GitHub Actions using the shared composite actions in **`hononeko/actions`** (version, release notes, smoke test, publish image, snapshot pruning, and `gradle-setup`).
 * **Container Images:**
@@ -47,32 +47,32 @@ graph LR
     Git[GitHub App / GitLab]
     Cron[K8s CronJob <br/> Sweeper]
     Ingress[Ingress / Gateway <br/> HTTP/1.1 · HTTP/2 · HTTP/3]
-    Proxy[koshin-proxy <br/> Ingest · Coalesce · DLQ Sweep]
+    Proxy[koshin-proxy <br/> Ingest · Coalesce · DLQ Sweep · Job Dispatcher]
     Queue[[NATS JetStream <br/> RENOVATE_JOBS <br/> renovate.jobs.github.* / .gitlab.pat]]
     DLQ[[RENOVATE_DLQ <br/> renovate.dlq.>]]
     OS[(NATS Object Store <br/> koshin-repo-cache)]
-    VK[(Valkey coordination <br/> queued · locks · dirty · run slots · cooldowns)]
+    VK[(Valkey coordination <br/> queued · locks · dirty · slots · cooldowns · warm · leader)]
     VC[(Valkey package cache)]
-    KEDA[KEDA ScaledObject]
+    PT[v1/PodTemplate <br/> koshin-worker]
 
-    subgraph "koshin-worker Deployment (1..N)"
-        Worker[Kotlin Worker Daemon]
-        CLI[renovate-cli <br/> emptyDir /tmp/renovate]
+    subgraph "koshin-worker (0..1 warm Deployment + 0..N burst Jobs)"
+        Worker[Kotlin Worker]
+        CLI[renovate sidecar <br/> emptyDir /tmp/renovate]
     end
 
     Git -->|webhooks| Ingress
     Ingress -->|h2c| Proxy
     Cron -->|POST /api/v1/trigger| Proxy
-    Proxy <-->|pre-queue coalesce| VK
+    Proxy <-->|pre-queue coalesce + leader + demand| VK
     Proxy -->|publish distinct runnable| Queue
     Proxy -->|MaxDeliver forward / sweep| DLQ
-    Queue -.->|stream messages| KEDA
-    KEDA -.->|scale| Worker
+    Proxy -.->|read PodTemplate & create burst Jobs| PT
+    PT -.->|burst pods (drain-then-exit)| Worker
     Queue <-->|pull · ack · heartbeat| Worker
     Worker -->|requeue cap| DLQ
-    Worker <-->|coordination + throttle| VK
+    Worker <-->|lock + dirty + throttle + warm lease| VK
     Worker <-->|restore / persist| OS
-    Worker -->|ProcessBuilder, 45m cap| CLI
+    Worker -->|RUNNER_SOCKET, 45m cap| CLI
     CLI <-->|RENOVATE_REDIS_URL| VC
     CLI -->|branches / PRs| Git
 ```
@@ -90,19 +90,18 @@ koshin/
 ├── config/detekt/detekt.yml
 ├── docker/ (Dockerfile.proxy, Dockerfile.worker, koshin-runner, koshin-runner-init)
 ├── k8s/
-│   ├── base/                 # proxy, worker, scaledobject, cronjob-sweeper
+│   ├── base/                 # proxy (+ rbac), worker podtemplate, cronjob-sweeper
 │   └── overlays/
-│       ├── minimal/          # 1x NATS (emptyDir), 1x Valkey (emptyDir)
-│       └── ha/               # 3x NATS (R3, PVC), Valkey Sentinel (AOF, PVC)
-├── charts/koshin/            # Helm chart
+│       └── minimal/          # 1x NATS (emptyDir), 1x Valkey (emptyDir), 1x Valkey cache
+├── charts/koshin/            # Helm chart (minimal & ha profiles; shared worker _podspec.tpl)
 ├── github-app/manifest.json  # GitHub App manifest
 ├── core/                     # dev.hononeko.koshin.core.{model,ports,usecase}, zero infra deps
 ├── adapters/
-│   ├── nats/                 # JetStream queue, DLQ forwarder, Object Store repo cache
-│   ├── state-valkey/         # RepoCoordinationPort + PlatformThrottlePort
+│   ├── nats/                 # JetStream queue, DLQ forwarder/sweeper, queue depth, Object Store repo cache
+│   ├── state-valkey/         # RepoCoordinationPort + PlatformThrottlePort + Leader/Warm leases
 │   └── github-app/           # GitHub App credentials + repository discovery
-├── proxy/                    # Ktor (Netty) webhook & trigger server
-└── worker/                   # Coroutine worker daemon + Renovate runner
+├── proxy/                    # Ktor (Netty) webhook/trigger server, NATS housekeeping & K8s Job dispatcher
+└── worker/                   # Coroutine worker (warm daemon or drain-then-exit Job) + Renovate runner
 ```
 
 ### 4.2. Core Contracts (`:core`)
@@ -161,6 +160,7 @@ interface PlatformThrottlePort {
     suspend fun tryAcquireRunSlot(scope: CredentialScope, token: String, ttl: Duration): Boolean
     suspend fun extendRunSlot(scope: CredentialScope, token: String, ttl: Duration): Boolean
     suspend fun releaseRunSlot(scope: CredentialScope, token: String)
+    suspend fun activeRunSlots(scope: CredentialScope): Int          // dispatcher demand (KSH-32)
     suspend fun cooldownRemaining(scope: CredentialScope): Duration?
     suspend fun registerRateLimit(scope: CredentialScope, retryAfter: Duration?): Duration
     suspend fun resetBackoff(scope: CredentialScope)
@@ -174,6 +174,13 @@ interface InstallationPolicyPort { suspend fun isAllowed(accountId: Long, login:
 interface RepositoryDiscoveryPort { suspend fun discover(): List<RepoRef> }
 interface CliExecutorPort { suspend fun execute(repo: RepoRef, creds: PlatformCredentials, timeout: Duration): JobExecutionResult }
 interface WorkspaceCleanerPort { suspend fun cleanup(repo: RepoRef); suspend fun purgeAll() }
+
+// Worker dispatch (KSH-31, KSH-32)
+interface WarmWorkerPort { suspend fun renew(workerId: String, ttl: Duration); suspend fun remove(workerId: String); suspend fun liveCount(): Int }
+interface LeaderLeasePort { suspend fun acquireOrRenew(holderId: String, ttl: Duration): Boolean; suspend fun release(holderId: String) }
+data class QueueDepth(val pending: Long, val ackPending: Long)
+interface QueueDepthPort { suspend fun depth(scope: CredentialScope): QueueDepth }
+interface BurstWorkerPort { suspend fun active(): Int; suspend fun start(count: Int) }
 ```
 
 ### 4.3. Health & public endpoints
@@ -293,10 +300,9 @@ return 1
 * **Prevention (two-tier run slots, KSH-24):** two Valkey ZSET semaphores with leases renewed by the heartbeat—a global concurrency cap (`MAX_CONCURRENT_RUNS_GLOBAL`, `koshin:{throttle:global}:slots`) plus a per-credential cap (`MAX_CONCURRENT_RUNS_PER_CREDENTIAL`, `koshin:{throttle:<scope>}:slots`, where `<scope>` is `github:inst-<id>`, `github:pat`, or `gitlab:pat`)—paired with Renovate `hostRules` (`maxRequestsPerSecond`, `concurrentRequestLimit`) injected per run. Per-tenant API budget ≈ per-credential run slots × requests/s per run.
 * **Server-side clock:** the ZSET lease scripts stay single-hash-tag and read `redis.call('TIME')` inside Lua to compute "now" and expiry, never a JVM timestamp passed as an ARGV, so pod clock skew can't corrupt leases.
 * **Detection:** the CLI executor parses Renovate JSON logs for rate-limit errors (configurable pattern), since Renovate exits 0 when it aborts a repository on a rate limit: `Rate limit exceeded - aborting` on GitHub, a `Host error` with `hostType` = the platform and status 429 on GitLab. `Retry-After` / `x-ratelimit-reset` come from the logged response headers when present (secondary limits, GitLab 429s). Rate-limit signals for koshin's own HTTP calls: **429**, **403 + `x-ratelimit-remaining: 0`**, and GitHub secondary-limit responses.
-* **Per-credential backoff & queue partitioning (KSH-24):** rate limits set `koshin:{throttle:<scope>}:cooldown` lasting `Retry-After`/reset time if known, otherwise `min(base × 2^n, max) ± 20% jitter` (`n` in `:backoff_n` resets on a successful run for that scope), so one installation's 403/429 never pauses other installations. Jobs publish to `renovate.jobs.<platform>.<scopeToken>` (`inst-<id>` or `pat`) on `RENOVATE_JOBS` (`WorkQueue`), each backed by its own disjoint durable pull consumer `koshin-workers-<platform>-<scopeToken>`. Workers round-robin across non-cooled-down scopes before calling `fetchNext`, so pending jobs for a cooled-down installation stay at `num_delivered = 0` (`MaxDeliver` untouched) and a tenant with hundreds of queued repos can't starve other tenants.
+* **Per-credential backoff, queue partitioning & dispatch (KSH-24, KSH-32):** rate limits set `koshin:{throttle:<scope>}:cooldown` lasting `Retry-After`/reset time if known, otherwise `min(base × 2^n, max) ± 20% jitter` (`n` in `:backoff_n` resets on a successful run for that scope), so one installation's 403/429 never pauses other installations. Jobs publish to `renovate.jobs.<platform>.<scopeToken>` (`inst-<id>` or `pat`) on `RENOVATE_JOBS` (`WorkQueue`), each backed by its own disjoint durable pull consumer `koshin-workers-<platform>-<scopeToken>`. Cooled-down scopes are skipped by both `:proxy`'s `Job` dispatcher (`0` worker demand, so a cooldown starts no idle pods) and `:worker`'s pull loop: workers round-robin across non-cooled-down scopes before calling `fetchNext`, so pending jobs for a cooled-down installation stay at `num_delivered = 0` (`MaxDeliver` untouched) and a tenant with hundreds of queued repos can't starve other tenants.
 * **Requeue cap:** a rate-limited job is republished at most `MAX_RATE_LIMIT_REQUEUES` (default 5) times, tracked in `RenovateJobEvent.rateLimitAttempt`, then dead-lettered. Without the cap, a permanent failure that matches the rate-limit pattern would loop across cooldowns forever.
 * **koshin's own HTTP calls** (GitHub App tokens, discovery) use a shared Ktor client with `HttpRequestRetry` + `exponentialDelay()` and honor `Retry-After`.
-* KEDA counts pending jobs during a cooldown and may scale up idle pods; keep `maxReplicaCount` modest.
 
 ### 7.1. Multi-Tenant GitHub App, Registry Credentials & Isolation (ADR — KSH-16)
 
@@ -306,7 +312,7 @@ return 1
 * **Tenant-supplied registry secrets via OpenPGP (KSH-25):** a Koshin-side per-installation secret store is rejected (needs tenant OAuth/RBAC, UI/API, and reversible secret storage at rest). Instead, workers mount an OpenPGP private key at `RENOVATE_PRIVATE_KEY_PATH` (plus `RENOVATE_PRIVATE_KEY_PATH_OLD` for zero-downtime rotation; raw `RENOVATE_PRIVATE_KEY` env vars are stripped so child processes don't inherit the key) and `:proxy` serves the armored public key at `GET /api/v1/encryption-key` (`RENOVATE_PUBLIC_KEY_PATH`). Tenants encrypt `{"o":"<owner>","r":"<optional-repo>","v":"<secret>"}` locally with `gpg` and commit the `encrypted` block to `renovate.json` or `{org}/renovate-config`. Verified in Renovate 44.178.3: `decryptConfig` checks `o`/`r` against the **target repository** (including on inherited/extended presets), preventing cross-tenant secret replay for both third-party registries and GitHub Packages PATs.
 * **Tenant isolation & execution guardrails (KSH-21, KSH-25, KSH-26):**
   * **Renovate runner sidecar & decoupled image (KSH-21, KSH-27):** Renovate and the repo code it can run (e.g. Gradle during lockfile updates) run in the worker pod's `renovate` container, a native sidecar (`initContainers` with `restartPolicy: Always`, so it starts before the worker and stops after it, and the SIGTERM path still kills the run). The worker sends each run (command, environment, directory) over a Unix socket in a shared memory `emptyDir` (`RUNNER_SOCKET`) and gets back Renovate's output lines and exit code; closing its side kills the run. The `renovate` container holds no worker secrets and no ServiceAccount token, and has its own PID namespace, so `/proc` shows it nothing of the worker JVM. After every run the runner kills every other process in its container (daemonized ones too) and binds its socket afresh before replying, so no process a run starts can watch or intercept the next run. Files a run writes outside the workspace (e.g. under `$HOME`) stay until the container restarts. Only the workspace `emptyDir` is shared, and the worker never follows a symlink in it. Rejected: a different UID for Renovate in the worker container needs `CAP_SETUID`/`CAP_SETGID` or a setuid helper, which `allowPrivilegeEscalation: false` (no_new_privs) and `drop: [ALL]` rule out. Since KSH-27, `koshin-worker` is a plain Temurin JRE image and the `renovate` sidecar runs upstream `ghcr.io/renovatebot/renovate:<version>-full` directly (`worker.renovate.image` in Helm, upgradable without a koshin release): an init container, `koshin-runner-init` (`koshin-worker` image), copies the runner (`jre`, `lib`, `bin/koshin-runner`) into an `emptyDir` the sidecar mounts read-only at `/opt/koshin`, so a run can't change the runner. Renovate's environment is the sidecar's own (the Renovate image's `PATH`, `HOME`, locale, `BASH_ENV`) plus each run's, minus the worker container's basics (`PATH`, `HOME`, locale, `JAVA_HOME`, …).
-  * **Zero worker K8s API access (KSH-31):** worker pods mount **no** Kubernetes `ServiceAccount` token (`automountServiceAccountToken: false` on every container) and need no RBAC and no cluster-scoped `ValidatingAdmissionPolicy`. The `pod-deletion-cost` annotation, its `pods/patch` Role and the admission policy narrowing it (KSH-21) are gone.
+  * **Zero worker K8s API access & namespaced proxy RBAC (KSH-31, KSH-32):** worker pods mount **no** Kubernetes `ServiceAccount` token (`automountServiceAccountToken: false` on every container) and need no RBAC and no cluster-scoped `ValidatingAdmissionPolicy`. The `pod-deletion-cost` annotation, its `pods/patch` Role and the admission policy narrowing it (KSH-21) are gone. `:proxy` mounts a short-lived projected token scoped strictly to namespaced `batch/v1` `jobs` (`create/list/watch/get/delete`) and `get` on the `<fullname>-worker` `v1/PodTemplate`.
   * **Untrusted code execution disabled:** Renovate holds the PGP key in memory to decrypt configs, so the worker hard-pins `RENOVATE_ALLOW_SCRIPTS=false`, `RENOVATE_ALLOWED_UNSAFE_EXECUTIONS=[]`, `RENOVATE_ALLOW_PLUGINS=false`, and `RENOVATE_ALLOW_CUSTOM_CRATE_GIT_REGISTRIES=false` alongside the runner container (KSH-21) and a worker with no Kubernetes API access (KSH-31).
   * **Repository cache (`REPO_CACHE_PROVIDER`):** `<baseDir>/cache` is wiped after every run so `<repo>.json` (dependency trees and cached private preset HTTP bodies) never lingers on `emptyDir`. Object Store keys include the credential scope (`<platform>/<scope>/<owner>/<repo>.json`) to prevent collisions across account renames or repo transfers. `REPO_CACHE_PROVIDER=s3` passes shared bucket credentials to Renovate and is single-tenant only (rejected when GitHub App auth is active).
   * **Package cache (`RENOVATE_REDIS_URL`):** `RENOVATE_CACHE_PRIVATE_PACKAGES=false` and `RENOVATE_PRESET_CACHE_PERSISTENCE=false` are hard-pinned, and `RENOVATE_REDIS_PREFIX` defaults to `koshin:<scope>:`.
@@ -321,9 +327,18 @@ return 1
 | Valkey (package cache) | same instance | separate single instance, `allkeys-lru`, `emptyDir` (it's only a cache) |
 | On restart | pending jobs, locks and repo caches lost; the sweeper recovers (repos whose `:queued` mark outlived a lost job wait for it to expire) | survives losing one node |
 
-**Autoscaling:** KEDA's `nats-jetstream` scaler requires static consumer names, so with dynamic per-installation consumers (KSH-24) the `ScaledObject` uses KEDA's `metrics-api` scaler against NATS `/jsz?streams=true` (`streams.#(name=="RENOVATE_JOBS").state.messages`, `targetValue: "1"`). On a `WorkQueue` stream where ACKed and exhausted jobs are deleted, `state.messages` equals `sum(num_pending + num_ack_pending)` across all consumers—with 1 job per pod, workers still scale one-to-one with active + pending jobs. Kubernetes picks which pod to remove on scale-in without knowing which are busy; the SIGTERM path keeps a wrong pick safe.
+| Workers | `worker.autoscaling.minReplicas: 0`: burst `Job`s only | `minReplicas: 1` (`values-ha.yaml`): 1 warm `Deployment` pod + burst `Job`s |
 
-Packaged as a Helm chart (`charts/koshin`, KSH-13), the primary install path: `profile: minimal` by default, `ha` via `values-ha.yaml`, with NATS (official `nats-io` chart) and Valkey (official `valkey-io` chart, Sentinel in `ha`) as subcharts or external endpoints. The Kustomize `minimal` overlay (KSH-8) stays as a dependency-free reference; there's no Kustomize `ha` overlay.
+**Worker dispatch (KSH-32):** `:proxy` reconciles right after it publishes a job (an internal `Channel<Unit>(CONFLATED)` wake) and every `WORKER_DISPATCH_INTERVAL_SECONDS` (5s) otherwise, for cooldowns ending, a warm pod rolling or a crashed `Job` (`backoffLimit: 0`) to replace. Across `:proxy` replicas only the holder of the Valkey lease `koshin:{dispatcher}:leader` (`SET PX` on Valkey's clock, TTL 3 × the interval, renewed every reconciliation) reconciles; another replica takes over within the TTL, and a stopping leader releases it at once. Per scope it reads the consumer's `num_pending` / `num_ack_pending`, the active run slots and the cooldown, and the live warm workers (`koshin:{workers}:warm`, falling back to `MIN_WARM_WORKERS` when unreadable):
+* `running(scope) = min(runSlots, num_ack_pending)`: a worker holds a slot while it waits on a fetch too, so only a slot with a delivery is a run. `runnable(scope) = num_pending + num_ack_pending - running` (deliveries without a slot were NAKed for a later retry).
+* `desiredTotalWorkers = min(maxWorkers, Σ running + Σ_{scope not in cooldown} min(runnable, maxPerScope - running))`
+* `desiredBurstJobs = max(0, min(maxWorkers - liveWarmWorkers, desiredTotalWorkers - liveWarmWorkers))`: with `minReplicas: 0` the first runnable job starts a `Job` (`0 → N → 0`); with `minReplicas: 1` a single job goes to the warm pod and a second concurrent one starts a `Job` (`1 → N → 1`), as does any job while the warm pod is rolling.
+* If `desiredBurstJobs > 0`, it reads the `<fullname>-worker` `v1/PodTemplate` (`WORKER_POD_TEMPLATE_NAME`, in `POD_NAMESPACE`), counts its `Job`s that neither succeeded nor failed (label `koshin.hononeko.dev/pod-template-uid`), and creates the difference as `Job`s embedding the template's pod: `generateName: <fullname>-worker-`, `backoffLimit: 0`, `ttlSecondsAfterFinished` (60), `activeDeadlineSeconds` (`21600`, above the workers' `WORKER_MAX_LIFETIME_SECONDS=18000`), labels `koshin.hononeko.dev/worker-mode: burst`, and an owner reference to the `PodTemplate` so uninstalling removes them. It never deletes a `Job`: burst workers drain and exit `0` on their own. Without demand it makes no Kubernetes API call.
+* It talks to `https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT` with the ServiceAccount's projected token (re-read on every request) and CA, behind `WORKER_DISPATCHER_ENABLED` (off in `docker-compose.yml`; on in Helm with `worker.autoscaling.enabled` and in Kustomize).
+
+The Helm chart renders the worker pod once (`templates/worker/_podspec.tpl`) into the burst `PodTemplate` (`restartPolicy: Never`, `WORKER_IDLE_TIMEOUT_SECONDS` 10, `WORKER_MAX_LIFETIME_SECONDS` 18000) and, with `minReplicas: 1` or without autoscaling, a `Deployment` (`restartPolicy: Always`, `WORKER_IDLE_TIMEOUT_SECONDS=0`; `replicas: 1`, or `worker.replicas` without autoscaling) whose PDB covers it alone. `minReplicas` must be `0` or `1`.
+
+Packaged as a Helm chart (`charts/koshin`, KSH-13), the primary install path: `profile: minimal` by default (`worker.autoscaling.minReplicas: 0`), `ha` via `values-ha.yaml` (`minReplicas: 1`), with NATS (official `nats-io` chart) and Valkey (official `valkey-io` chart, Sentinel in `ha`) as subcharts or external endpoints. The Kustomize `minimal` overlay (KSH-8) stays as a dependency-free reference (scale-to-zero burst workers); there's no Kustomize `ha` overlay. Works on vanilla Kubernetes 1.30+ with no external operator.
 
 ## 9. Environment Variables Contract
 
@@ -344,6 +359,14 @@ Packaged as a Helm chart (`charts/koshin`, KSH-13), the primary install path: `p
 | `GITHUB_WEBHOOK_SECRET` | Proxy | — | HMAC secret for `X-Hub-Signature-256` (GitHub App webhook secret) |
 | `GITLAB_WEBHOOK_SECRET` | Proxy | — | Shared token for `X-Gitlab-Token` (constant-time compare) |
 | `INTERNAL_TRIGGER_TOKEN` | Proxy | — | Bearer token for `POST /api/v1/trigger` |
+| `WORKER_DISPATCHER_ENABLED` | Proxy | `false` | Dispatch burst worker `Job`s from the worker `PodTemplate` (KSH-32); `true` in Helm with `worker.autoscaling.enabled` and in Kustomize |
+| `WORKER_POD_TEMPLATE_NAME` | Proxy | `koshin-worker` | `v1/PodTemplate` the burst `Job`s embed (`<fullname>-worker` in Helm) |
+| `POD_NAMESPACE` | Proxy | the ServiceAccount's namespace | Namespace of the `PodTemplate` and `Job`s (downward API) |
+| `WORKER_MAX_REPLICAS` | Proxy | run slots × platforms | Cap on warm + burst workers (`worker.autoscaling.maxReplicas`) |
+| `MIN_WARM_WORKERS` | Proxy | `0` | Warm workers assumed when their Valkey count can't be read (`worker.autoscaling.minReplicas`) |
+| `WORKER_DISPATCH_INTERVAL_SECONDS` | Proxy | `5` | Reconciliation interval without publishes; the leader lease lasts 3 × it |
+| `WORKER_JOB_ACTIVE_DEADLINE_SECONDS` | Proxy | `21600` | `activeDeadlineSeconds` of burst `Job`s; keep it above `WORKER_MAX_LIFETIME_SECONDS` |
+| `WORKER_JOB_TTL_SECONDS` | Proxy | `60` | `ttlSecondsAfterFinished` of burst `Job`s |
 | `SWEEP_REPOSITORIES_FILE` | Proxy | — | Static repo list for discovery, added to the GitHub App's repositories (e.g. GitLab projects) |
 | `VALKEY_URL` | Both | `redis://koshin-valkey:6379` | Coordination Valkey (`redis://` or `redis-sentinel://`); the proxy coalesces ingest with it and fails open while it's down |
 | `VALKEY_SENTINEL_PASSWORD` | Both | — | Sentinel's own password (the URL's password only applies to the Valkey nodes) |
@@ -368,7 +391,7 @@ Packaged as a Helm chart (`charts/koshin`, KSH-13), the primary install path: `p
 | `RENOVATE_CACHE_DIR` | Worker | `$RENOVATE_BASE_DIR/cache` | Renovate's cache dir; wiped after every run once `persist` completes |
 | `RENOVATE_REPOSITORY_CACHE_TYPE` / `RENOVATE_S3_ENDPOINT` / `RENOVATE_S3_PATH_STYLE` | Worker | — / — / `true` | Used when `REPO_CACHE_PROVIDER=s3` (`s3://<bucket>/<prefix>/`); the legacy `RENOVATE_X_S3_*` names are accepted |
 | `MAX_CONCURRENT_RUNS_GLOBAL` | Worker | `6` | Global run-slot cap across all credentials |
-| `MAX_CONCURRENT_RUNS_PER_CREDENTIAL` | Worker | `2` | Per-credential (`github:inst-<id>`, `github:pat`, `gitlab:pat`) run-slot cap (`MAX_CONCURRENT_RUNS_PER_PLATFORM` accepted as legacy alias) |
+| `MAX_CONCURRENT_RUNS_PER_CREDENTIAL` | Both | `2` | Per-credential (`github:inst-<id>`, `github:pat`, `gitlab:pat`) run-slot cap (`MAX_CONCURRENT_RUNS_PER_PLATFORM` accepted as legacy alias) |
 | `RENOVATE_MAX_REQUESTS_PER_SECOND` | Worker | — | Injected into Renovate `hostRules` |
 | `RENOVATE_CONCURRENT_REQUEST_LIMIT` | Worker | — | Injected into Renovate `hostRules` |
 | `RATE_LIMIT_BACKOFF_BASE_SECONDS` | Worker | `60` | Cooldown base |
@@ -403,3 +426,8 @@ Packaged as a Helm chart (`charts/koshin`, KSH-13), the primary install path: `p
 * HTTP server: CIO replaced by Netty with HTTP/2 (`enableHttp2` + `enableH2c`, verified in Ktor 3.6.0); HTTP/3 at the ingress.
 * `/healthz` (liveness, no deps) split from `/readyz` (readiness).
 * Multi-tenant GitHub App ADR (KSH-16 → KSH-17, KSH-24, KSH-25, KSH-26): two-tier (`global` + `CredentialScope`) run slots and per-credential cooldowns; disjoint `renovate.jobs.<platform>.<scope>` consumers + KEDA `metrics-api` stream scaling; OpenPGP `encrypted` registry secrets (`RENOVATE_PRIVATE_KEY_PATH` + `GET /api/v1/encryption-key`, no `ghs_` `hostRules` auto-injection); `GITHUB_COM_TOKEN` stripping on `github.com`, per-run `cacheDir` wipe, scoped repo/package caches, log token scrubbing, and pinned untrusted-execution bans.
+
+## 11. Changelog v3.1 → v3.2
+* Pre-queue coalescing in `:proxy` (`queued` state, `enqueueOrCoalesce`, fail-open ingest) and NATS consumer bootstrap / DLQ housekeeping moved from workers to `:proxy` (KSH-30).
+* Drain-then-exit workers (`WORKER_IDLE_TIMEOUT_SECONDS`, `WORKER_MAX_LIFETIME_SECONDS`), warm-worker presence lease, and no Kubernetes API access for workers (`pod-deletion-cost`, its token, RBAC and `ValidatingAdmissionPolicy` removed) (KSH-31).
+* KEDA removed: `:proxy` dispatches burst `batch/v1` `Job`s from a chart-rendered `v1/PodTemplate`, leader-elected through Valkey, with `worker.autoscaling.minReplicas: 0` (scale to zero) or `1` (one warm `Deployment` pod) (KSH-32).

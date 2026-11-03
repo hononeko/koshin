@@ -22,7 +22,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
 ---
-# Workers serve only their probes
+# Workers, burst Jobs included, serve only their probes
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -39,7 +39,7 @@ spec:
         - port: http
 {{- if or .Values.nats.enabled .Values.valkey.enabled (index .Values "valkey-cache").enabled }}
 ---
-# NATS and Valkey accept only this release's pods, plus KEDA on the NATS monitoring port
+# NATS and Valkey accept only this release's pods
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -60,12 +60,5 @@ spec:
         - podSelector:
             matchLabels:
               app.kubernetes.io/instance: {{ .Release.Name }}
-    {{- if .Values.nats.enabled }}
-    - from:
-        - namespaceSelector:
-            {{- toYaml .Values.networkPolicy.kedaNamespaceSelector | nindent 12 }}
-      ports:
-        - port: {{ .Values.nats.config.monitor.port }}
-    {{- end }}
 {{- end }}
 {{- end }}

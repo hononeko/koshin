@@ -3,7 +3,7 @@
 # sets both this and the NATS/Valkey topology, and the chart refuses to render a profile that doesn't match them.
 profile: minimal
 
-# -- Enabled platforms (`github`, `gitlab`). Each gets a KEDA trigger and its own NATS consumer.
+# -- Enabled platforms (`github`, `gitlab`). Each gets its own NATS consumer and run slots.
 platforms:
   - github
 
@@ -19,7 +19,7 @@ imagePullSecrets: []
 nameOverride: ""
 # -- Overrides the full resource name prefix (default: the release name, plus `-koshin` unless it contains it)
 fullnameOverride: ""
-# -- Kubernetes cluster domain, used for the KEDA monitoring endpoint
+# -- Kubernetes cluster domain, used by `tests.jobProcessing` to reach NATS monitoring
 clusterDomain: cluster.local
 
 # -- Labels added to every koshin resource
@@ -197,6 +197,9 @@ proxy:
   serviceAccount:
     # -- Proxy ServiceAccount annotations
     annotations: {}
+    # -- Lifetime in seconds (at least 600) of the token the proxy's worker dispatcher uses for the Kubernetes API; the
+    # kubelet renews it before it expires. Mounted only with `worker.autoscaling.enabled`.
+    tokenExpirationSeconds: 600
 
 worker:
   image:
@@ -206,7 +209,7 @@ worker:
     tag: ""
     # -- Worker image digest; takes precedence over the tag
     digest: ""
-  # -- Worker replicas when KEDA isn't installed or `autoscaling.enabled` is false
+  # -- Worker replicas when `autoscaling.enabled` is false
   replicas: 1
   # -- Existing Secret with `GITHUB_TOKEN` and/or `GITLAB_TOKEN` (PAT fallback when the GitHub App isn't configured)
   existingSecret: ""
@@ -266,18 +269,26 @@ worker:
   # Valkey when it's a plain `redis://` URL.
   renovateRedisUrl: ""
   autoscaling:
-    # -- Scale workers with KEDA (one per active or pending job). Rendered only when the `keda.sh/v1alpha1` API exists.
+    # -- The proxy starts burst worker `Job`s from the worker `PodTemplate` as jobs queue up, and they exit once the
+    # queue is drained (KSH-32). No KEDA: the proxy gets a namespaced Role on Jobs. Off: `worker.replicas` static workers.
     enabled: true
-    # -- Minimum workers
-    minReplicas: 1
-    # -- Maximum workers (default: `maxConcurrentRunsPerPlatform` × enabled platforms; more would only wait for a slot)
+    # -- Always-warm workers: `0` scales to zero (every job waits for a burst `Job` to start), `1` keeps one warm
+    # Deployment pod that picks a single job up at once.
+    minReplicas: 0
+    # -- Maximum workers, warm and burst (default: `maxConcurrentRunsPerPlatform` × enabled platforms; more would only
+    # wait for a slot)
     maxReplicas: null
-    # -- KEDA polling interval (seconds)
-    pollingInterval: 15
-    # -- Scale-down stabilization window (seconds)
-    scaleDownStabilizationSeconds: 60
-    # -- KEDA trigger `account` (`$G` without NATS accounts)
-    natsAccount: $G
+    # -- `WORKER_IDLE_TIMEOUT_SECONDS` of burst workers: exit once no job was runnable for this long
+    idleTimeoutSeconds: 10
+    # -- `WORKER_MAX_LIFETIME_SECONDS` of burst workers: past this, finish the job in flight and exit instead of
+    # fetching another. Keep it a run (`config.cliTimeoutMinutes`) below `jobActiveDeadlineSeconds`.
+    maxLifetimeSeconds: 18000
+    # -- `activeDeadlineSeconds` of burst worker Jobs
+    jobActiveDeadlineSeconds: 21600
+    # -- `ttlSecondsAfterFinished` of burst worker Jobs
+    jobTtlSecondsAfterFinished: 60
+    # -- How often the proxy reconciles burst workers when it publishes nothing (it also does after every publish)
+    dispatchIntervalSeconds: 5
   podDisruptionBudget:
     # -- Create a PodDisruptionBudget for the workers (`maxUnavailable: 1`, for node drains). Default: on in `ha`.
     enabled: null
@@ -362,8 +373,10 @@ sweeper:
 
 tests:
   jobProcessing:
-    # -- `helm test` also triggers a Renovate run of `repository` and waits until a worker acknowledges it. Off by
-    # default because it starts a real run; needs `INTERNAL_TRIGGER_TOKEN`.
+    # -- `helm test` also triggers a Renovate run of `repository` and waits until a worker acknowledges it, and with
+    # `worker.autoscaling` checks the burst workers: one starts and exits again with `minReplicas: 0`, none starts with
+    # `minReplicas: 1`. Off by default because it starts a real run; needs `INTERNAL_TRIGGER_TOKEN` and the `nats`
+    # subchart.
     enabled: false
     # -- Platform of the test repository
     platform: github
@@ -374,12 +387,7 @@ tests:
 
 networkPolicy:
   # -- Create NetworkPolicies: the proxy accepts webhooks from anywhere, and NATS/Valkey accept only this release's pods
-  # (plus KEDA on the NATS monitoring port)
   enabled: false
-  # -- Namespace selector of the KEDA operator, allowed to reach NATS monitoring
-  kedaNamespaceSelector:
-    matchLabels:
-      kubernetes.io/metadata.name: keda
   # -- Sources allowed to reach the proxy (default: anywhere)
   proxyFrom: []
 
@@ -390,9 +398,6 @@ extraObjects: []
 externalNats:
   # -- NATS URL, e.g. `nats://nats.messaging:4222`
   url: ""
-  # -- NATS monitoring endpoint (`host:8222`) for the KEDA scaler; for a cluster, the headless Service so KEDA can reach
-  # each node, e.g. `nats-headless.messaging.svc.cluster.local:8222`
-  monitoringEndpoint: ""
 
 # -- Coordination Valkey used when `valkey.enabled` is false
 externalValkey:

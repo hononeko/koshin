@@ -1,4 +1,5 @@
-# `ct install` on kind: the minimal profile with test-only inline secrets
+# `ct install` on kind: the minimal profile with test-only inline secrets, scaled to zero (worker.autoscaling.minReplicas:
+# 0): the test run starts a burst worker Job, which exits once it's done
 proxy:
   replicas: 1
   secrets:
@@ -18,8 +19,9 @@ worker:
       limits:
         memory: 2Gi
   workspaceSizeLimit: 2Gi
-# proxy -> NATS -> worker -> Renovate -> ACK, on a run Renovate fails fast
+# proxy -> NATS -> burst worker Job -> Renovate -> ACK, on a run Renovate fails fast. The Job pulls the Renovate image
+# (~10 GB) during the test, as no worker ran before it.
 tests:
   jobProcessing:
     enabled: true
-    timeoutSeconds: 300
+    timeoutSeconds: 840

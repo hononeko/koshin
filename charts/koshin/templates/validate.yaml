@@ -36,6 +36,14 @@
 {{- if and (not .Values.valkey.enabled) .Values.externalValkey.sentinelUsername (not .Values.externalValkey.sentinelPasswordSecret.name) }}
 {{- fail "externalValkey.sentinelUsername needs externalValkey.sentinelPasswordSecret" }}
 {{- end }}
+{{- with .Values.worker.autoscaling }}
+{{- if not (has (int .minReplicas) (list 0 1)) }}
+{{- fail (printf "worker.autoscaling.minReplicas must be 0 (scale to zero) or 1 (one warm worker), not %v" .minReplicas) }}
+{{- end }}
+{{- if and .enabled (gt (int .maxLifetimeSeconds) 0) (ge (int .maxLifetimeSeconds) (int .jobActiveDeadlineSeconds)) }}
+{{- fail "worker.autoscaling.maxLifetimeSeconds must be below jobActiveDeadlineSeconds, or a Job is killed mid-run" }}
+{{- end }}
+{{- end }}
 {{- if and .Values.proxy.httpRoute.enabled (empty .Values.proxy.httpRoute.parentRefs) }}
 {{- fail "proxy.httpRoute.parentRefs needs at least one Gateway when proxy.httpRoute.enabled is true" }}
 {{- end }}

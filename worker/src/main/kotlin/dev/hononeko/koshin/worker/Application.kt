@@ -175,7 +175,7 @@ fun main() {
     }
 
     val backends = WorkerBackends(
-        // Consumers for every platform, so KEDA's per-platform triggers never hit a missing consumer.
+        // Consumers for every platform, like the proxy creates them
         connectNats = {
             WorkerBackends.connectNats(
                 url = settings.natsUrl,

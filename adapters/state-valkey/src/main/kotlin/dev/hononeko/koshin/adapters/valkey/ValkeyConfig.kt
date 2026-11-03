@@ -66,6 +66,9 @@ data class ValkeyConfig(
     /** Leases of live warm workers (KSH-31). */
     fun warmWorkersKey(): String = "$keyPrefix:{workers}:warm"
 
+    /** Lease of the proxy replica dispatching workers (KSH-32). */
+    fun dispatcherLeaderKey(): String = "$keyPrefix:{dispatcher}:leader"
+
     companion object {
         const val DEFAULT_VALKEY_URL = "redis://koshin-valkey:6379"
         private val USER_INFO = Regex("(?<=://)[^@/]+@")

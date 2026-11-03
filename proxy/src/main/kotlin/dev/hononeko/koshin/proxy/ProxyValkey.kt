@@ -1,11 +1,17 @@
 package dev.hononeko.koshin.proxy
 
 import dev.hononeko.koshin.adapters.valkey.ValkeyConfig
+import dev.hononeko.koshin.adapters.valkey.ValkeyLeaderLeaseAdapter
+import dev.hononeko.koshin.adapters.valkey.ValkeyPlatformThrottleAdapter
 import dev.hononeko.koshin.adapters.valkey.ValkeyRepoCoordinationAdapter
+import dev.hononeko.koshin.adapters.valkey.ValkeyWarmWorkerAdapter
 import dev.hononeko.koshin.core.model.RepoRef
 import dev.hononeko.koshin.core.ports.AcquireResult
+import dev.hononeko.koshin.core.ports.LeaderLeasePort
+import dev.hononeko.koshin.core.ports.PlatformThrottlePort
 import dev.hononeko.koshin.core.ports.ReleaseResult
 import dev.hononeko.koshin.core.ports.RepoCoordinationPort
+import dev.hononeko.koshin.core.ports.WarmWorkerPort
 import io.lettuce.core.ClientOptions
 import io.lettuce.core.RedisClient
 import kotlinx.coroutines.CancellationException
@@ -35,9 +41,20 @@ class ProxyValkey(
     ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val connect: suspend () -> Connection,
 ) : AutoCloseable {
-    class Connection(val coordination: RepoCoordinationPort, private val onClose: () -> Unit = {}) : AutoCloseable {
+    class Connection(
+        val coordination: RepoCoordinationPort,
+        val dispatch: DispatchPorts? = null,
+        private val onClose: () -> Unit = {},
+    ) : AutoCloseable {
         override fun close() = onClose()
     }
+
+    /** What the worker dispatcher reads from Valkey (KSH-32). */
+    class DispatchPorts(
+        val leader: LeaderLeasePort,
+        val throttle: PlatformThrottlePort,
+        val warmWorkers: WarmWorkerPort,
+    )
 
     private val logger = LoggerFactory.getLogger(ProxyValkey::class.java)
     private val scope = CoroutineScope(SupervisorJob() + ioDispatcher)
@@ -45,6 +62,9 @@ class ProxyValkey(
 
     val isConnected: Boolean
         get() = connection.get() != null
+
+    /** The dispatcher's ports, or `null` while not connected. */
+    fun dispatchPorts(): DispatchPorts? = connection.get()?.dispatch
 
     /** Fails with [IllegalStateException] until connected. */
     val coordination: RepoCoordinationPort = object : RepoCoordinationPort {
@@ -121,7 +141,10 @@ class ProxyValkey(
                 val connection = withContext(ioDispatcher) { client.connect() }
                 val coordination = ValkeyRepoCoordinationAdapter(connection, config)
                 coordination.preloadScripts()
-                return Connection(coordination) {
+                val leader = ValkeyLeaderLeaseAdapter(connection, config).apply { preloadScripts() }
+                val throttle = ValkeyPlatformThrottleAdapter(connection, config).apply { preloadScripts() }
+                val warmWorkers = ValkeyWarmWorkerAdapter(connection, config).apply { preloadScripts() }
+                return Connection(coordination, DispatchPorts(leader, throttle, warmWorkers)) {
                     runCatching { connection.close() }
                     client.shutdown()
                 }

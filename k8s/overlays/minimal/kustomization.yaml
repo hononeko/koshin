@@ -22,19 +22,3 @@ configMapGenerator:
       # Repo caches share NATS's 1GB max_file_store with the job streams: keep them well below it.
       - REPO_CACHE_MAX_BYTES=536870912
       - REPO_CACHE_TTL_DAYS=30
-
-# KEDA resolves the NATS monitoring endpoint from its own namespace: fill in ours.
-replacements:
-  - source:
-      kind: Service
-      name: koshin-nats
-      fieldPath: metadata.namespace
-    targets:
-      - select:
-          kind: ScaledObject
-          name: koshin-worker
-        fieldPaths:
-          - spec.triggers.*.metadata.natsServerMonitoringEndpoint
-        options:
-          delimiter: "."
-          index: 1

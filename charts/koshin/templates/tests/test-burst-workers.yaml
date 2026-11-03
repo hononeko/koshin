@@ -1,0 +1,79 @@
+{{- if and .Values.tests.jobProcessing.enabled (include "koshin.triggerToken" .) .Values.nats.enabled .Values.worker.autoscaling.enabled }}
+# After test-job-processing (KSH-32): with minReplicas 0, the proxy started a burst worker Job for the run and the Job
+# exits once the queue is drained (0 → 1 → 0); with minReplicas 1, the warm worker took the run and no Job started.
+# Uses the proxy's ServiceAccount, whose Role lists Jobs.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "koshin.fullname" . }}-test-burst-workers
+  labels:
+    {{- include "koshin.labels" (dict "ctx" . "component" "test") | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-weight: "1"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  serviceAccountName: {{ include "koshin.fullname" . }}-proxy
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 100
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: burst-workers
+      image: "{{ .Values.sweeper.image.repository }}:{{ .Values.sweeper.image.tag }}"
+      env:
+        - name: SELECTOR
+          value: {{ printf "koshin.hononeko.dev/worker-mode=burst,app.kubernetes.io/instance=%s" .Release.Name | quote }}
+        - name: WARM
+          value: {{ .Values.worker.autoscaling.minReplicas | quote }}
+        - name: TIMEOUT
+          value: {{ .Values.tests.jobProcessing.timeoutSeconds | quote }}
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          set -eu
+          sa=/var/run/secrets/kubernetes.io/serviceaccount
+          # The burst worker Jobs, one JSON field per line
+          jobs() {
+            curl -fsS --retry 5 --retry-all-errors --cacert "$sa/ca.crt" -H "Authorization: Bearer $(cat "$sa/token")" \
+              --get --data-urlencode "labelSelector=$SELECTOR" \
+              "https://kubernetes.default.svc/apis/batch/v1/namespaces/$(cat "$sa/namespace")/jobs" | tr ',{}' '\n\n\n'
+          }
+          count() { jobs | grep -c "$1" || true; }
+          started=$(count '"generateName":')
+          if [ "$WARM" -eq 1 ]; then
+            if [ "$started" -ne 0 ]; then
+              echo "$started burst worker Job(s) started although the warm worker was ready"
+              exit 1
+            fi
+            echo "The warm worker took the run; no burst worker Job started"
+            exit 0
+          fi
+          if [ "$started" -eq 0 ]; then
+            echo "No burst worker Job started for the run"
+            exit 1
+          fi
+          deadline=$(( $(date +%s) + TIMEOUT ))
+          while [ "$(count '"active":')" -ne 0 ]; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "Burst worker Jobs still running after ${TIMEOUT}s"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "$started burst worker Job(s) ran and exited: back to zero workers"
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      volumeMounts:
+        - name: kube-api-access
+          mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+          readOnly: true
+  volumes:
+    {{- include "koshin.kubeApiAccessVolume" . | nindent 4 }}
+{{- end }}

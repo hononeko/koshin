@@ -5,7 +5,7 @@
 [![JDK](https://img.shields.io/badge/JDK-25-orange.svg)](https://adoptium.net)
 [![Gradle](https://img.shields.io/badge/Gradle-9.4+-green.svg)](https://gradle.org)
 
-Stateless, horizontally scalable Renovate CLI orchestrator built with Kotlin, Ktor, NATS JetStream, Valkey, and KEDA.
+Stateless, scale-to-zero Renovate CLI orchestrator built with Kotlin, Ktor, NATS JetStream and Valkey: a proxy coalesces webhooks and starts worker Jobs on demand, without an autoscaler.
 
 ---
 
@@ -129,7 +129,7 @@ Git provider API limits cap throughput long before NATS or Valkey do (GitHub: 5,
 * **Per-request limits:** `RENOVATE_MAX_REQUESTS_PER_SECOND` / `RENOVATE_CONCURRENT_REQUEST_LIMIT` become a Renovate `hostRules` entry for the platform's API host on every run, appended to any `RENOVATE_HOST_RULES` you set.
 * **Cooldown:** when Renovate aborts a run on the platform's rate limit (it still exits 0; the worker reads its JSON logs, matching `RATE_LIMIT_LOG_PATTERN`), every worker stops fetching that platform for the `Retry-After` / reset time if Renovate logged one, else `min(RATE_LIMIT_BACKOFF_BASE_SECONDS × 2^n, RATE_LIMIT_BACKOFF_MAX_SECONDS) ± 20%`. `n` resets after a successful run. The job is requeued up to `MAX_RATE_LIMIT_REQUEUES` times, then dead-lettered.
 
-**Sizing:** API budget ≈ run slots × requests per second per run. For example, 3 slots × 2 req/s ≈ 21,600 requests/hour, well over a 5,000/hour token, so either lower `RENOVATE_MAX_REQUESTS_PER_SECOND` (3 × 0.4 ≈ 4,300/hour) or accept occasional cooldowns. Keep the KEDA `maxReplicaCount` close to the total run slots: extra pods only wait for a slot. During a cooldown KEDA still counts the pending jobs and may scale up pods that sit idle until it ends.
+**Sizing:** API budget ≈ run slots × requests per second per run. For example, 3 slots × 2 req/s ≈ 21,600 requests/hour, well over a 5,000/hour token, so either lower `RENOVATE_MAX_REQUESTS_PER_SECOND` (3 × 0.4 ≈ 4,300/hour) or accept occasional cooldowns. Keep `WORKER_MAX_REPLICAS` close to the total run slots (the default): extra pods only wait for a slot. During a cooldown the proxy starts no worker for that platform's jobs.
 
 ---
 
@@ -156,12 +156,12 @@ curl -X POST localhost:8080/api/v1/trigger -H "Authorization: Bearer dev-trigger
 
 ## Kubernetes Deployment (Helm)
 
-The Helm chart in [`charts/koshin`](charts/koshin/README.md) is the primary install path, published as `oci://ghcr.io/hononeko/charts/koshin` with every release. It deploys the proxy, the KEDA-scaled workers and the sweeper, plus NATS (official `nats-io` chart) and Valkey (official `valkey-io` chart), or connects to existing ones (`external*` values). Every env contract variable is a value; secrets come from existing Secrets.
+The Helm chart in [`charts/koshin`](charts/koshin/README.md) is the primary install path, published as `oci://ghcr.io/hononeko/charts/koshin` with every release. It deploys the proxy, the worker `PodTemplate` the proxy starts burst worker Jobs from (plus one warm worker in `ha`) and the sweeper, plus NATS (official `nats-io` chart) and Valkey (official `valkey-io` chart), or connects to existing ones (`external*` values). Every env contract variable is a value; secrets come from existing Secrets.
 
-* **`minimal`** (default): one NATS and one coordination Valkey on `emptyDir`, and a separate package-cache Valkey.
-* **`ha`** (`-f values-ha.yaml`): a 3-node NATS cluster on PVCs with streams at R3, Valkey primary + 2 replicas with AOF and 3 Sentinels, PodDisruptionBudgets and node spread.
+* **`minimal`** (default): one NATS and one coordination Valkey on `emptyDir`, a separate package-cache Valkey, and no worker while the queue is empty.
+* **`ha`** (`-f values-ha.yaml`): a 3-node NATS cluster on PVCs with streams at R3, Valkey primary + 2 replicas with AOF and 3 Sentinels, PodDisruptionBudgets, node spread, and one always-warm worker.
 
-The [chart README](charts/koshin/README.md) covers [choosing a profile](charts/koshin/README.md#choosing-a-profile), [sizing](charts/koshin/README.md#sizing), [backups and recovery](charts/koshin/README.md#backups-and-recovery) and [uninstalling](charts/koshin/README.md#uninstall).
+The [chart README](charts/koshin/README.md) covers [choosing a profile](charts/koshin/README.md#choosing-a-profile), [workers](charts/koshin/README.md#workers), [sizing](charts/koshin/README.md#sizing), [backups and recovery](charts/koshin/README.md#backups-and-recovery) and [uninstalling](charts/koshin/README.md#uninstall).
 
 ```bash
 helm install koshin oci://ghcr.io/hononeko/charts/koshin -n koshin --create-namespace \
@@ -170,7 +170,7 @@ helm install koshin oci://ghcr.io/hononeko/charts/koshin -n koshin --create-name
 
 ## Kubernetes Deployment (Kustomize reference)
 
-The Kustomize manifests stay as a small, dependency-free reference for the `minimal` profile; `ha` is Helm-only. `k8s/base` holds the proxy (2 replicas, `appProtocol: kubernetes.io/h2c`), the worker (no ServiceAccount token or RBAC), its KEDA `ScaledObject` and the 6-hourly sweeper `CronJob`. `k8s/overlays/minimal` adds the `koshin` namespace plus a single NATS, a coordination Valkey (`noeviction`) and a package-cache Valkey (`allkeys-lru`), all on `emptyDir`. Requires Kubernetes 1.30+ and [KEDA](https://keda.sh) 2.21+.
+The Kustomize manifests stay as a small, dependency-free reference for the `minimal` profile; `ha` is Helm-only. `k8s/base` holds the proxy (2 replicas, `appProtocol: kubernetes.io/h2c`, and a Role to start worker Jobs), the burst worker `PodTemplate` (no ServiceAccount token or RBAC) and the 6-hourly sweeper `CronJob`. `k8s/overlays/minimal` adds the `koshin` namespace plus a single NATS, a coordination Valkey (`noeviction`) and a package-cache Valkey (`allkeys-lru`), all on `emptyDir`. Requires Kubernetes 1.30+, and nothing else.
 
 ```bash
 kubectl -n koshin create secret generic koshin-proxy-secrets \
@@ -180,8 +180,7 @@ kubectl apply -k k8s/overlays/minimal
 ```
 
 * **Repositories to sweep:** the `koshin-repositories` ConfigMap (`github:org/repo` per line), replaced from your overlay. Empty by default, so the sweeper enqueues nothing.
-* **Autoscaling:** one `nats-jetstream` trigger per platform consumer, summed with `scalingModifiers` (`github + gitlab`, target `1`); KEDA counts pending plus in-flight jobs, so workers scale one-to-one with jobs across platforms up to `maxReplicaCount`. The worker creates both platform consumers so neither trigger errors.
-* **Scale-in:** KEDA may remove a busy pod; the SIGTERM path NAKs its job for another worker.
+* **Workers (KSH-32):** none run while the queue is empty. The proxy (`WORKER_DISPATCHER_ENABLED=true`) starts burst worker Jobs from the `koshin-worker` PodTemplate as jobs it can run queue up, up to `WORKER_MAX_REPLICAS` (run slots × platforms by default); they run jobs back to back and exit once idle for `WORKER_IDLE_TIMEOUT_SECONDS`. Only one proxy replica, holding a Valkey lease, starts them.
 * **`minimal` trade-off:** a NATS or Valkey restart loses pending jobs, locks, dirty flags and the package cache; proxy and worker recreate the streams and consumers on reconnect, and the sweeper re-enqueues every repository within 6 hours (after a NATS restart, those still marked queued only once the mark expires: `QUEUED_TTL_SECONDS`). NATS and Valkey are infrastructure, so they're the only stateful pieces; the Helm chart's `ha` profile gives them persistence.
 * **Edge HTTP/3:** `k8s/examples/gateway-http3.yaml` is an Envoy Gateway example that terminates TLS + HTTP/3 and exposes only `/webhooks/`.
 

@@ -7,9 +7,9 @@ labels:
 
 resources:
   - proxy-deployment.yaml
+  - proxy-rbac.yaml
   - proxy-service.yaml
-  - worker-deployment.yaml
-  - worker-scaledobject.yaml
+  - worker-podtemplate.yaml
   - cronjob-sweeper.yaml
 
 configMapGenerator:

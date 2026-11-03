@@ -221,9 +221,12 @@ fun main() {
     )
     natsLifecycle.startAsync()
 
+    val appScope = CoroutineScope(SupervisorJob())
+    val dispatcher = workerDispatcher(proxyConfig, valkey, natsLifecycle)
+    dispatcher?.start(appScope)
+
     val gitHubApp = GitHubAppConfig.fromEnv()?.let(::GitHubApp)
     gitHubApp?.let { runBlocking { it.allowList.resolveLogins() } }
-    val appScope = CoroutineScope(SupervisorJob())
     val botLogin = gitHubApp?.let { app -> AppBotLogin(app::botLogin).also { it.start(appScope) } }
     val discovery = CompositeRepositoryDiscovery.of(
         listOfNotNull(gitHubApp?.discovery(), proxyConfig.sweepRepositoriesFile?.let(::StaticFileRepositoryDiscovery)),
@@ -231,10 +234,11 @@ fun main() {
 
     createProxyServer(
         config = proxyConfig,
-        publisher = natsLifecycle,
+        publisher = dispatcher?.let { WakingPublisher(natsLifecycle, it::wake) } ?: natsLifecycle,
         discoveryPort = discovery,
         readinessCheck = natsLifecycle::isReady,
         onStop = {
+            runBlocking { dispatcher?.stop() }
             appScope.cancel()
             gitHubApp?.close()
             natsLifecycle.close()
@@ -252,4 +256,17 @@ fun main() {
         ),
         coordination = valkey.coordination,
     ).start(wait = true)
+}
+
+/** The burst-worker dispatcher when `WORKER_DISPATCHER_ENABLED` (KSH-32), talking to this pod's Kubernetes API. */
+private fun workerDispatcher(config: ProxyConfig, valkey: ProxyValkey, nats: ProxyNatsLifecycle): WorkerDispatcher? {
+    val dispatch = config.dispatcher.takeIf { it.enabled } ?: return null
+    val burstWorkers = KubernetesBurstWorkers(
+        api = KubernetesApi.inCluster(),
+        namespace = dispatch.namespace ?: KubernetesApi.inClusterNamespace(),
+        podTemplateName = dispatch.podTemplateName,
+        activeDeadline = dispatch.jobActiveDeadline,
+        ttlAfterFinished = dispatch.jobTtlAfterFinished,
+    )
+    return WorkerDispatcher(dispatch, config.platforms, valkey::dispatchPorts, nats.queueDepth, burstWorkers)
 }

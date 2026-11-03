@@ -1,6 +1,6 @@
 apiVersion: v2
 name: koshin
-description: Distributed Renovate orchestrator - a stateless webhook proxy and KEDA-scaled workers on NATS JetStream and Valkey
+description: Distributed Renovate orchestrator - a stateless webhook proxy dispatching scale-to-zero workers on NATS JetStream and Valkey
 type: application
 # Set to the release version by the CD workflow when the chart is published
 version: 0.8.0
@@ -14,7 +14,6 @@ keywords:
   - dependency-updates
   - nats
   - valkey
-  - keda
 maintainers:
   - name: hononeko
     url: https://github.com/hononeko

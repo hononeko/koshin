@@ -1,0 +1,13 @@
+{{- if .Values.worker.autoscaling.enabled }}
+# The burst worker the proxy clones into Kubernetes Jobs on demand (KSH-32): it drains the queue, then exits 0
+apiVersion: v1
+kind: PodTemplate
+metadata:
+  name: {{ include "koshin.fullname" . }}-worker
+  labels:
+    {{- include "koshin.labels" (dict "ctx" . "component" "worker") | nindent 4 }}
+template:
+  {{- with .Values.worker.autoscaling }}
+  {{- include "koshin.workerPod" (dict "ctx" $ "mode" "burst" "restartPolicy" "Never" "idleTimeoutSeconds" .idleTimeoutSeconds "maxLifetimeSeconds" .maxLifetimeSeconds) | nindent 2 }}
+  {{- end }}
+{{- end }}
