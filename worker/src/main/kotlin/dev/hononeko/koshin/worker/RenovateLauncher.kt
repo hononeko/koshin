@@ -17,7 +17,6 @@ import org.slf4j.LoggerFactory
 import java.io.IOException
 import java.io.InputStream
 import java.nio.file.Path
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import java.util.stream.Stream
 import kotlin.io.path.createDirectories
@@ -54,25 +53,30 @@ interface RenovateRun {
     suspend fun destroy()
 }
 
-/** Kills what's left of a run. Blocking. */
+/**
+ * Kills what's left of a run, waiting until it's gone: dead, and reaped if it became a child of this JVM, so no
+ * zombie stays behind (KSH-23). Blocking. Assumes one run at a time, so whatever is left over belongs to that run.
+ */
 fun interface ProcessKiller {
     fun kill(process: Process)
 
     companion object {
         private val logger = LoggerFactory.getLogger(ProcessKiller::class.java)
         private val KILL_WAIT = 5.seconds
+        private const val POLL_MILLIS = 10L
         private const val MAX_SWEEPS = 5
 
         /** Renovate and its descendants. A daemonized process is no longer a descendant, so it survives. */
         val TREE = ProcessKiller { process ->
             // Snapshot first: once the root dies its children are reparented and no longer reachable.
-            killAndAwait(listOf(process.toHandle()) + process.descendants().toList())
+            killAndAwait(process, listOf(process.toHandle()) + process.descendants().toList())
         }
 
         /**
          * Everything in [others] as well as Renovate's tree, until nothing is left. Where Renovate has a container to
          * itself (the runner), [others] is every process but the runner and its ancestors, so nothing a run leaves
-         * behind, daemonized or not, outlives it.
+         * behind, daemonized or not, outlives it. The container's init (`dumb-init`, from containerbase's
+         * entrypoint) reaps them; when the runner is PID 1 itself, it does.
          */
         fun sweep(others: () -> Stream<ProcessHandle> = ::othersInContainer) = ProcessKiller { process ->
             repeat(MAX_SWEEPS) {
@@ -81,11 +85,28 @@ fun interface ProcessKiller {
                     add(process.toHandle())
                     addAll(process.descendants().toList())
                     addAll(others().toList())
-                }.filter { handle -> handle.isAlive }
+                }.filter { handle -> handle.isAlive }.distinctBy { handle -> handle.pid() }
                 if (targets.isEmpty()) return@ProcessKiller
-                killAndAwait(targets)
+                killAndAwait(process, targets)
             }
             logger.warn("Processes still alive after {} sweeps", MAX_SWEEPS)
+        }
+
+        /**
+         * Where Renovate shares this JVM's container (no runner): on Linux this JVM becomes a child subreaper, so what
+         * a run daemonizes (`setsid()`, e.g. a Bazel server or gpg-agent) is reparented to it rather than init, then
+         * swept with the run and reaped. Elsewhere, [TREE].
+         */
+        fun adopting(): ProcessKiller = adoptingKiller
+
+        private val adoptingKiller: ProcessKiller by lazy {
+            if (Posix.becomeChildSubreaper()) {
+                // Every descendant of this JVM is the run's: it runs one at a time and nothing else
+                sweep { ProcessHandle.current().descendants() }
+            } else {
+                logger.info("Not a child subreaper (Linux only): processes a run daemonizes may outlive it")
+                TREE
+            }
         }
 
         private fun othersInContainer(): Stream<ProcessHandle> {
@@ -94,14 +115,31 @@ fun interface ProcessKiller {
             return ProcessHandle.allProcesses().filter { it.pid() !in spared }
         }
 
-        private fun killAndAwait(targets: List<ProcessHandle>) {
-            targets.forEach { it.destroyForcibly() }
-            // Wait for all of them, so nothing still writes to the workspace while it is deleted.
-            val deadline = System.nanoTime() + KILL_WAIT.inWholeNanoseconds
+        /**
+         * Kills [targets] and waits until all are gone, so nothing still writes to the workspace while it's deleted.
+         * Those that became this JVM's children (orphans it adopted as PID 1 or a subreaper) are reaped: to
+         * [ProcessHandle], a zombie is alive. [process] is left to the JVM, which reaps the processes it starts.
+         */
+        private fun killAndAwait(process: Process, targets: List<ProcessHandle>) {
             targets.forEach { handle ->
-                val remaining = (deadline - System.nanoTime()).coerceAtLeast(0)
-                runCatching { handle.onExit().get(remaining, TimeUnit.NANOSECONDS) }
+                if (handle.pid() != process.pid()) {
+                    logger.debug("Killing leftover pid {} ({})", handle.pid(), handle.info().command().orElse("?"))
+                }
+                handle.destroyForcibly()
             }
+            val self = ProcessHandle.current().pid()
+            val deadline = System.nanoTime() + KILL_WAIT.inWholeNanoseconds
+            var pending = targets
+            while (pending.isNotEmpty() && System.nanoTime() < deadline) {
+                pending = pending.filterNot { handle -> isGone(handle, self, process.pid()) }
+                if (pending.isNotEmpty()) Thread.sleep(POLL_MILLIS)
+            }
+        }
+
+        private fun isGone(handle: ProcessHandle, self: Long, started: Long): Boolean {
+            if (!handle.isAlive) return true
+            val adopted = handle.pid() != started && handle.parent().map { it.pid() }.orElse(0L) == self
+            return adopted && Posix.reap(handle.pid())
         }
 
         /** Whether this process is PID 1 or its direct child, i.e. the main process of its container. */
@@ -112,7 +150,7 @@ fun interface ProcessKiller {
 
 /** Runs Renovate as a child of this JVM. */
 class LocalRenovateLauncher(
-    private val killer: ProcessKiller = ProcessKiller.TREE,
+    private val killer: ProcessKiller = ProcessKiller.adopting(),
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : RenovateLauncher {
 

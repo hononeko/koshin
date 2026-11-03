@@ -80,6 +80,8 @@ subprojects {
 
     tasks.withType<Test>().configureEach {
         useJUnitPlatform()
+        // As in the images: the worker reaps leftover processes through the FFM API
+        jvmArgs("--enable-native-access=ALL-UNNAMED")
         // The assertion message and stack, so a CI failure says what failed
         testLogging {
             events("failed")

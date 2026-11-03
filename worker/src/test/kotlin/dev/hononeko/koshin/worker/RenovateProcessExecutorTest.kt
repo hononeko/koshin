@@ -17,6 +17,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.io.TempDir
@@ -26,6 +27,7 @@ import kotlin.io.path.exists
 import kotlin.io.path.readLines
 import kotlin.io.path.readText
 import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.nanoseconds
 import kotlin.time.Duration.Companion.seconds
 
 class RenovateProcessExecutorTest {
@@ -143,6 +145,65 @@ class RenovateProcessExecutorTest {
         )
         assertEquals("gitlab", built["RENOVATE_PLATFORM"])
         assertFalse(built.containsKey("RENOVATE_ENDPOINT"))
+    }
+
+    /** Daemonizes (`setsid`) a process, records its PID, then does [then]. */
+    private fun daemonThen(then: String) = """
+        setsid sh -c 'echo ${'$'}${'$'} > "${'$'}RENOVATE_BASE_DIR/daemon.pid"; exec sleep 300' > /dev/null 2>&1 &
+        while [ ! -s "${'$'}RENOVATE_BASE_DIR/daemon.pid" ]; do sleep 0.05; done
+        $then
+    """.trimIndent()
+
+    /** Neither running nor a zombie: no `/proc` entry left (KSH-23). */
+    private fun assertReaped(pid: Long) {
+        val deadline = System.nanoTime() + 10.seconds.inWholeNanoseconds
+        while (Path.of("/proc/$pid").exists()) {
+            check(System.nanoTime() < deadline) { "Process $pid is still there: ${procState(pid)}" }
+            Thread.sleep(20)
+        }
+    }
+
+    private fun procState(pid: Long) = runCatching { Path.of("/proc/$pid/stat").readText() }.getOrDefault("gone")
+
+    @Test
+    fun `a daemon the run leaves behind is killed and reaped when Renovate exits`() = runBlocking {
+        assumeTrue(Posix.becomeChildSubreaper(), "child subreapers are Linux-only")
+        val started = System.nanoTime()
+
+        val result = executor(daemonThen("exit 0")).execute(repo, creds, 1.minutes)
+
+        assertEquals(JobExecutionResult.Success, result)
+        assertReaped(pidFrom("daemon.pid"))
+        val elapsed = (System.nanoTime() - started).nanoseconds
+        assertTrue(elapsed < 4.seconds, "no wait for a zombie to exit: $elapsed")
+    }
+
+    @Test
+    fun `a daemon the run leaves behind is killed and reaped on a timeout`() = runBlocking {
+        assumeTrue(Posix.becomeChildSubreaper(), "child subreapers are Linux-only")
+
+        val result = executor(daemonThen("sleep 300")).execute(repo, creds, 2.seconds)
+
+        assertEquals(JobExecutionResult.TimedOut, result)
+        assertReaped(pidFrom("daemon.pid"))
+    }
+
+    @Test
+    fun `a daemon the run leaves behind is killed and reaped on a cancellation`() = runBlocking {
+        assumeTrue(Posix.becomeChildSubreaper(), "child subreapers are Linux-only")
+        val result = async { executor(daemonThen("sleep 300")).execute(repo, creds, 10.minutes) }
+        val daemon = pidFrom("daemon.pid")
+
+        result.cancelAndJoin()
+
+        assertTrue(result.isCancelled)
+        assertReaped(daemon)
+    }
+
+    @Test
+    fun `reaping a process that isn't this JVM's child is a no-op`() {
+        assertTrue(Posix.reap(ProcessHandle.current().pid()))
+        assertTrue(Posix.reap(Long.MAX_VALUE / 2))
     }
 
     @Test
