@@ -79,8 +79,8 @@ natsSettings:
   ackWaitSeconds: 60
   # -- `NATS_MAX_DELIVER`: deliveries of a job before it's dead-lettered
   maxDeliver: 5
-  # -- `NATS_EXHAUSTED_SWEEP_SECONDS`: how often workers move exhausted jobs whose MaxDeliver advisory was missed to the
-  # DLQ; 0 turns it off
+  # -- `NATS_EXHAUSTED_SWEEP_SECONDS`: how often the proxy moves exhausted jobs whose MaxDeliver advisory was missed to
+  # the DLQ; 0 turns it off
   exhaustedSweepSeconds: 300
 
 valkeySettings:
@@ -91,6 +91,11 @@ valkeySettings:
   lockReplicaAckTimeoutMs: 0
   # -- `VALKEY_COMMAND_TIMEOUT_SECONDS`
   commandTimeoutSeconds: 5
+  # -- `QUEUED_TTL_SECONDS`: how long a repo stays marked queued, so its webhooks are coalesced instead of published.
+  # Bounds how long a lost job (e.g. NATS restarting on `emptyDir`) blocks the repo's webhooks.
+  queuedTtlSeconds: 86400
+  # -- `COALESCE_TIMEOUT_MS`: how long the proxy waits for Valkey before publishing a webhook without coalescing
+  coalesceTimeoutMs: 500
 
 proxy:
   image:
@@ -216,7 +221,7 @@ worker:
     lockTtlSeconds: 45
     # -- `HEARTBEAT_INTERVAL_SECONDS`: heartbeat, lock and run-slot renewal interval
     heartbeatIntervalSeconds: 15
-    # -- `DIRTY_TTL_SECONDS`; must exceed `cliTimeoutMinutes`
+    # -- `DIRTY_TTL_SECONDS` (worker and proxy); must exceed `cliTimeoutMinutes`
     dirtyTtlSeconds: 3600
     # -- `LOCK_COLLISION_RETRY_SECONDS`: NAK delay for a redelivered job that hits a held lock
     lockCollisionRetrySeconds: 30

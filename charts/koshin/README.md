@@ -349,7 +349,7 @@ Kubernetes: `>=1.30.0-0`
 | nats.reloader.merge.securityContext.capabilities.drop[0] | string | `"ALL"` |  |
 | nats.reloader.merge.securityContext.readOnlyRootFilesystem | bool | `true` |  |
 | natsSettings.ackWaitSeconds | int | `60` | `NATS_ACK_WAIT_SECONDS`; must be greater than `worker.config.lockTtlSeconds` |
-| natsSettings.exhaustedSweepSeconds | int | `300` | `NATS_EXHAUSTED_SWEEP_SECONDS`: how often workers move exhausted jobs whose MaxDeliver advisory was missed to the DLQ; 0 turns it off |
+| natsSettings.exhaustedSweepSeconds | int | `300` | `NATS_EXHAUSTED_SWEEP_SECONDS`: how often the proxy moves exhausted jobs whose MaxDeliver advisory was missed to the DLQ; 0 turns it off |
 | natsSettings.maxDeliver | int | `5` | `NATS_MAX_DELIVER`: deliveries of a job before it's dead-lettered |
 | natsSettings.streamName | string | `"RENOVATE_JOBS"` | `NATS_STREAM_NAME`: the job stream (WorkQueue) |
 | natsSettings.streamReplicas | string | `nil` | `NATS_STREAM_REPLICAS` for the job and DLQ streams and the repo cache bucket. Default: the NATS cluster size (`nats.config.cluster.replicas` when clustered), else 1. |
@@ -421,9 +421,11 @@ Kubernetes: `>=1.30.0-0`
 | valkey.sentinel.port | int | `26379` |  |
 | valkey.sentinel.service.port | int | `26379` |  |
 | valkey.service.port | int | `6379` |  |
+| valkeySettings.coalesceTimeoutMs | int | `500` | `COALESCE_TIMEOUT_MS`: how long the proxy waits for Valkey before publishing a webhook without coalescing |
 | valkeySettings.commandTimeoutSeconds | int | `5` | `VALKEY_COMMAND_TIMEOUT_SECONDS` |
 | valkeySettings.keyPrefix | string | `"koshin"` | `VALKEY_KEY_PREFIX` for koshin's coordination keys |
 | valkeySettings.lockReplicaAckTimeoutMs | int | `0` | `LOCK_REPLICA_ACK_TIMEOUT_MS`: after acquiring a lock, wait this long for a replica to acknowledge it (`WAIT 1`). 0 disables it. |
+| valkeySettings.queuedTtlSeconds | int | `86400` | `QUEUED_TTL_SECONDS`: how long a repo stays marked queued, so its webhooks are coalesced instead of published. Bounds how long a lost job (e.g. NATS restarting on `emptyDir`) blocks the repo's webhooks. |
 | worker.affinity | object | `{}` | Worker affinity |
 | worker.autoscaling.enabled | bool | `true` | Scale workers with KEDA (one per active or pending job). Rendered only when the `keda.sh/v1alpha1` API exists. |
 | worker.autoscaling.maxReplicas | string | `nil` | Maximum workers (default: `maxConcurrentRunsPerPlatform` × enabled platforms; more would only wait for a slot) |
@@ -432,7 +434,7 @@ Kubernetes: `>=1.30.0-0`
 | worker.autoscaling.pollingInterval | int | `15` | KEDA polling interval (seconds) |
 | worker.autoscaling.scaleDownStabilizationSeconds | int | `60` | Scale-down stabilization window (seconds) |
 | worker.config.cliTimeoutMinutes | int | `45` | `CLI_TIMEOUT_MINUTES`: hard cap per Renovate run (`+ 5` must stay below 60 for GitHub App tokens) |
-| worker.config.dirtyTtlSeconds | int | `3600` | `DIRTY_TTL_SECONDS`; must exceed `cliTimeoutMinutes` |
+| worker.config.dirtyTtlSeconds | int | `3600` | `DIRTY_TTL_SECONDS` (worker and proxy); must exceed `cliTimeoutMinutes` |
 | worker.config.heartbeatIntervalSeconds | int | `15` | `HEARTBEAT_INTERVAL_SECONDS`: heartbeat, lock and run-slot renewal interval |
 | worker.config.lockCollisionRetrySeconds | int | `30` | `LOCK_COLLISION_RETRY_SECONDS`: NAK delay for a redelivered job that hits a held lock |
 | worker.config.lockTtlSeconds | int | `45` | `LOCK_TTL_SECONDS`: per-repo lock TTL |

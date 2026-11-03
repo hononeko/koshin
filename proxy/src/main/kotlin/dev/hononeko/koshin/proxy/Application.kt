@@ -4,10 +4,13 @@ import dev.hononeko.koshin.adapters.github.AccountInfo
 import dev.hononeko.koshin.adapters.github.GitHubApp
 import dev.hononeko.koshin.adapters.github.GitHubAppConfig
 import dev.hononeko.koshin.adapters.nats.NatsConfig
+import dev.hononeko.koshin.adapters.valkey.ValkeyConfig
 import dev.hononeko.koshin.core.model.RepoRef
 import dev.hononeko.koshin.core.ports.InstallationPolicyPort
 import dev.hononeko.koshin.core.ports.JobQueuePublisher
+import dev.hononeko.koshin.core.ports.RepoCoordinationPort
 import dev.hononeko.koshin.core.ports.RepositoryDiscoveryPort
+import dev.hononeko.koshin.core.usecase.IngestObserver
 import dev.hononeko.koshin.core.usecase.IngestWebhookUseCase
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
@@ -62,25 +65,33 @@ data class TriggerRepositoryItem(val platform: String = "github", val repository
 @Serializable
 data class TriggerRequest(val repositories: List<TriggerRepositoryItem> = emptyList(), val discover: Boolean = false)
 
+/** [enqueued] jobs published, [coalesced] repos already queued or running (KSH-30). */
 @Serializable
-data class TriggerResponse(val status: String, val enqueued: Int)
+data class TriggerResponse(val status: String, val enqueued: Int, val coalesced: Int = 0)
 
 @Serializable
 data class ErrorResponse(val error: String)
 
+/** With a [coordination] port, webhooks and triggers are coalesced before publishing (KSH-30). */
+@Suppress("LongParameterList") // All but the first two have defaults
 fun Application.proxyModule(
     config: ProxyConfig,
     publisher: JobQueuePublisher,
     discoveryPort: RepositoryDiscoveryPort? = config.sweepRepositoriesFile?.let { StaticFileRepositoryDiscovery(it) },
     readinessCheck: () -> Boolean = { true },
     gitHubApp: ProxyGitHubApp = ProxyGitHubApp(),
+    coordination: RepoCoordinationPort? = null,
+    ingestObserver: IngestObserver = LoggingIngestObserver(),
 ) {
     val ingestUseCase = IngestWebhookUseCase(
-        RetryingJobQueuePublisher(
+        publisher = RetryingJobQueuePublisher(
             delegate = publisher,
             baseDelay = config.publishRetryBaseDelay,
             maxTotalDelay = config.publishRetryBudget,
         ),
+        coordination = coordination,
+        config = config.ingest,
+        observer = ingestObserver,
     )
     val eventFilter = WebhookEventFilter(config.botLogins, ProxyJson, gitHubApp.botLogins)
     val routeHandler = ProxyRouteHandler(config, eventFilter, ingestUseCase, discoveryPort, gitHubApp)
@@ -157,6 +168,7 @@ fun createProxyServer(
     readinessCheck: () -> Boolean = { true },
     onStop: () -> Unit = {},
     gitHubApp: ProxyGitHubApp = ProxyGitHubApp(),
+    coordination: RepoCoordinationPort? = null,
 ): EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> = embeddedServer(
     factory = Netty,
     configure = {
@@ -177,6 +189,7 @@ fun createProxyServer(
             discoveryPort = discoveryPort,
             readinessCheck = readinessCheck,
             gitHubApp = gitHubApp,
+            coordination = coordination,
         )
     },
 )
@@ -196,7 +209,16 @@ fun main() {
         proxyConfig.platforms,
     )
 
-    val natsLifecycle = ProxyNatsLifecycle(proxyConfig.natsUrl, natsConfig)
+    // Readiness doesn't wait for Valkey: until it's connected, webhooks are published without coalescing
+    val valkeyConfig = ValkeyConfig.fromEnv()
+    val valkey = ProxyValkey { ProxyValkey.connect(valkeyConfig) }
+    valkey.startAsync()
+
+    val natsLifecycle = ProxyNatsLifecycle(
+        natsUrl = proxyConfig.natsUrl,
+        natsConfig = natsConfig,
+        onDeadLettered = { event -> valkey.clearQueuedLater(event.repo) },
+    )
     natsLifecycle.startAsync()
 
     val gitHubApp = GitHubAppConfig.fromEnv()?.let(::GitHubApp)
@@ -216,6 +238,7 @@ fun main() {
             appScope.cancel()
             gitHubApp?.close()
             natsLifecycle.close()
+            valkey.close()
         },
         gitHubApp = ProxyGitHubApp(
             botLogins = { listOfNotNull(botLogin?.get()) },
@@ -227,5 +250,6 @@ fun main() {
             },
             allowedRepositories = { repos -> gitHubApp?.withoutDisallowed(repos) ?: repos },
         ),
+        coordination = valkey.coordination,
     ).start(wait = true)
 }

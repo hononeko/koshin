@@ -39,6 +39,8 @@ class ProxyNatsLifecycleTest {
 
         var connectAttempts = 0
         var bootstrapCalled = 0
+        var housekeepingStarted = 0
+        var housekeepingClosed = false
 
         val lifecycle = ProxyNatsLifecycle(
             natsUrl = "nats://localhost:4222",
@@ -52,10 +54,15 @@ class ProxyNatsLifecycleTest {
                 }
                 mockConn
             },
-            bootstrapStreams = { _, _ ->
+            bootstrap = { _, _ ->
                 bootstrapCalled++
             },
             publisherFactory = { _, _ -> mockPub },
+            startHousekeeping = { conn, _ ->
+                assertEquals(mockConn, conn)
+                housekeepingStarted++
+                AutoCloseable { housekeepingClosed = true }
+            },
         )
 
         assertFalse(lifecycle.isReady())
@@ -68,6 +75,7 @@ class ProxyNatsLifecycleTest {
 
         assertEquals(2, connectAttempts)
         assertEquals(1, bootstrapCalled)
+        assertEquals(1, housekeepingStarted)
         assertTrue(lifecycle.isReady())
 
         lifecycle.publish(sampleEvent)
@@ -80,6 +88,7 @@ class ProxyNatsLifecycleTest {
 
         lifecycle.close()
         verify(exactly = 1) { mockConn.close() }
+        assertTrue(housekeepingClosed)
         assertFalse(lifecycle.isReady())
     }
 }

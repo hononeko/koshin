@@ -1,7 +1,5 @@
 package dev.hononeko.koshin.worker
 
-import dev.hononeko.koshin.adapters.nats.ExhaustedMessageSweeper
-import dev.hononeko.koshin.adapters.nats.MaxDeliverDlqForwarder
 import dev.hononeko.koshin.adapters.nats.NatsConfig
 import dev.hononeko.koshin.adapters.nats.NatsJetStreamBootstrap
 import dev.hononeko.koshin.adapters.nats.NatsJobQueueConsumer
@@ -142,7 +140,11 @@ class WorkerBackends(
     }
 
     companion object {
-        /** With [repoCache] set, Renovate's repository caches under [cacheDir] are synced with that bucket. */
+        /**
+         * With [repoCache] set, Renovate's repository caches under [cacheDir] are synced with that bucket. The streams
+         * and consumers are ensured here too, so a worker that starts before the proxy has a consumer to fetch from;
+         * the DLQ housekeeping runs in the proxy (KSH-30).
+         */
         @Suppress("LongParameterList")
         fun connectNats(
             url: String,
@@ -171,17 +173,6 @@ class WorkerBackends(
                     cacheRef.set(NatsObjectStoreRepoCache(connection, it, checkNotNull(cacheDir), ioDispatcher))
                 }
                 bootstrap(connection)
-                val forwarder = MaxDeliverDlqForwarder(connection, config)
-                if (config.exhaustedSweepInterval.isPositive()) {
-                    ExhaustedMessageSweeper(
-                        connection.jetStreamManagement(),
-                        config,
-                        platforms,
-                        ioDispatcher = ioDispatcher,
-                    ) { seq ->
-                        forwarder.moveToDeadLetter(seq, config.maxDeliver, MaxDeliverDlqForwarder.SOURCE_SWEEP)
-                    }.start(reconnectScope, config.exhaustedSweepInterval)
-                }
                 val consumer = NatsJobQueueConsumer(connection, config)
                 return NatsBackend(
                     consumer = consumer,
@@ -191,7 +182,6 @@ class WorkerBackends(
                 ) {
                     reconnectScope.cancel()
                     runCatching { consumer.close() }
-                    runCatching { forwarder.close() }
                     connection.close()
                 }
             } catch (@Suppress("TooGenericExceptionCaught") e: Exception) {

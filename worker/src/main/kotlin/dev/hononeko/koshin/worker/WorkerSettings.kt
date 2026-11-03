@@ -115,6 +115,7 @@ data class WorkerSettings(
                 natsAckWait = env.long("NATS_ACK_WAIT_SECONDS")?.seconds ?: defaults.natsAckWait,
                 lockTtl = env.long("LOCK_TTL_SECONDS")?.seconds ?: defaults.lockTtl,
                 dirtyTtl = env.long("DIRTY_TTL_SECONDS")?.seconds ?: defaults.dirtyTtl,
+                queuedTtl = env.long("QUEUED_TTL_SECONDS")?.seconds ?: defaults.queuedTtl,
                 cliTimeout = env.long("CLI_TIMEOUT_MINUTES")?.minutes ?: defaults.cliTimeout,
                 heartbeatInterval = env.long("HEARTBEAT_INTERVAL_SECONDS")?.seconds ?: defaults.heartbeatInterval,
                 lockCollisionRetryDelay = env.long("LOCK_COLLISION_RETRY_SECONDS")?.seconds

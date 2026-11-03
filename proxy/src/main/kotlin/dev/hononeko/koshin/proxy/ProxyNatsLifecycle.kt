@@ -1,11 +1,13 @@
 package dev.hononeko.koshin.proxy
 
 import dev.hononeko.koshin.adapters.nats.NatsConfig
+import dev.hononeko.koshin.adapters.nats.NatsDlqHousekeeping
 import dev.hononeko.koshin.adapters.nats.NatsJetStreamBootstrap
 import dev.hononeko.koshin.adapters.nats.NatsJobQueuePublisher
 import dev.hononeko.koshin.adapters.nats.NatsReconnectBootstrapper
 import dev.hononeko.koshin.adapters.nats.isConnected
 import dev.hononeko.koshin.adapters.nats.slf4jLogging
+import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.ports.JobQueuePublisher
 import io.nats.client.Connection
@@ -18,6 +20,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -31,6 +34,11 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
+/**
+ * The proxy's NATS connection: publishes jobs, keeps the streams and consumers in place (re-creating them after a
+ * reconnect) and runs the DLQ housekeeping (KSH-30), so all of it works with no worker running.
+ */
+@Suppress("LongParameterList") // All but the first two have defaults
 class ProxyNatsLifecycle(
     private val natsUrl: String,
     private val natsConfig: NatsConfig,
@@ -44,13 +52,17 @@ class ProxyNatsLifecycle(
             .build()
         Nats.connect(options)
     },
-    private val bootstrapStreams: (Connection, NatsConfig) -> Unit = { conn, cfg ->
-        val bootstrap = NatsJetStreamBootstrap(conn, cfg)
-        bootstrap.ensureJobsStream()
-        bootstrap.ensureDlqStream()
+    /** Every platform's consumer, whichever are enabled, so a worker never fetches from a missing one. */
+    private val bootstrap: (Connection, NatsConfig) -> Unit = { conn, cfg ->
+        NatsJetStreamBootstrap(conn, cfg).bootstrap(Platform.entries)
     },
     private val publisherFactory: (Connection, NatsConfig) -> JobQueuePublisher = { conn, cfg ->
         NatsJobQueuePublisher(conn, cfg)
+    },
+    /** Called with each job moved to the DLQ. */
+    private val onDeadLettered: (RenovateJobEvent) -> Unit = {},
+    private val startHousekeeping: (Connection, CoroutineScope) -> AutoCloseable = { conn, scope ->
+        NatsDlqHousekeeping.start(conn, natsConfig, scope, ioDispatcher = ioDispatcher, onDeadLettered = onDeadLettered)
     },
 ) : JobQueuePublisher,
     AutoCloseable {
@@ -60,8 +72,9 @@ class ProxyNatsLifecycle(
     private val connectionRef = AtomicReference<Connection?>(null)
     private val publisherRef = AtomicReference<JobQueuePublisher?>(null)
     private val bootstrapped = AtomicBoolean(false)
+    private val housekeeping = AtomicReference<AutoCloseable?>(null)
     private var initJob: Job? = null
-    private val reconnectBootstrapper = NatsReconnectBootstrapper(scope) { conn -> bootstrapStreams(conn, natsConfig) }
+    private val reconnectBootstrapper = NatsReconnectBootstrapper(scope) { conn -> bootstrap(conn, natsConfig) }
 
     fun startAsync() {
         initJob = scope.launch {
@@ -72,12 +85,13 @@ class ProxyNatsLifecycle(
                     }.also { connectionRef.set(it) }
 
                     withContext(ioDispatcher) {
-                        bootstrapStreams(conn, natsConfig)
+                        bootstrap(conn, natsConfig)
                     }
                     publisherRef.set(publisherFactory(conn, natsConfig))
+                    housekeeping.compareAndSet(null, startHousekeeping(conn, scope))
                     bootstrapped.set(true)
                     logger.info(
-                        "Connected to NATS and ensured JetStream streams ({}, {})",
+                        "Connected to NATS and ensured JetStream streams ({}, {}) and consumers",
                         natsConfig.jobsStreamName,
                         natsConfig.dlqStreamName,
                     )
@@ -112,6 +126,8 @@ class ProxyNatsLifecycle(
         }
         bootstrapped.set(false)
         publisherRef.set(null)
+        housekeeping.getAndSet(null)?.let { runCatching { it.close() } }
+        scope.cancel()
         connectionRef.getAndSet(null)?.let { conn ->
             runCatching { conn.close() }
         }

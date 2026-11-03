@@ -3,6 +3,7 @@ package dev.hononeko.koshin.adapters.valkey
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RepoRef
 import dev.hononeko.koshin.core.ports.AcquireResult
+import dev.hononeko.koshin.core.ports.EnqueueDecision
 import dev.hononeko.koshin.core.ports.ReleaseResult
 import io.lettuce.core.ExperimentalLettuceCoroutinesApi
 import io.lettuce.core.RedisCommandExecutionException
@@ -26,6 +27,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -34,6 +36,9 @@ class ValkeyComponentUnitTest {
     private val repo = RepoRef(Platform.GITHUB, "hononeko/koshin")
     private val lockKey = "koshin:{github:hononeko/koshin}:lock"
     private val dirtyKey = "koshin:{github:hononeko/koshin}:dirty"
+    private val queuedKey = "koshin:{github:hononeko/koshin}:queued"
+    private val releaseKeys = arrayOf(lockKey, dirtyKey, queuedKey)
+    private val unlockKeys = arrayOf(lockKey, queuedKey)
 
     @Test
     fun `connection health reports status, ping result, and enforces pingTimeout`() = runTest {
@@ -98,8 +103,11 @@ class ValkeyComponentUnitTest {
     }
 
     @Test
-    fun `preloadScripts loads all four coordination scripts and uses EVALSHA`() = runTest {
+    fun `preloadScripts loads all five coordination scripts and uses EVALSHA`() = runTest {
         val mockCommands = mockk<RedisCoroutinesCommands<String, String>>()
+        coEvery {
+            mockCommands.scriptLoad(ValkeyRepoCoordinationAdapter.ENQUEUE_OR_COALESCE_SCRIPT)
+        } returns "sha-enqueue"
         coEvery {
             mockCommands.scriptLoad(ValkeyRepoCoordinationAdapter.ACQUIRE_OR_MARK_DIRTY_SCRIPT)
         } returns "sha-acquire"
@@ -117,6 +125,7 @@ class ValkeyComponentUnitTest {
         adapter.preloadScripts()
 
         coVerify(exactly = 1) {
+            mockCommands.scriptLoad(ValkeyRepoCoordinationAdapter.ENQUEUE_OR_COALESCE_SCRIPT)
             mockCommands.scriptLoad(ValkeyRepoCoordinationAdapter.ACQUIRE_OR_MARK_DIRTY_SCRIPT)
             mockCommands.scriptLoad(ValkeyRepoCoordinationAdapter.EXTEND_LOCK_SCRIPT)
             mockCommands.scriptLoad(ValkeyRepoCoordinationAdapter.RELEASE_LOCK_AND_TAKE_DIRTY_SCRIPT)
@@ -127,7 +136,7 @@ class ValkeyComponentUnitTest {
             mockCommands.evalsha<Long>(
                 "sha-acquire",
                 ScriptOutputType.INTEGER,
-                arrayOf(lockKey, dirtyKey),
+                arrayOf(lockKey, dirtyKey, queuedKey),
                 "tok-1",
                 "45",
                 "3600",
@@ -149,7 +158,7 @@ class ValkeyComponentUnitTest {
             mockCommands.evalsha<Long>(
                 "sha-acquire",
                 ScriptOutputType.INTEGER,
-                arrayOf(lockKey, dirtyKey),
+                arrayOf(lockKey, dirtyKey, queuedKey),
                 any(),
                 "45",
                 "3600",
@@ -187,7 +196,7 @@ class ValkeyComponentUnitTest {
             mockCommands.evalsha<Long>(
                 "sha-acquire",
                 ScriptOutputType.INTEGER,
-                arrayOf(lockKey, dirtyKey),
+                arrayOf(lockKey, dirtyKey, queuedKey),
                 "tok-6",
                 "45",
                 "3600",
@@ -215,34 +224,34 @@ class ValkeyComponentUnitTest {
         assertFalse(adapter.extendLock(repo, "tok-1", 45.seconds))
 
         coEvery {
-            mockCommands.evalsha<Long>("sha-any", ScriptOutputType.INTEGER, arrayOf(lockKey, dirtyKey), "tok-1")
+            mockCommands.evalsha<Long>("sha-any", ScriptOutputType.INTEGER, releaseKeys, "tok-1", "0")
         } returns 0L
         assertEquals(ReleaseResult.CLEAN, adapter.releaseLockAndTakeDirty(repo, "tok-1"))
 
         coEvery {
-            mockCommands.evalsha<Long>("sha-any", ScriptOutputType.INTEGER, arrayOf(lockKey, dirtyKey), "tok-1")
+            mockCommands.evalsha<Long>("sha-any", ScriptOutputType.INTEGER, releaseKeys, "tok-1", "0")
         } returns 1L
         assertEquals(ReleaseResult.DIRTY, adapter.releaseLockAndTakeDirty(repo, "tok-1"))
 
         coEvery {
-            mockCommands.evalsha<Long>("sha-any", ScriptOutputType.INTEGER, arrayOf(lockKey, dirtyKey), "tok-1")
+            mockCommands.evalsha<Long>("sha-any", ScriptOutputType.INTEGER, releaseKeys, "tok-1", "0")
         } returns -1L
         assertEquals(ReleaseResult.NOT_OWNER, adapter.releaseLockAndTakeDirty(repo, "tok-1"))
 
         coEvery {
-            mockCommands.evalsha<Long>("sha-any", ScriptOutputType.INTEGER, arrayOf(lockKey, dirtyKey), "tok-1")
+            mockCommands.evalsha<Long>("sha-any", ScriptOutputType.INTEGER, releaseKeys, "tok-1", "0")
         } returns 99L
         assertThrows<IllegalStateException> {
             adapter.releaseLockAndTakeDirty(repo, "tok-1")
         }
 
         coEvery {
-            mockCommands.evalsha<Long>("sha-any", ScriptOutputType.INTEGER, arrayOf(lockKey), "tok-1")
+            mockCommands.evalsha<Long>("sha-any", ScriptOutputType.INTEGER, unlockKeys, "tok-1", "0")
         } returns 1L
         assertTrue(adapter.releaseLock(repo, "tok-1"))
 
         coEvery {
-            mockCommands.evalsha<Long>("sha-any", ScriptOutputType.INTEGER, arrayOf(lockKey), "tok-1")
+            mockCommands.evalsha<Long>("sha-any", ScriptOutputType.INTEGER, unlockKeys, "tok-1", "0")
         } returns 0L
         assertFalse(adapter.releaseLock(repo, "tok-1"))
     }
@@ -258,7 +267,7 @@ class ValkeyComponentUnitTest {
         var observedDirtyResult: ReleaseResult? = null
 
         coEvery {
-            mockCommands.evalsha<Long>("sha-release", ScriptOutputType.INTEGER, arrayOf(lockKey, dirtyKey), "tok-1")
+            mockCommands.evalsha<Long>("sha-release", ScriptOutputType.INTEGER, releaseKeys, "tok-1", "0")
         } coAnswers {
             enteredEval.complete(Unit)
             allowFinish.await()
@@ -279,7 +288,7 @@ class ValkeyComponentUnitTest {
         var observedReleaseResult: Boolean? = null
 
         coEvery {
-            mockCommands.evalsha<Long>("sha-release", ScriptOutputType.INTEGER, arrayOf(lockKey), "tok-1")
+            mockCommands.evalsha<Long>("sha-release", ScriptOutputType.INTEGER, unlockKeys, "tok-1", "0")
         } coAnswers {
             enteredRelease.complete(Unit)
             allowReleaseFinish.await()
@@ -363,8 +372,9 @@ class ValkeyComponentUnitTest {
             mockCommands.eval<Long>(
                 ValkeyRepoCoordinationAdapter.RELEASE_LOCK_SCRIPT,
                 ScriptOutputType.INTEGER,
-                arrayOf(lockKey),
+                arrayOf(lockKey, queuedKey),
                 "tok-1",
+                "0",
             )
         } returns 1L
 
@@ -406,5 +416,29 @@ class ValkeyComponentUnitTest {
         assertThrows<IllegalArgumentException> {
             adapter.releaseLock(repo, " ")
         }
+    }
+
+    @Test
+    fun `enqueueOrCoalesce maps the script's results and clearQueued deletes the mark`() = runTest {
+        val mockCommands = mockk<RedisCoroutinesCommands<String, String>>()
+        val adapter = ValkeyRepoCoordinationAdapter(mockCommands)
+        coEvery { mockCommands.scriptLoad(any<String>()) } returns "sha-enqueue"
+        val outcomes = listOf(0L, 1L, 2L, 3L)
+        coEvery {
+            mockCommands.evalsha<Long>("sha-enqueue", ScriptOutputType.INTEGER, releaseKeys, "86400", "3600")
+        } returnsMany outcomes
+
+        val decisions = List(3) { adapter.enqueueOrCoalesce(repo, 24.hours, 3600.seconds) }
+
+        assertEquals(
+            listOf(EnqueueDecision.ENQUEUE, EnqueueDecision.ALREADY_QUEUED, EnqueueDecision.MARKED_DIRTY),
+            decisions,
+        )
+        assertThrows<IllegalStateException> { adapter.enqueueOrCoalesce(repo, 24.hours, 3600.seconds) }
+        assertThrows<IllegalArgumentException> { adapter.enqueueOrCoalesce(repo, 500.milliseconds, 3600.seconds) }
+
+        coEvery { mockCommands.del(queuedKey) } returns 1L
+        adapter.clearQueued(repo)
+        coVerify(exactly = 1) { mockCommands.del(queuedKey) }
     }
 }

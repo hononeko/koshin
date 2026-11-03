@@ -66,7 +66,9 @@ Run Detekt directly:
 
 ## Valkey Coordination Requirements
 
-The coordination Valkey instance (`VALKEY_URL`, supporting both standalone `redis://` and Sentinel `redis-sentinel://` URIs) stores per-repository mutexes (`koshin:{<platform>:<repo>}:lock`) and dirty flags (`koshin:{<platform>:<repo>}:dirty`) with explicit TTLs (`EX`).
+The coordination Valkey instance (`VALKEY_URL`, supporting both standalone `redis://` and Sentinel `redis-sentinel://` URIs) stores per-repository queued marks (`koshin:{<platform>:<repo>}:queued`), mutexes (`koshin:{<platform>:<repo>}:lock`) and dirty flags (`koshin:{<platform>:<repo>}:dirty`) with explicit TTLs (`EX`).
+
+* **Pre-queue coalescing (KSH-30):** the proxy publishes a webhook or trigger only for a repo that is neither queued nor running: a duplicate for a queued repo is dropped, and one for a running repo sets its dirty flag for a single follow-up run. If Valkey fails or doesn't answer within `COALESCE_TIMEOUT_MS`, the proxy publishes anyway (fail-open) and the workers coalesce the duplicate. A queued mark lasts at most `QUEUED_TTL_SECONDS` (24h), so a job lost without being dead-lettered (a NATS restart on `emptyDir`) blocks its repo's webhooks until then.
 
 * **Minimum Server Version:** `releaseLockAndTakeDirty` uses the `GETDEL` command inside Lua, requiring **Valkey 7.2+** (or **Redis 6.2+**).
 * **`maxmemory-policy noeviction` (Required):** You **must** configure `maxmemory-policy noeviction` on the coordination Valkey instance. Because repository locks and dirty flags are TTL-bearing keys, any `volatile-*` eviction policy (`volatile-lru`, `volatile-ttl`, `volatile-random`, `volatile-lfu`) or `allkeys-*` policy under memory pressure would evict active locks or pending dirty flags first, breaking mutual exclusion and coalescing guarantees.
@@ -85,7 +87,7 @@ The coordination Valkey instance (`VALKEY_URL`, supporting both standalone `redi
 * **SIGTERM:** stops fetching, kills the CLI, releases the lock (keeping the dirty flag), NAKs the delivery and releases the run slot, without waiting for the run to finish.
 * **Pod deletion cost (optional):** with `POD_DELETION_COST_ENABLED=true` (plus `POD_NAME` / `POD_NAMESPACE` from the downward API), the worker sets `controller.kubernetes.io/pod-deletion-cost` to `1000` while Renovate runs and back to `0` afterwards. Failed patches are logged and ignored. Only the `worker` container gets a ServiceAccount token (projected, valid for 10 minutes), and a `ValidatingAdmissionPolicy` lets it change nothing but that annotation on its own pod.
 * **Health:** `GET /healthz` is liveness only; `GET /readyz` checks NATS and Valkey.
-* **Dead-lettering:** a job that uses up its `NATS_MAX_DELIVER` deliveries is moved to `renovate.dlq.<platform>` when NATS announces it (the MaxDeliver advisory). That announcement is sent once, so every `NATS_EXHAUSTED_SWEEP_SECONDS` (5 minutes) each worker also moves exhausted jobs whose announcement nobody handled, e.g. during a rolling deployment.
+* **Dead-lettering (in the proxy, KSH-30):** a job that uses up its `NATS_MAX_DELIVER` deliveries is moved to `renovate.dlq.<platform>` when NATS announces it (the MaxDeliver advisory), and its repo's queued mark is cleared. That announcement is sent once, so every `NATS_EXHAUSTED_SWEEP_SECONDS` (5 minutes) each proxy replica also moves exhausted jobs whose announcement nobody handled, e.g. during a rolling deployment. The proxy does this, and creates the consumers, so it works with no worker running.
 
 ## GitHub App (KSH-14)
 
@@ -179,7 +181,7 @@ kubectl apply -k k8s/overlays/minimal
 * **Repositories to sweep:** the `koshin-repositories` ConfigMap (`github:org/repo` per line), replaced from your overlay. Empty by default, so the sweeper enqueues nothing.
 * **Autoscaling:** one `nats-jetstream` trigger per platform consumer, summed with `scalingModifiers` (`github + gitlab`, target `1`); KEDA counts pending plus in-flight jobs, so workers scale one-to-one with jobs across platforms up to `maxReplicaCount`. The worker creates both platform consumers so neither trigger errors.
 * **Scale-in:** workers annotate their own pod with `controller.kubernetes.io/pod-deletion-cost` (`1000` while running), so idle pods are removed first. If a busy pod is still picked, the SIGTERM path NAKs its job for another worker.
-* **`minimal` trade-off:** a NATS or Valkey restart loses pending jobs, locks, dirty flags and the package cache; proxy and worker recreate the streams and consumers on reconnect, and the sweeper re-enqueues every repository within 6 hours. NATS and Valkey are infrastructure, so they're the only stateful pieces; the Helm chart's `ha` profile gives them persistence.
+* **`minimal` trade-off:** a NATS or Valkey restart loses pending jobs, locks, dirty flags and the package cache; proxy and worker recreate the streams and consumers on reconnect, and the sweeper re-enqueues every repository within 6 hours (after a NATS restart, those still marked queued only once the mark expires: `QUEUED_TTL_SECONDS`). NATS and Valkey are infrastructure, so they're the only stateful pieces; the Helm chart's `ha` profile gives them persistence.
 * **Edge HTTP/3:** `k8s/examples/gateway-http3.yaml` is an Envoy Gateway example that terminates TLS + HTTP/3 and exposes only `/webhooks/`.
 
 ---

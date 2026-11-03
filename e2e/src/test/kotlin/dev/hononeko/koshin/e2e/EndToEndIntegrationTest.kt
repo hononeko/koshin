@@ -33,8 +33,53 @@ class EndToEndIntegrationTest {
     }
 
     @Test
-    fun `webhooks arriving mid-run coalesce into exactly one follow-up run`() {
+    fun `webhooks arriving mid-run are coalesced by the proxy into exactly one follow-up run`() {
         val proxy = cluster.startProxy()
+        val workers = listOf(
+            cluster.startWorker("worker-1", runTime = 2.seconds),
+            cluster.startWorker("worker-2", runTime = 2.seconds),
+        )
+
+        assertTrue(proxy.push(repo).enqueued)
+        val runner = awaitValue("the first run to start") { workers.firstOrNull { it.runs().isNotEmpty() } }
+        repeat(4) { assertEquals("coalesced", proxy.push(repo).status) }
+        assertEquals(1, cluster.publishedCount(), "the proxy marks the running repo dirty instead of publishing")
+
+        cluster.awaitQuiescent(repo)
+        val other = workers.single { it !== runner }
+        assertTrue(other.coordination.acquires.none { it.result == AcquireResult.COALESCED })
+        assertEquals(ReleaseResult.DIRTY, runner.coordination.releases.first().result)
+
+        assertEquals(2, cluster.runs.size, "initial run + one follow-up")
+        assertTrue(cluster.runs.all { it.state == CliRun.State.COMPLETED })
+        val deliveries = workers.flatMap { it.deliveries }
+        assertEquals(2, deliveries.size, "1 webhook + 1 follow-up")
+        assertTrue(deliveries.all { it.settlement == Settlement.Ack })
+        assertEquals(1, deliveries.count { it.event.triggerReason == TriggerReason.DIRTY_FOLLOWUP })
+    }
+
+    @Test
+    fun `webhooks for a queued repo publish one job, and the next one after it runs publishes again`() {
+        val proxy = cluster.startProxy()
+
+        assertTrue(proxy.push(repo).enqueued)
+        repeat(9) { assertEquals("coalesced", proxy.push(repo).status) }
+        assertEquals(1, cluster.publishedCount())
+        assertTrue(cluster.isQueued(repo))
+
+        val worker = cluster.startWorker("worker-1")
+        cluster.awaitQuiescent(repo)
+        assertEquals(1, worker.runs().size)
+
+        assertTrue(proxy.push(repo).enqueued, "the run cleared the queued mark")
+        cluster.awaitQuiescent(repo)
+        assertEquals(2, cluster.publishedCount())
+        assertEquals(2, worker.runs().size)
+    }
+
+    @Test
+    fun `duplicates published while the proxy fails open are coalesced by the workers`() {
+        val proxy = cluster.startProxy(coalescing = false)
         val workers = listOf(
             cluster.startWorker("worker-1", runTime = 2.seconds),
             cluster.startWorker("worker-2", runTime = 2.seconds),
@@ -47,14 +92,8 @@ class EndToEndIntegrationTest {
         cluster.awaitQuiescent(repo)
         val other = workers.single { it !== runner }
         assertEquals(4, other.coordination.acquires.count { it.result == AcquireResult.COALESCED })
-        assertEquals(ReleaseResult.DIRTY, runner.coordination.releases.first().result)
-
         assertEquals(2, cluster.runs.size, "initial run + one follow-up")
-        assertTrue(cluster.runs.all { it.state == CliRun.State.COMPLETED })
-        val deliveries = workers.flatMap { it.deliveries }
-        assertEquals(6, deliveries.size, "5 webhooks + 1 follow-up")
-        assertTrue(deliveries.all { it.settlement == Settlement.Ack })
-        assertEquals(1, deliveries.count { it.event.triggerReason == TriggerReason.DIRTY_FOLLOWUP })
+        assertEquals(6, workers.flatMap { it.deliveries }.size, "5 webhooks + 1 follow-up")
     }
 
     @Test
@@ -65,9 +104,8 @@ class EndToEndIntegrationTest {
         awaitUntil("worker-1 to start the run") { worker1.runs().isNotEmpty() }
 
         val worker2 = cluster.startWorker("worker-2")
-        assertTrue(proxy.push(repo).enqueued)
-        awaitUntil("worker-2 to coalesce the second webhook") { worker2.coordination.acquires.isNotEmpty() }
-        assertEquals(AcquireResult.COALESCED, worker2.coordination.acquires.single().result)
+        assertEquals("coalesced", proxy.push(repo).status)
+        assertTrue(cluster.isDirty(repo), "the proxy marks the running repo dirty")
 
         worker1.crash()
         awaitUntil("the crashed worker's lock to expire") { cluster.lockHolder(repo) == null }
@@ -80,7 +118,7 @@ class EndToEndIntegrationTest {
         assertNull(worker1.deliveries.single().settlement, "a crashed worker settles nothing")
         assertEquals(Settlement.Ack, redelivery.settlement)
         assertEquals(
-            listOf(AcquireResult.COALESCED, AcquireResult.ACQUIRED, AcquireResult.ACQUIRED),
+            listOf(AcquireResult.ACQUIRED, AcquireResult.ACQUIRED),
             worker2.coordination.acquires.map { it.result },
         )
         assertEquals(
@@ -94,7 +132,8 @@ class EndToEndIntegrationTest {
 
     @Test
     fun `a redelivered job that hits a held lock is NAKed and completes once the lock frees`() {
-        val proxy = cluster.startProxy()
+        // Coalescing would mark the locked repo dirty instead of publishing
+        val proxy = cluster.startProxy(coalescing = false)
         val holderToken = "worker-outside-the-suite"
         val held = runBlocking {
             cluster.coordination.acquireOrMarkDirty(repo, holderToken, 30.seconds, cluster.jobConfig.dirtyTtl)
@@ -177,13 +216,13 @@ class EndToEndIntegrationTest {
         awaitUntil("worker-1 to start the run") { worker1.runs().isNotEmpty() }
 
         val worker2 = cluster.startWorker("worker-2").apply { cli.hold() }
-        assertTrue(proxy.push(repo).enqueued)
-        awaitUntil("worker-2 to coalesce the second webhook") { worker2.coordination.acquires.isNotEmpty() }
+        assertEquals("coalesced", proxy.push(repo).status)
 
         worker1.sigterm()
         assertEquals(Settlement.Nak(Duration.ZERO), worker1.deliveries.single().settlement)
         assertEquals(CliRun.State.KILLED, worker1.runs().single().state)
         assertTrue(cluster.isDirty(repo), "the dirty flag survives the shutdown")
+        assertEquals("coalesced", proxy.push(repo).status, "the NAKed job is queued again")
 
         awaitUntil("worker-2 to pick up the NAKed job") { worker2.runs().isNotEmpty() }
         worker2.cli.release()
@@ -196,4 +235,7 @@ class EndToEndIntegrationTest {
 
     private val JsonObject.enqueued: Boolean
         get() = getValue("enqueued").jsonPrimitive.boolean
+
+    private val JsonObject.status: String
+        get() = getValue("status").jsonPrimitive.content
 }

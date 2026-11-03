@@ -20,6 +20,8 @@ data:
   VALKEY_KEY_PREFIX: {{ .Values.valkeySettings.keyPrefix | quote }}
   VALKEY_COMMAND_TIMEOUT_SECONDS: {{ .Values.valkeySettings.commandTimeoutSeconds | quote }}
   LOCK_REPLICA_ACK_TIMEOUT_MS: {{ .Values.valkeySettings.lockReplicaAckTimeoutMs | quote }}
+  QUEUED_TTL_SECONDS: {{ .Values.valkeySettings.queuedTtlSeconds | quote }}
+  COALESCE_TIMEOUT_MS: {{ .Values.valkeySettings.coalesceTimeoutMs | quote }}
   {{- with include "koshin.renovateRedisUrl" . }}
   RENOVATE_REDIS_URL: {{ . | quote }}
   {{- end }}

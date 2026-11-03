@@ -3,6 +3,7 @@ package dev.hononeko.koshin.proxy
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RepoRef
 import dev.hononeko.koshin.core.model.TriggerReason
+import dev.hononeko.koshin.core.ports.EnqueueDecision
 import dev.hononeko.koshin.core.ports.RepositoryDiscoveryPort
 import dev.hononeko.koshin.core.usecase.IngestWebhookUseCase
 import io.ktor.http.HttpStatusCode
@@ -159,16 +160,24 @@ internal class ProxyRouteHandler(
         }
 
         try {
-            val event = ingestUseCase.execute(
+            val result = ingestUseCase.execute(
                 platform = validatedRepo.platform,
                 repository = validatedRepo.repository,
                 deliveryId = deliveryId,
                 triggerReason = TriggerReason.WEBHOOK,
             )
-            call.respond(
-                HttpStatusCode.Accepted,
-                WebhookResponse(status = "accepted", enqueued = true, deliveryId = event.deliveryId),
-            )
+            val response = when (result.decision) {
+                EnqueueDecision.ENQUEUE -> WebhookResponse(
+                    status = "accepted",
+                    enqueued = true,
+                    deliveryId = result.event.deliveryId,
+                )
+
+                EnqueueDecision.ALREADY_QUEUED -> coalesced(result.event.deliveryId, "a job is already queued")
+
+                EnqueueDecision.MARKED_DIRTY -> coalesced(result.event.deliveryId, "a run is in progress")
+            }
+            call.respond(HttpStatusCode.Accepted, response)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -176,6 +185,9 @@ internal class ProxyRouteHandler(
             call.respond(HttpStatusCode.ServiceUnavailable, ErrorResponse("Queue unavailable"))
         }
     }
+
+    private fun coalesced(deliveryId: String, reason: String) =
+        WebhookResponse(status = "coalesced", enqueued = false, deliveryId = deliveryId, reason = reason)
 
     /**
      * Whether the account a webhook is about may use the GitHub App (`GITHUB_APP_ALLOWED_ACCOUNTS`, KSH-17). Fails
@@ -221,13 +233,13 @@ internal class ProxyRouteHandler(
             return
         }
         try {
-            repos.forEach { repo ->
-                ingestUseCase.execute(repo.platform, repo.repository, deliveryId, TriggerReason.SCHEDULE)
+            val published = repos.count { repo ->
+                ingestUseCase.execute(repo.platform, repo.repository, deliveryId, TriggerReason.SCHEDULE).published
             }
-            logger.info("GitHub App installed on {} repositories; enqueued an initial run for each", repos.size)
+            logger.info("GitHub App installed on {} repositories; enqueued initial runs for {}", repos.size, published)
             call.respond(
                 HttpStatusCode.Accepted,
-                WebhookResponse(status = "accepted", enqueued = true, deliveryId = deliveryId),
+                WebhookResponse(status = "accepted", enqueued = published > 0, deliveryId = deliveryId),
             )
         } catch (e: CancellationException) {
             throw e
@@ -303,17 +315,17 @@ internal class ProxyRouteHandler(
     @Suppress("TooGenericExceptionCaught")
     private suspend fun enqueueScheduledRepositories(call: ApplicationCall, targetRepos: List<RepoRef>) {
         try {
-            for (repoRef in targetRepos) {
+            val published = targetRepos.count { repoRef ->
                 ingestUseCase.execute(
                     platform = repoRef.platform,
                     repository = repoRef.repository,
                     deliveryId = null,
                     triggerReason = TriggerReason.SCHEDULE,
-                )
+                ).published
             }
             call.respond(
                 HttpStatusCode.Accepted,
-                TriggerResponse(status = "accepted", enqueued = targetRepos.size),
+                TriggerResponse(status = "accepted", enqueued = published, coalesced = targetRepos.size - published),
             )
         } catch (e: CancellationException) {
             throw e

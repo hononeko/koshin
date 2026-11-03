@@ -90,7 +90,7 @@ private class RecordingDelivery(
 }
 
 class RecordingCoordination(private val delegate: RepoCoordinationPort, private val stall: Stall) :
-    RepoCoordinationPort {
+    RepoCoordinationPort by delegate {
 
     data class Acquire(val token: String, val result: AcquireResult)
     data class Release(val token: String, val result: ReleaseResult)
@@ -114,11 +114,11 @@ class RecordingCoordination(private val delegate: RepoCoordinationPort, private 
         return delegate.extendLock(repo, token, ttl)
     }
 
-    override suspend fun releaseLockAndTakeDirty(repo: RepoRef, token: String): ReleaseResult =
-        delegate.releaseLockAndTakeDirty(repo, token).also { releases += Release(token, it) }
+    override suspend fun releaseLockAndTakeDirty(repo: RepoRef, token: String, queuedTtl: Duration?): ReleaseResult =
+        delegate.releaseLockAndTakeDirty(repo, token, queuedTtl).also { releases += Release(token, it) }
 
-    override suspend fun releaseLock(repo: RepoRef, token: String): Boolean =
-        delegate.releaseLock(repo, token).also { unlocks += Unlock(token, it) }
+    override suspend fun releaseLock(repo: RepoRef, token: String, queuedTtl: Duration?): Boolean =
+        delegate.releaseLock(repo, token, queuedTtl).also { unlocks += Unlock(token, it) }
 }
 
 /** Records each platform cooldown the worker starts. */
