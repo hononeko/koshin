@@ -1,5 +1,6 @@
 package dev.hononeko.koshin.proxy
 
+import dev.hononeko.koshin.adapters.valkey.ValkeyConfig
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.model.RepoRef
@@ -19,6 +20,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.server.testing.testApplication
+import io.lettuce.core.RedisConnectionException
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -29,6 +31,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import java.util.HexFormat
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import kotlin.time.Duration
@@ -237,5 +240,61 @@ class ProxyCoalescingTest {
         }
         valkey.use { it.startAsync().join() }
         assertEquals(3, attempts)
+    }
+
+    @Test
+    fun `ProxyValkey passes every coordination call through once connected`() = runBlocking {
+        val coordination = FakeCoordination { EnqueueDecision.ENQUEUE }
+        val valkey = ProxyValkey { ProxyValkey.Connection(coordination) }
+        valkey.startAsync().join()
+        val repo = RepoRef(Platform.GITHUB, "hononeko/a")
+        with(valkey.coordination) {
+            assertEquals(AcquireResult.ACQUIRED, acquireOrMarkDirty(repo, "t", 1.seconds, 1.seconds))
+            assertTrue(extendLock(repo, "t", 1.seconds))
+            assertEquals(ReleaseResult.CLEAN, releaseLockAndTakeDirty(repo, "t", null))
+            assertTrue(releaseLock(repo, "t", 1.seconds))
+            clearQueued(repo)
+        }
+        assertEquals(listOf(repo), coordination.cleared)
+        valkey.close()
+    }
+
+    @Test
+    fun `ProxyValkey gives up clearing a mark that fails or hangs`() = runBlocking {
+        val calls = AtomicInteger()
+        val failing = object : RepoCoordinationPort by FakeCoordination({ EnqueueDecision.ENQUEUE }) {
+            override suspend fun clearQueued(repo: RepoRef) {
+                if (calls.incrementAndGet() == 1) error("Valkey down") else awaitCancellation()
+            }
+        }
+        val valkey = ProxyValkey(clearTimeout = 50.milliseconds) { ProxyValkey.Connection(failing) }
+        valkey.startAsync().join()
+
+        valkey.clearQueuedLater(RepoRef(Platform.GITHUB, "hononeko/a"))
+        valkey.clearQueuedLater(RepoRef(Platform.GITHUB, "hononeko/b"))
+        val deadline = System.nanoTime() + 5.seconds.inWholeNanoseconds
+        while (calls.get() < 2 && System.nanoTime() < deadline) delay(10.milliseconds)
+        delay(100.milliseconds)
+
+        assertEquals(2, calls.get())
+        valkey.close()
+    }
+
+    @Test
+    fun `ProxyValkey fails to connect to an unreachable Valkey`() = runBlocking<Unit> {
+        val config = ValkeyConfig(valkeyUrl = "redis://127.0.0.1:1", commandTimeout = 1.seconds)
+        assertThrows<RedisConnectionException> { ProxyValkey.connect(config) }
+    }
+
+    @Test
+    fun `the ingest observer counts fail-opens and reports a kept mark`() {
+        val observer = LoggingIngestObserver()
+        val repo = RepoRef(Platform.GITHUB, "hononeko/a")
+
+        observer.failedOpen(repo, null)
+        observer.failedOpen(repo, IllegalStateException("down"))
+        observer.queuedMarkKept(repo, null)
+
+        assertEquals(2, observer.failOpenCount)
     }
 }

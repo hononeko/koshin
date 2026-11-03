@@ -3,6 +3,7 @@ package dev.hononeko.koshin.adapters.valkey
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RepoRef
 import dev.hononeko.koshin.core.ports.AcquireResult
+import dev.hononeko.koshin.core.ports.EnqueueDecision
 import dev.hononeko.koshin.core.ports.ReleaseResult
 import io.lettuce.core.ExperimentalLettuceCoroutinesApi
 import io.lettuce.core.RedisCommandExecutionException
@@ -26,6 +27,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -414,5 +416,29 @@ class ValkeyComponentUnitTest {
         assertThrows<IllegalArgumentException> {
             adapter.releaseLock(repo, " ")
         }
+    }
+
+    @Test
+    fun `enqueueOrCoalesce maps the script's results and clearQueued deletes the mark`() = runTest {
+        val mockCommands = mockk<RedisCoroutinesCommands<String, String>>()
+        val adapter = ValkeyRepoCoordinationAdapter(mockCommands)
+        coEvery { mockCommands.scriptLoad(any<String>()) } returns "sha-enqueue"
+        val outcomes = listOf(0L, 1L, 2L, 3L)
+        coEvery {
+            mockCommands.evalsha<Long>("sha-enqueue", ScriptOutputType.INTEGER, releaseKeys, "86400", "3600")
+        } returnsMany outcomes
+
+        val decisions = List(3) { adapter.enqueueOrCoalesce(repo, 24.hours, 3600.seconds) }
+
+        assertEquals(
+            listOf(EnqueueDecision.ENQUEUE, EnqueueDecision.ALREADY_QUEUED, EnqueueDecision.MARKED_DIRTY),
+            decisions,
+        )
+        assertThrows<IllegalStateException> { adapter.enqueueOrCoalesce(repo, 24.hours, 3600.seconds) }
+        assertThrows<IllegalArgumentException> { adapter.enqueueOrCoalesce(repo, 500.milliseconds, 3600.seconds) }
+
+        coEvery { mockCommands.del(queuedKey) } returns 1L
+        adapter.clearQueued(repo)
+        coVerify(exactly = 1) { mockCommands.del(queuedKey) }
     }
 }

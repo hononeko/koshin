@@ -89,4 +89,30 @@ class MaxDeliverDlqForwarderTest {
         assertEquals("advisory", headers.captured.getFirst("Koshin-Dlq-Source"))
         assertEquals(1, forwarder.handledAdvisoriesCount.get())
     }
+
+    @Test
+    fun `reports the dead-lettered job, and a failing report doesn't fail the move`() {
+        val event = """{"repo":{"platform":"GITLAB","repository":"group/project"},"deliveryId":"d-1",""" +
+            """"triggerReason":"WEBHOOK"}"""
+        every { jsm.getMessage(config.jobsStreamName, 9) } returns mockk<MessageInfo> {
+            every { isMessage } returns true
+            // Not a jobs subject: the platform comes from the payload
+            every { subject } returns "elsewhere"
+            every { data } returns event.toByteArray()
+            every { this@mockk.headers } returns null
+        }
+        every { js.publish("renovate.dlq.gitlab", any<Headers>(), any<ByteArray>(), any<PublishOptions>()) } returns
+            mockk<PublishAck> { every { isDuplicate } returns true }
+        every { jsm.deleteMessage(config.jobsStreamName, 9) } returns true
+        val reported = mutableListOf<String>()
+        val reporting = MaxDeliverDlqForwarder(mockk<Connection>(), config, jsm, js, autoStart = false) {
+            reported += it.repo.toString()
+            error("Valkey down")
+        }
+
+        assertTrue(reporting.moveToDeadLetter(9, 5, MaxDeliverDlqForwarder.SOURCE_SWEEP))
+
+        assertEquals(listOf("gitlab:group/project"), reported)
+        verify { jsm.deleteMessage(config.jobsStreamName, 9) }
+    }
 }
