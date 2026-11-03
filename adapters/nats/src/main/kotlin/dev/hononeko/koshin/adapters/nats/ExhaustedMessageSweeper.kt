@@ -63,7 +63,7 @@ class ExhaustedMessageSweeper(
         moved
     }
 
-    /** Sweeps every [interval], starting after a random part of it so workers don't all sweep at once. */
+    /** Sweeps every [interval], starting after a random part of it so proxy replicas don't all sweep at once. */
     fun start(scope: CoroutineScope, interval: Duration): Job = scope.launch {
         delay(interval * Random.nextDouble())
         while (isActive) {

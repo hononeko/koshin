@@ -34,6 +34,9 @@ class ValkeyComponentUnitTest {
     private val repo = RepoRef(Platform.GITHUB, "hononeko/koshin")
     private val lockKey = "koshin:{github:hononeko/koshin}:lock"
     private val dirtyKey = "koshin:{github:hononeko/koshin}:dirty"
+    private val queuedKey = "koshin:{github:hononeko/koshin}:queued"
+    private val releaseKeys = arrayOf(lockKey, dirtyKey, queuedKey)
+    private val unlockKeys = arrayOf(lockKey, queuedKey)
 
     @Test
     fun `connection health reports status, ping result, and enforces pingTimeout`() = runTest {
@@ -98,8 +101,11 @@ class ValkeyComponentUnitTest {
     }
 
     @Test
-    fun `preloadScripts loads all four coordination scripts and uses EVALSHA`() = runTest {
+    fun `preloadScripts loads all five coordination scripts and uses EVALSHA`() = runTest {
         val mockCommands = mockk<RedisCoroutinesCommands<String, String>>()
+        coEvery {
+            mockCommands.scriptLoad(ValkeyRepoCoordinationAdapter.ENQUEUE_OR_COALESCE_SCRIPT)
+        } returns "sha-enqueue"
         coEvery {
             mockCommands.scriptLoad(ValkeyRepoCoordinationAdapter.ACQUIRE_OR_MARK_DIRTY_SCRIPT)
         } returns "sha-acquire"
@@ -117,6 +123,7 @@ class ValkeyComponentUnitTest {
         adapter.preloadScripts()
 
         coVerify(exactly = 1) {
+            mockCommands.scriptLoad(ValkeyRepoCoordinationAdapter.ENQUEUE_OR_COALESCE_SCRIPT)
             mockCommands.scriptLoad(ValkeyRepoCoordinationAdapter.ACQUIRE_OR_MARK_DIRTY_SCRIPT)
             mockCommands.scriptLoad(ValkeyRepoCoordinationAdapter.EXTEND_LOCK_SCRIPT)
             mockCommands.scriptLoad(ValkeyRepoCoordinationAdapter.RELEASE_LOCK_AND_TAKE_DIRTY_SCRIPT)
@@ -127,7 +134,7 @@ class ValkeyComponentUnitTest {
             mockCommands.evalsha<Long>(
                 "sha-acquire",
                 ScriptOutputType.INTEGER,
-                arrayOf(lockKey, dirtyKey),
+                arrayOf(lockKey, dirtyKey, queuedKey),
                 "tok-1",
                 "45",
                 "3600",
@@ -149,7 +156,7 @@ class ValkeyComponentUnitTest {
             mockCommands.evalsha<Long>(
                 "sha-acquire",
                 ScriptOutputType.INTEGER,
-                arrayOf(lockKey, dirtyKey),
+                arrayOf(lockKey, dirtyKey, queuedKey),
                 any(),
                 "45",
                 "3600",
@@ -187,7 +194,7 @@ class ValkeyComponentUnitTest {
             mockCommands.evalsha<Long>(
                 "sha-acquire",
                 ScriptOutputType.INTEGER,
-                arrayOf(lockKey, dirtyKey),
+                arrayOf(lockKey, dirtyKey, queuedKey),
                 "tok-6",
                 "45",
                 "3600",
@@ -215,34 +222,34 @@ class ValkeyComponentUnitTest {
         assertFalse(adapter.extendLock(repo, "tok-1", 45.seconds))
 
         coEvery {
-            mockCommands.evalsha<Long>("sha-any", ScriptOutputType.INTEGER, arrayOf(lockKey, dirtyKey), "tok-1")
+            mockCommands.evalsha<Long>("sha-any", ScriptOutputType.INTEGER, releaseKeys, "tok-1", "0")
         } returns 0L
         assertEquals(ReleaseResult.CLEAN, adapter.releaseLockAndTakeDirty(repo, "tok-1"))
 
         coEvery {
-            mockCommands.evalsha<Long>("sha-any", ScriptOutputType.INTEGER, arrayOf(lockKey, dirtyKey), "tok-1")
+            mockCommands.evalsha<Long>("sha-any", ScriptOutputType.INTEGER, releaseKeys, "tok-1", "0")
         } returns 1L
         assertEquals(ReleaseResult.DIRTY, adapter.releaseLockAndTakeDirty(repo, "tok-1"))
 
         coEvery {
-            mockCommands.evalsha<Long>("sha-any", ScriptOutputType.INTEGER, arrayOf(lockKey, dirtyKey), "tok-1")
+            mockCommands.evalsha<Long>("sha-any", ScriptOutputType.INTEGER, releaseKeys, "tok-1", "0")
         } returns -1L
         assertEquals(ReleaseResult.NOT_OWNER, adapter.releaseLockAndTakeDirty(repo, "tok-1"))
 
         coEvery {
-            mockCommands.evalsha<Long>("sha-any", ScriptOutputType.INTEGER, arrayOf(lockKey, dirtyKey), "tok-1")
+            mockCommands.evalsha<Long>("sha-any", ScriptOutputType.INTEGER, releaseKeys, "tok-1", "0")
         } returns 99L
         assertThrows<IllegalStateException> {
             adapter.releaseLockAndTakeDirty(repo, "tok-1")
         }
 
         coEvery {
-            mockCommands.evalsha<Long>("sha-any", ScriptOutputType.INTEGER, arrayOf(lockKey), "tok-1")
+            mockCommands.evalsha<Long>("sha-any", ScriptOutputType.INTEGER, unlockKeys, "tok-1", "0")
         } returns 1L
         assertTrue(adapter.releaseLock(repo, "tok-1"))
 
         coEvery {
-            mockCommands.evalsha<Long>("sha-any", ScriptOutputType.INTEGER, arrayOf(lockKey), "tok-1")
+            mockCommands.evalsha<Long>("sha-any", ScriptOutputType.INTEGER, unlockKeys, "tok-1", "0")
         } returns 0L
         assertFalse(adapter.releaseLock(repo, "tok-1"))
     }
@@ -258,7 +265,7 @@ class ValkeyComponentUnitTest {
         var observedDirtyResult: ReleaseResult? = null
 
         coEvery {
-            mockCommands.evalsha<Long>("sha-release", ScriptOutputType.INTEGER, arrayOf(lockKey, dirtyKey), "tok-1")
+            mockCommands.evalsha<Long>("sha-release", ScriptOutputType.INTEGER, releaseKeys, "tok-1", "0")
         } coAnswers {
             enteredEval.complete(Unit)
             allowFinish.await()
@@ -279,7 +286,7 @@ class ValkeyComponentUnitTest {
         var observedReleaseResult: Boolean? = null
 
         coEvery {
-            mockCommands.evalsha<Long>("sha-release", ScriptOutputType.INTEGER, arrayOf(lockKey), "tok-1")
+            mockCommands.evalsha<Long>("sha-release", ScriptOutputType.INTEGER, unlockKeys, "tok-1", "0")
         } coAnswers {
             enteredRelease.complete(Unit)
             allowReleaseFinish.await()
@@ -363,8 +370,9 @@ class ValkeyComponentUnitTest {
             mockCommands.eval<Long>(
                 ValkeyRepoCoordinationAdapter.RELEASE_LOCK_SCRIPT,
                 ScriptOutputType.INTEGER,
-                arrayOf(lockKey),
+                arrayOf(lockKey, queuedKey),
                 "tok-1",
+                "0",
             )
         } returns 1L
 

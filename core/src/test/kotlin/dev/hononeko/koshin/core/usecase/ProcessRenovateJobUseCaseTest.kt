@@ -69,6 +69,8 @@ class ProcessRenovateJobUseCaseTest {
         infraErrorBackoffMax = 30.seconds,
     )
 
+    private val queuedTtl = testConfig.queuedTtl
+
     private var uuidCounter = 0
     private val testTimeSource = TestTimeSource()
     private val useCase = ProcessRenovateJobUseCase(
@@ -113,8 +115,8 @@ class ProcessRenovateJobUseCaseTest {
 
         coEvery { coordinationPort.acquireOrMarkDirty(any(), any(), any(), any()) } returns AcquireResult.ACQUIRED
         coEvery { coordinationPort.extendLock(any(), any(), any()) } returns true
-        coEvery { coordinationPort.releaseLockAndTakeDirty(any(), any()) } returns ReleaseResult.CLEAN
-        coEvery { coordinationPort.releaseLock(any(), any()) } returns true
+        coEvery { coordinationPort.releaseLockAndTakeDirty(any(), any(), any()) } returns ReleaseResult.CLEAN
+        coEvery { coordinationPort.releaseLock(any(), any(), any()) } returns true
 
         coEvery { cachePort.restore(any()) } returns true
         coEvery { cachePort.persist(any()) } returns Unit
@@ -223,7 +225,7 @@ class ProcessRenovateJobUseCaseTest {
 
     @Test
     fun `successful CLI execution with CLEAN release persists cache, resets backoff, ACKs`() = runTest {
-        coEvery { coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1") } returns ReleaseResult.CLEAN
+        coEvery { coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1", queuedTtl) } returns ReleaseResult.CLEAN
 
         useCase.processDelivery(delivery, "token-1")
 
@@ -232,7 +234,7 @@ class ProcessRenovateJobUseCaseTest {
             cachePort.restore(testRepo)
             cliExecutor.execute(testRepo, testCreds, testConfig.cliTimeout)
             cachePort.persist(testRepo)
-            coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1")
+            coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1", queuedTtl)
             throttlePort.resetBackoff(testRepo.platform)
             delivery.ack()
             throttlePort.releaseRunSlot(testRepo.platform, "token-1")
@@ -243,7 +245,7 @@ class ProcessRenovateJobUseCaseTest {
 
     @Test
     fun `successful CLI execution with DIRTY release publishes follow-up with fresh ID`() = runTest {
-        coEvery { coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1") } returns ReleaseResult.DIRTY
+        coEvery { coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1", queuedTtl) } returns ReleaseResult.DIRTY
         val publishedSlot = slot<RenovateJobEvent>()
         coEvery { queuePublisher.publish(capture(publishedSlot)) } returns Unit
 
@@ -254,7 +256,7 @@ class ProcessRenovateJobUseCaseTest {
             cachePort.restore(testRepo)
             cliExecutor.execute(testRepo, testCreds, testConfig.cliTimeout)
             cachePort.persist(testRepo)
-            coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1")
+            coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1", queuedTtl)
             queuePublisher.publish(any())
             throttlePort.resetBackoff(testRepo.platform)
             delivery.ack()
@@ -271,12 +273,12 @@ class ProcessRenovateJobUseCaseTest {
     @Test
     fun `a rejected repository is ACKed without a run, a retry or a follow-up`() = runTest {
         coEvery { credentialsPort.credentialsFor(testRepo) } throws RepositoryRejectedException("not allowed")
-        coEvery { coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1") } returns ReleaseResult.DIRTY
+        coEvery { coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1", null) } returns ReleaseResult.DIRTY
 
         useCase.processDelivery(delivery, "token-1")
 
         coVerifyOrder {
-            coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1")
+            coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1", null)
             delivery.ack()
             throttlePort.releaseRunSlot(testRepo.platform, "token-1")
             workspaceCleaner.cleanup(testRepo)
@@ -290,7 +292,9 @@ class ProcessRenovateJobUseCaseTest {
     @Test
     fun `failed CLI execution with NOT_OWNER release NAKs with ZERO delay without persisting cache`() = runTest {
         coEvery { cliExecutor.execute(any(), any(), any()) } returns JobExecutionResult.Failed(1)
-        coEvery { coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1") } returns ReleaseResult.NOT_OWNER
+        coEvery {
+            coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1", queuedTtl)
+        } returns ReleaseResult.NOT_OWNER
 
         useCase.processDelivery(delivery, "token-1")
 
@@ -302,13 +306,15 @@ class ProcessRenovateJobUseCaseTest {
 
     @Test
     fun `successful CLI execution with NOT_OWNER release persists cache before release and NAKs`() = runTest {
-        coEvery { coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1") } returns ReleaseResult.NOT_OWNER
+        coEvery {
+            coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1", queuedTtl)
+        } returns ReleaseResult.NOT_OWNER
 
         useCase.processDelivery(delivery, "token-1")
 
         coVerifyOrder {
             cachePort.persist(testRepo)
-            coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1")
+            coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1", queuedTtl)
             delivery.nack(Duration.ZERO)
         }
         coVerify(exactly = 1) { workspaceCleaner.cleanup(testRepo) }
@@ -317,7 +323,7 @@ class ProcessRenovateJobUseCaseTest {
     @Test
     fun `failed CLI execution with CLEAN release ACKs without persisting cache`() = runTest {
         coEvery { cliExecutor.execute(any(), any(), any()) } returns JobExecutionResult.Failed(1)
-        coEvery { coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1") } returns ReleaseResult.CLEAN
+        coEvery { coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1", queuedTtl) } returns ReleaseResult.CLEAN
 
         useCase.processDelivery(delivery, "token-1")
 
@@ -329,7 +335,7 @@ class ProcessRenovateJobUseCaseTest {
     @Test
     fun `timed out CLI execution with DIRTY release publishes follow-up and ACKs`() = runTest {
         coEvery { cliExecutor.execute(any(), any(), any()) } returns JobExecutionResult.TimedOut
-        coEvery { coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1") } returns ReleaseResult.DIRTY
+        coEvery { coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1", queuedTtl) } returns ReleaseResult.DIRTY
         val publishedSlot = slot<RenovateJobEvent>()
         coEvery { queuePublisher.publish(capture(publishedSlot)) } returns Unit
 
@@ -344,7 +350,9 @@ class ProcessRenovateJobUseCaseTest {
     @Test
     fun `failed CLI execution with NOT_OWNER release NAKs with ZERO delay`() = runTest {
         coEvery { cliExecutor.execute(any(), any(), any()) } returns JobExecutionResult.Failed(2)
-        coEvery { coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1") } returns ReleaseResult.NOT_OWNER
+        coEvery {
+            coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1", queuedTtl)
+        } returns ReleaseResult.NOT_OWNER
 
         useCase.processDelivery(delivery, "token-1")
 
@@ -355,13 +363,13 @@ class ProcessRenovateJobUseCaseTest {
     @Test
     fun `rate limited execution with rateLimitAttempt below max increments attempt and requeues`() = runTest {
         coEvery { cliExecutor.execute(any(), any(), any()) } returns JobExecutionResult.RateLimited(45.seconds)
-        coEvery { coordinationPort.releaseLock(testRepo, "token-1") } returns true
+        coEvery { coordinationPort.releaseLock(testRepo, "token-1", queuedTtl) } returns true
         val publishedSlot = slot<RenovateJobEvent>()
         coEvery { queuePublisher.publish(capture(publishedSlot)) } returns Unit
 
         useCase.processDelivery(delivery, "token-1")
 
-        coVerify(exactly = 1) { coordinationPort.releaseLock(testRepo, "token-1") }
+        coVerify(exactly = 1) { coordinationPort.releaseLock(testRepo, "token-1", queuedTtl) }
         coVerify(exactly = 1) { throttlePort.registerRateLimit(testRepo.platform, 45.seconds) }
         coVerify(exactly = 1) { queuePublisher.publish(any()) }
         val requeued = publishedSlot.captured
@@ -378,7 +386,7 @@ class ProcessRenovateJobUseCaseTest {
         val exhaustedEvent = testEvent.copy(rateLimitAttempt = 5)
         every { delivery.event } returns exhaustedEvent
         coEvery { cliExecutor.execute(any(), any(), any()) } returns JobExecutionResult.RateLimited(null)
-        coEvery { coordinationPort.releaseLock(testRepo, "token-1") } returns true
+        coEvery { coordinationPort.releaseLock(testRepo, "token-1", null) } returns true
         val dlqSlot = slot<RenovateJobEvent>()
         coEvery { queuePublisher.publishToDeadLetter(capture(dlqSlot)) } returns Unit
 
@@ -392,7 +400,7 @@ class ProcessRenovateJobUseCaseTest {
     @Test
     fun `rate limited execution when releaseLock returns false (NOT_OWNER) NAKs without requeueing`() = runTest {
         coEvery { cliExecutor.execute(any(), any(), any()) } returns JobExecutionResult.RateLimited(null)
-        coEvery { coordinationPort.releaseLock(testRepo, "token-1") } returns false
+        coEvery { coordinationPort.releaseLock(testRepo, "token-1", queuedTtl) } returns false
 
         useCase.processDelivery(delivery, "token-1")
 
@@ -423,7 +431,7 @@ class ProcessRenovateJobUseCaseTest {
         advanceTimeBy(testConfig.heartbeatInterval + 10.milliseconds)
         job.join()
 
-        coVerify(exactly = 1) { coordinationPort.releaseLock(testRepo, "token-1") }
+        coVerify(exactly = 1) { coordinationPort.releaseLock(testRepo, "token-1", queuedTtl) }
         coVerify(exactly = 1) { delivery.nack(Duration.ZERO) }
         coVerify(exactly = 0) { delivery.ack() }
         coVerify(exactly = 0) { cachePort.persist(any()) }
@@ -451,7 +459,7 @@ class ProcessRenovateJobUseCaseTest {
         advanceTimeBy(testConfig.heartbeatInterval + 10.milliseconds)
         job.join()
 
-        coVerify(exactly = 1) { coordinationPort.releaseLock(testRepo, "token-1") }
+        coVerify(exactly = 1) { coordinationPort.releaseLock(testRepo, "token-1", queuedTtl) }
         coVerify(exactly = 1) { delivery.nack(Duration.ZERO) }
         coVerify(exactly = 1) { throttlePort.releaseRunSlot(testRepo.platform, "token-1") }
     }
@@ -513,7 +521,7 @@ class ProcessRenovateJobUseCaseTest {
         advanceTimeBy(testConfig.heartbeatInterval + 10.milliseconds)
         job.join()
 
-        coVerify(exactly = 1) { coordinationPort.releaseLock(testRepo, "token-1") }
+        coVerify(exactly = 1) { coordinationPort.releaseLock(testRepo, "token-1", queuedTtl) }
         coVerify(exactly = 1) { delivery.nack(Duration.ZERO) }
     }
 
@@ -550,7 +558,7 @@ class ProcessRenovateJobUseCaseTest {
 
         useCase.processDelivery(delivery, "token-1")
 
-        coVerify(exactly = 1) { coordinationPort.releaseLock(testRepo, "token-1") }
+        coVerify(exactly = 1) { coordinationPort.releaseLock(testRepo, "token-1", queuedTtl) }
         // Attempt 3 backoff: 1s * 2^(3-1) = 4s
         coVerify(exactly = 1) { delivery.nack(4.seconds) }
         coVerify(exactly = 0) { delivery.ack() }
@@ -575,7 +583,7 @@ class ProcessRenovateJobUseCaseTest {
         job.cancel(CancellationException("SIGTERM received"))
         job.join()
 
-        coVerify(exactly = 1) { coordinationPort.releaseLock(testRepo, "token-1") }
+        coVerify(exactly = 1) { coordinationPort.releaseLock(testRepo, "token-1", queuedTtl) }
         coVerify(exactly = 1) { delivery.nack(Duration.ZERO) }
         coVerify(exactly = 1) { workspaceCleaner.cleanup(testRepo) }
     }
@@ -658,7 +666,7 @@ class ProcessRenovateJobUseCaseTest {
         }
 
         assertTrue(thrown is CancellationException)
-        coVerify(exactly = 1) { coordinationPort.releaseLock(testRepo, "token-1") }
+        coVerify(exactly = 1) { coordinationPort.releaseLock(testRepo, "token-1", queuedTtl) }
         coVerify(exactly = 1) { delivery.nack(Duration.ZERO) }
         coVerify(exactly = 1) { throttlePort.releaseRunSlot(testRepo.platform, "token-1") }
     }
@@ -732,7 +740,7 @@ class ProcessRenovateJobUseCaseTest {
         assertTrue(thrown is CancellationException, "got $thrown")
         coVerify(exactly = 0) { delivery.ack() }
         coVerify(exactly = 1) { delivery.nack(Duration.ZERO) }
-        coVerify(exactly = 1) { coordinationPort.releaseLock(testRepo, "token-1") }
+        coVerify(exactly = 1) { coordinationPort.releaseLock(testRepo, "token-1", queuedTtl) }
     }
 
     @Test

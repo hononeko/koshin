@@ -1,6 +1,7 @@
 package dev.hononeko.koshin.proxy
 
 import dev.hononeko.koshin.core.model.Platform
+import dev.hononeko.koshin.core.usecase.IngestConfig
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -8,7 +9,9 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 class ProxyConfigTest {
@@ -47,6 +50,9 @@ class ProxyConfigTest {
             "RENOVATE_BOT_LOGINS" to "custom-bot[bot], second-bot",
             "GITHUB_BOT_LOGIN" to "gh-app[bot]",
             "GITLAB_BOT_LOGIN" to "gl-renovate",
+            "QUEUED_TTL_SECONDS" to "7200",
+            "DIRTY_TTL_SECONDS" to "1800",
+            "COALESCE_TIMEOUT_MS" to "250",
         )
 
         val config = ProxyConfig.fromEnv(env)
@@ -60,6 +66,10 @@ class ProxyConfigTest {
         assertEquals("/etc/koshin/repos.json", config.sweepRepositoriesFile)
         val expectedBots = listOf("renovate[bot]", "renovate-bot", "custom-bot[bot]", "gh-app[bot]", "gl-renovate")
         assertTrue(config.botLogins.containsAll(expectedBots))
+        assertEquals(
+            IngestConfig(queuedTtl = 2.hours, dirtyTtl = 30.minutes, coalesceTimeout = 250.milliseconds),
+            config.ingest,
+        )
     }
 
     @Test
@@ -95,6 +105,12 @@ class ProxyConfigTest {
         }
         assertThrows<IllegalArgumentException> {
             ProxyConfig.fromEnv(mapOf("PLATFORMS" to " , "))
+        }
+        assertThrows<IllegalArgumentException> {
+            ProxyConfig.fromEnv(mapOf("QUEUED_TTL_SECONDS" to "a day"))
+        }
+        assertThrows<IllegalArgumentException> {
+            ProxyConfig.fromEnv(mapOf("COALESCE_TIMEOUT_MS" to "0"))
         }
         assertThrows<IllegalArgumentException> {
             ProxyConfig(port = -1)

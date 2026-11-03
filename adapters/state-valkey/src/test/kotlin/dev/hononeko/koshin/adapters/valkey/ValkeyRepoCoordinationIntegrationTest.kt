@@ -3,6 +3,7 @@ package dev.hononeko.koshin.adapters.valkey
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RepoRef
 import dev.hononeko.koshin.core.ports.AcquireResult
+import dev.hononeko.koshin.core.ports.EnqueueDecision
 import dev.hononeko.koshin.core.ports.ReleaseResult
 import io.lettuce.core.ExperimentalLettuceCoroutinesApi
 import io.lettuce.core.RedisClient
@@ -312,5 +313,118 @@ class ValkeyRepoCoordinationIntegrationTest {
         )
         connection.coroutines().scriptFlush()
         assertTrue(adapter.releaseLock(repo, "token-2"))
+    }
+
+    private val commands get() = connection.coroutines()
+
+    private suspend fun queued(repo: RepoRef) = commands.get(config.queuedKeyFor(repo))
+
+    @Test
+    fun `10 concurrent enqueueOrCoalesce calls for an idle repo enqueue it once`() = runBlocking(Dispatchers.IO) {
+        val connections = List(10) { client.connect() }
+        try {
+            val adapters = connections.map { ValkeyRepoCoordinationAdapter(it, config) }
+            adapters.forEach { it.preloadScripts() }
+            val repo = RepoRef(Platform.GITHUB, "hononeko/enqueue-repo")
+            val startGate = CompletableDeferred<Unit>()
+
+            val decisions = adapters.map { adapter ->
+                async {
+                    startGate.await()
+                    adapter.enqueueOrCoalesce(repo, queuedTtl = 600.seconds, dirtyTtl = 300.seconds)
+                }
+            }.also { startGate.complete(Unit) }.awaitAll()
+
+            assertEquals(1, decisions.count { it == EnqueueDecision.ENQUEUE })
+            assertEquals(9, decisions.count { it == EnqueueDecision.ALREADY_QUEUED })
+            assertEquals("1", queued(repo))
+            assertTrue((commands.ttl(config.queuedKeyFor(repo)) ?: -1L) in 1L..600L)
+            assertNull(commands.get(config.dirtyKeyFor(repo)), "queuing marks nothing dirty")
+        } finally {
+            connections.forEach { it.close() }
+        }
+    }
+
+    @Test
+    fun `enqueueOrCoalesce marks a running repo dirty without queuing it`() = runBlocking {
+        val adapter = ValkeyRepoCoordinationAdapter(connection, config)
+        val repo = RepoRef(Platform.GITLAB, "group/sub/running-repo")
+        assertEquals(AcquireResult.ACQUIRED, adapter.acquireOrMarkDirty(repo, "token-1", 30.seconds, 300.seconds))
+
+        assertEquals(EnqueueDecision.MARKED_DIRTY, adapter.enqueueOrCoalesce(repo, 600.seconds, 300.seconds))
+
+        assertEquals("1", commands.get(config.dirtyKeyFor(repo)))
+        assertTrue((commands.ttl(config.dirtyKeyFor(repo)) ?: -1L) in 1L..300L)
+        assertNull(queued(repo))
+        assertEquals(ReleaseResult.DIRTY, adapter.releaseLockAndTakeDirty(repo, "token-1", 600.seconds))
+    }
+
+    @Test
+    fun `acquiring the lock clears the queued mark, and coalescing keeps it`() = runBlocking {
+        val adapter = ValkeyRepoCoordinationAdapter(connection, config)
+        val repo = RepoRef(Platform.GITHUB, "hononeko/acquire-clears-queued")
+        assertEquals(EnqueueDecision.ENQUEUE, adapter.enqueueOrCoalesce(repo, 600.seconds, 300.seconds))
+
+        assertEquals(AcquireResult.ACQUIRED, adapter.acquireOrMarkDirty(repo, "token-1", 30.seconds, 300.seconds))
+        assertNull(queued(repo))
+
+        // A fail-open duplicate published while the repo ran
+        commands.set(config.queuedKeyFor(repo), "1")
+        assertEquals(AcquireResult.COALESCED, adapter.acquireOrMarkDirty(repo, "token-2", 30.seconds, 300.seconds))
+        assertEquals("1", queued(repo))
+        assertEquals("1", commands.get(config.dirtyKeyFor(repo)))
+    }
+
+    @Test
+    fun `a dirty release re-arms the queued mark for the follow-up, a clean or plain one doesn't`() = runBlocking {
+        val adapter = ValkeyRepoCoordinationAdapter(connection, config)
+        val repo = RepoRef(Platform.GITHUB, "hononeko/follow-up-repo")
+
+        adapter.acquireOrMarkDirty(repo, "token-1", 30.seconds, 300.seconds)
+        adapter.enqueueOrCoalesce(repo, 600.seconds, 300.seconds)
+        assertEquals(ReleaseResult.DIRTY, adapter.releaseLockAndTakeDirty(repo, "token-1", 600.seconds))
+        assertEquals("1", queued(repo))
+        assertTrue((commands.ttl(config.queuedKeyFor(repo)) ?: -1L) in 1L..600L)
+
+        adapter.acquireOrMarkDirty(repo, "token-2", 30.seconds, 300.seconds)
+        assertEquals(ReleaseResult.CLEAN, adapter.releaseLockAndTakeDirty(repo, "token-2", 600.seconds))
+        assertNull(queued(repo))
+
+        // A rejected repo drops its dirty flag without a follow-up
+        adapter.acquireOrMarkDirty(repo, "token-3", 30.seconds, 300.seconds)
+        adapter.enqueueOrCoalesce(repo, 600.seconds, 300.seconds)
+        assertEquals(ReleaseResult.DIRTY, adapter.releaseLockAndTakeDirty(repo, "token-3"))
+        assertNull(queued(repo))
+
+        assertEquals(ReleaseResult.NOT_OWNER, adapter.releaseLockAndTakeDirty(repo, "token-4", 600.seconds))
+        assertNull(queued(repo))
+    }
+
+    @Test
+    fun `releaseLock re-arms the queued mark only when asked and only for the owner`() = runBlocking {
+        val adapter = ValkeyRepoCoordinationAdapter(connection, config)
+        val repo = RepoRef(Platform.GITHUB, "hononeko/requeue-repo")
+
+        adapter.acquireOrMarkDirty(repo, "token-1", 30.seconds, 300.seconds)
+        assertTrue(adapter.releaseLock(repo, "token-1", 600.seconds))
+        assertEquals("1", queued(repo))
+
+        adapter.acquireOrMarkDirty(repo, "token-2", 30.seconds, 300.seconds)
+        assertFalse(adapter.releaseLock(repo, "someone-else", 600.seconds))
+        assertNull(queued(repo))
+        assertTrue(adapter.releaseLock(repo, "token-2"))
+        assertNull(queued(repo))
+    }
+
+    @Test
+    fun `clearQueued lets the next webhook enqueue again`() = runBlocking {
+        val adapter = ValkeyRepoCoordinationAdapter(connection, config)
+        val repo = RepoRef(Platform.GITHUB, "hononeko/dead-lettered-repo")
+        assertEquals(EnqueueDecision.ENQUEUE, adapter.enqueueOrCoalesce(repo, 600.seconds, 300.seconds))
+        assertEquals(EnqueueDecision.ALREADY_QUEUED, adapter.enqueueOrCoalesce(repo, 600.seconds, 300.seconds))
+
+        adapter.clearQueued(repo)
+
+        assertEquals(EnqueueDecision.ENQUEUE, adapter.enqueueOrCoalesce(repo, 600.seconds, 300.seconds))
     }
 }

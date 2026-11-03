@@ -94,10 +94,12 @@ class E2eCluster(
         NatsJetStreamBootstrap(nats, natsConfig).bootstrap(Platform.entries)
     }
 
-    fun startProxy(): TestProxy = TestProxy(Containers.natsUrl, natsConfig).also {
-        proxy = it
-        it.start()
-    }
+    /** With [coalescing] off, the proxy publishes every webhook, as when Valkey is down and it fails open. */
+    fun startProxy(coalescing: Boolean = true): TestProxy =
+        TestProxy(Containers.natsUrl, natsConfig, valkeyConfig.takeIf { coalescing }).also {
+            proxy = it
+            it.start()
+        }
 
     fun startWorker(
         name: String,
@@ -116,6 +118,8 @@ class E2eCluster(
     fun lockHolder(repo: RepoRef): String? = redis.sync().get(valkeyConfig.lockKeyFor(repo))
 
     fun isDirty(repo: RepoRef): Boolean = redis.sync().exists(valkeyConfig.dirtyKeyFor(repo)) > 0
+
+    fun isQueued(repo: RepoRef): Boolean = redis.sync().exists(valkeyConfig.queuedKeyFor(repo)) > 0
 
     fun hasBackoff(platform: Platform): Boolean =
         redis.sync().exists(valkeyConfig.throttleKeyFor(platform, "backoff_n")) > 0
@@ -139,7 +143,7 @@ class E2eCluster(
 
     fun publishedCount(): Long = jsm.getStreamInfo(natsConfig.jobsStreamName).streamState.lastSequence
 
-    /** Waits until no job is queued or in flight and the repo has neither a lock nor a dirty flag. */
+    /** Waits until no job is queued or in flight and the repo has no lock, dirty flag or queued mark. */
     fun awaitQuiescent(repo: RepoRef) {
         var calmSince: TimeSource.Monotonic.ValueTimeMark? = null
         var state = ""
@@ -148,13 +152,15 @@ class E2eCluster(
                 val consumer = jsm.getConsumerInfo(natsConfig.jobsStreamName, natsConfig.consumerNameFor(repo.platform))
                 val lock = lockHolder(repo)
                 val dirty = isDirty(repo)
+                val queued = isQueued(repo)
                 val running = runs.filter { it.state == CliRun.State.RUNNING }.map { it.worker }
                 state = "pending=${consumer.numPending}, ackPending=${consumer.numAckPending}, lock=$lock, " +
-                    "dirty=$dirty, running=$running"
+                    "dirty=$dirty, queued=$queued, running=$running"
                 val calm = consumer.numPending == 0L &&
                     consumer.numAckPending == 0L &&
                     lock == null &&
                     !dirty &&
+                    !queued &&
                     running.isEmpty()
                 calmSince = if (calm) calmSince ?: TimeSource.Monotonic.markNow() else null
                 calmSince?.let { it.elapsedNow() >= CALM_PERIOD } == true

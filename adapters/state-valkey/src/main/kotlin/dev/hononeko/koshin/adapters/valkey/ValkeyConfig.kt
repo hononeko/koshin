@@ -58,6 +58,8 @@ data class ValkeyConfig(
 
     fun dirtyKeyFor(repo: RepoRef): String = "$keyPrefix:{${repo.platform.name.lowercase()}:${repo.repository}}:dirty"
 
+    fun queuedKeyFor(repo: RepoRef): String = "$keyPrefix:{${repo.platform.name.lowercase()}:${repo.repository}}:queued"
+
     fun throttleKeyFor(platform: Platform, name: String): String =
         "$keyPrefix:{throttle:${platform.name.lowercase()}}:$name"
 

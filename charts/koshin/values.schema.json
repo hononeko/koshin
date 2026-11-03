@@ -173,6 +173,14 @@
         "commandTimeoutSeconds": {
           "type": "integer",
           "minimum": 1
+        },
+        "queuedTtlSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "coalesceTimeoutMs": {
+          "type": "integer",
+          "minimum": 1
         }
       },
       "additionalProperties": false

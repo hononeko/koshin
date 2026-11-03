@@ -22,7 +22,7 @@ data class NatsConfig(
     val dlqForwarderQueueGroup: String = DEFAULT_DLQ_QUEUE_GROUP,
     val consumerPrefix: String = DEFAULT_CONSUMER_PREFIX,
     val storageType: StorageType = StorageType.File,
-    /** How often workers look for exhausted jobs whose MaxDeliver advisory nobody handled; zero turns it off. */
+    /** How often the proxy looks for exhausted jobs whose MaxDeliver advisory nobody handled; zero turns it off. */
     val exhaustedSweepInterval: Duration = DEFAULT_EXHAUSTED_SWEEP_SECONDS.seconds,
 ) {
     val jobsSubject: String

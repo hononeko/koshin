@@ -44,6 +44,7 @@ spec:
             - name: http
               containerPort: 8080
           envFrom:
+            # NATS_URL, and VALKEY_URL for coalescing webhooks before publishing them
             - configMapRef:
                 name: koshin-config
             # GITHUB_WEBHOOK_SECRET, GITLAB_WEBHOOK_SECRET, INTERNAL_TRIGGER_TOKEN

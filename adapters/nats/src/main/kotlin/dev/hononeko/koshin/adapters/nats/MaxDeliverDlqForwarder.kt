@@ -16,6 +16,7 @@ import org.slf4j.LoggerFactory
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
 
+@Suppress("LongParameterList") // All but the connection have defaults
 class MaxDeliverDlqForwarder(
     private val connection: Connection,
     private val config: NatsConfig = NatsConfig(),
@@ -23,6 +24,8 @@ class MaxDeliverDlqForwarder(
     private val js: JetStream = connection.jetStream(),
     private val json: Json = Json { ignoreUnknownKeys = true },
     autoStart: Boolean = true,
+    /** Called with each job moved to the DLQ, e.g. to clear its repo's queued mark (KSH-30). */
+    private val onDeadLettered: (RenovateJobEvent) -> Unit = {},
 ) : AutoCloseable {
     private val logger = LoggerFactory.getLogger(MaxDeliverDlqForwarder::class.java)
     private var dispatcher: Dispatcher? = null
@@ -101,6 +104,7 @@ class MaxDeliverDlqForwarder(
                 val platform = extractPlatform(msgInfo)
                 forwardToDlq(streamSeq, msgInfo, platform, deliveries, source)
                 deleteFromWorkQueueWithRetry(streamSeq)
+                notifyDeadLettered(streamSeq, msgInfo)
                 return true
             } catch (@Suppress("TooGenericExceptionCaught") e: Exception) {
                 logger.warn(
@@ -123,6 +127,23 @@ class MaxDeliverDlqForwarder(
                 Thread.sleep((RETRY_BACKOFF_BASE_MS * attempt).coerceAtMost(RETRY_BACKOFF_MAX_MS))
             }
         }
+    }
+
+    private fun notifyDeadLettered(streamSeq: Long, msgInfo: MessageInfo) {
+        val event = parseEventOrNull(msgInfo) ?: return
+        try {
+            onDeadLettered(event)
+        } catch (@Suppress("TooGenericExceptionCaught") e: Exception) {
+            logger.warn("Dead-letter callback failed for seq {} ({})", streamSeq, event.repo, e)
+        }
+    }
+
+    private fun parseEventOrNull(msgInfo: MessageInfo): RenovateJobEvent? = try {
+        json.decodeFromString(RenovateJobEvent.serializer(), msgInfo.data?.decodeToString().orEmpty())
+    } catch (_: SerializationException) {
+        null
+    } catch (_: IllegalArgumentException) {
+        null
     }
 
     private fun parseAdvisoryOrNull(payloadString: String): MaxDeliveriesAdvisory? = try {
@@ -163,15 +184,7 @@ class MaxDeliverDlqForwarder(
         if (subject.startsWith(prefix)) {
             return subject.removePrefix(prefix)
         }
-        return try {
-            val payload = msgInfo.data?.decodeToString().orEmpty()
-            val event = json.decodeFromString(RenovateJobEvent.serializer(), payload)
-            event.repo.platform.name.lowercase()
-        } catch (_: SerializationException) {
-            "unknown"
-        } catch (_: IllegalArgumentException) {
-            "unknown"
-        }
+        return parseEventOrNull(msgInfo)?.repo?.platform?.name?.lowercase() ?: "unknown"
     }
 
     private fun forwardToDlq(

@@ -1,6 +1,7 @@
 package dev.hononeko.koshin.core.usecase
 
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
@@ -8,6 +9,8 @@ data class WorkerConfig(
     val natsAckWait: Duration = 60.seconds,
     val lockTtl: Duration = 45.seconds,
     val dirtyTtl: Duration = 3600.seconds,
+    /** How long a repo stays marked queued for a job a worker publishes or NAKs back to the queue (KSH-30). */
+    val queuedTtl: Duration = 24.hours,
     val cliTimeout: Duration = 45.minutes,
     val heartbeatInterval: Duration = 15.seconds,
     val lockCollisionRetryDelay: Duration = 30.seconds,
@@ -20,6 +23,7 @@ data class WorkerConfig(
         require(natsAckWait > Duration.ZERO) { "natsAckWait must be positive: $natsAckWait" }
         require(lockTtl > Duration.ZERO) { "lockTtl must be positive: $lockTtl" }
         require(dirtyTtl > Duration.ZERO) { "dirtyTtl must be positive: $dirtyTtl" }
+        require(queuedTtl.isFinite() && queuedTtl >= 1.seconds) { "queuedTtl must be at least 1s: $queuedTtl" }
         require(cliTimeout > Duration.ZERO) { "cliTimeout must be positive: $cliTimeout" }
         require(heartbeatInterval > Duration.ZERO) { "heartbeatInterval must be positive: $heartbeatInterval" }
         require(lockCollisionRetryDelay > Duration.ZERO) {

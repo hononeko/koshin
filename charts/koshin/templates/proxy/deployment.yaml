@@ -84,6 +84,8 @@ spec:
           env:
             - name: SWEEP_REPOSITORIES_FILE
               value: /etc/koshin/repositories/repositories.txt
+            # VALKEY_URL comes from the ConfigMap: the proxy coalesces webhooks before publishing (KSH-30)
+            {{- with include "koshin.sentinelPasswordEnv" . }}{{ . | nindent 12 }}{{- end }}
             {{- with .Values.proxy.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

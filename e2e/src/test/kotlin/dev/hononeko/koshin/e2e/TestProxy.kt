@@ -1,9 +1,11 @@
 package dev.hononeko.koshin.e2e
 
 import dev.hononeko.koshin.adapters.nats.NatsConfig
+import dev.hononeko.koshin.adapters.valkey.ValkeyConfig
 import dev.hononeko.koshin.core.model.RepoRef
 import dev.hononeko.koshin.proxy.ProxyConfig
 import dev.hononeko.koshin.proxy.ProxyNatsLifecycle
+import dev.hononeko.koshin.proxy.ProxyValkey
 import dev.hononeko.koshin.proxy.createProxyServer
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -21,23 +23,37 @@ import java.util.UUID
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
-/** The real proxy (Ktor + NATS publisher), receiving signed GitHub webhooks over HTTP. */
-class TestProxy(natsUrl: String, natsConfig: NatsConfig) : AutoCloseable {
-    private val nats = ProxyNatsLifecycle(natsUrl, natsConfig)
+/**
+ * The real proxy (Ktor, NATS, Valkey), receiving signed GitHub webhooks over HTTP. Without [valkeyConfig] it
+ * publishes every webhook, as when it fails open.
+ */
+class TestProxy(natsUrl: String, natsConfig: NatsConfig, valkeyConfig: ValkeyConfig?) : AutoCloseable {
+    private val valkey = valkeyConfig?.let { config -> ProxyValkey { ProxyValkey.connect(config) } }
+    private val nats = ProxyNatsLifecycle(
+        natsUrl = natsUrl,
+        natsConfig = natsConfig,
+        onDeadLettered = { event -> valkey?.clearQueuedLater(event.repo) },
+    )
     private val server = createProxyServer(
         config = ProxyConfig(port = 0, natsUrl = natsUrl, githubWebhookSecret = SECRET),
         publisher = nats,
         readinessCheck = nats::isReady,
-        onStop = nats::close,
+        onStop = {
+            nats.close()
+            valkey?.close()
+        },
+        coordination = valkey?.coordination,
     )
     private val http = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build()
     private var port = 0
 
     fun start() {
+        valkey?.startAsync()
         nats.startAsync()
         server.start(wait = false)
         port = runBlocking { server.engine.resolvedConnectors().first().port }
         awaitUntil("proxy to connect to NATS") { nats.isReady() }
+        valkey?.let { awaitUntil("proxy to connect to Valkey") { it.isConnected } }
     }
 
     /** Sends a signed `push` webhook and returns the proxy's JSON response. */

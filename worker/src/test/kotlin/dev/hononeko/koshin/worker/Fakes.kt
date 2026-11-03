@@ -4,6 +4,7 @@ import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.model.RepoRef
 import dev.hononeko.koshin.core.ports.AcquireResult
+import dev.hononeko.koshin.core.ports.EnqueueDecision
 import dev.hononeko.koshin.core.ports.JobDelivery
 import dev.hononeko.koshin.core.ports.JobQueueConsumer
 import dev.hononeko.koshin.core.ports.JobQueuePublisher
@@ -52,6 +53,20 @@ class RecordingPublisher : JobQueuePublisher {
 class InMemoryCoordination : RepoCoordinationPort {
     val locks = ConcurrentHashMap<RepoRef, String>()
     val dirty: MutableSet<RepoRef> = ConcurrentHashMap.newKeySet()
+    val queued: MutableSet<RepoRef> = ConcurrentHashMap.newKeySet()
+
+    override suspend fun enqueueOrCoalesce(repo: RepoRef, queuedTtl: Duration, dirtyTtl: Duration): EnqueueDecision =
+        synchronized(this) {
+            when {
+                locks.containsKey(repo) -> EnqueueDecision.MARKED_DIRTY.also { dirty += repo }
+                queued.add(repo) -> EnqueueDecision.ENQUEUE
+                else -> EnqueueDecision.ALREADY_QUEUED
+            }
+        }
+
+    override suspend fun clearQueued(repo: RepoRef) {
+        queued -= repo
+    }
 
     override suspend fun acquireOrMarkDirty(
         repo: RepoRef,
@@ -60,6 +75,7 @@ class InMemoryCoordination : RepoCoordinationPort {
         dirtyTtl: Duration,
     ): AcquireResult = synchronized(this) {
         if (locks.putIfAbsent(repo, token) == null) {
+            queued -= repo
             AcquireResult.ACQUIRED
         } else {
             dirty += repo
@@ -69,13 +85,16 @@ class InMemoryCoordination : RepoCoordinationPort {
 
     override suspend fun extendLock(repo: RepoRef, token: String, ttl: Duration): Boolean = locks[repo] == token
 
-    override suspend fun releaseLockAndTakeDirty(repo: RepoRef, token: String): ReleaseResult = synchronized(this) {
-        when {
-            !locks.remove(repo, token) -> ReleaseResult.NOT_OWNER
-            dirty.remove(repo) -> ReleaseResult.DIRTY
-            else -> ReleaseResult.CLEAN
+    override suspend fun releaseLockAndTakeDirty(repo: RepoRef, token: String, queuedTtl: Duration?): ReleaseResult =
+        synchronized(this) {
+            when {
+                !locks.remove(repo, token) -> ReleaseResult.NOT_OWNER
+                dirty.remove(repo) -> ReleaseResult.DIRTY.also { if (queuedTtl != null) queued += repo }
+                else -> ReleaseResult.CLEAN
+            }
         }
-    }
 
-    override suspend fun releaseLock(repo: RepoRef, token: String): Boolean = locks.remove(repo, token)
+    override suspend fun releaseLock(repo: RepoRef, token: String, queuedTtl: Duration?): Boolean = synchronized(this) {
+        locks.remove(repo, token).also { released -> if (released && queuedTtl != null) queued += repo }
+    }
 }

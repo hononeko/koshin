@@ -153,6 +153,7 @@ class WorkerSettingsTest {
                 "LOCK_TTL_SECONDS" to "60",
                 "HEARTBEAT_INTERVAL_SECONDS" to "20",
                 "DIRTY_TTL_SECONDS" to "7200",
+                "QUEUED_TTL_SECONDS" to "3600",
                 "LOCK_COLLISION_RETRY_SECONDS" to "10",
                 "CLI_TIMEOUT_MINUTES" to "30",
                 "MAX_RATE_LIMIT_REQUEUES" to "2",
@@ -173,6 +174,7 @@ class WorkerSettingsTest {
             assertEquals(60.seconds, lockTtl)
             assertEquals(20.seconds, heartbeatInterval)
             assertEquals(7200.seconds, dirtyTtl)
+            assertEquals(3600.seconds, queuedTtl)
             assertEquals(10.seconds, lockCollisionRetryDelay)
             assertEquals(30.minutes, cliTimeout)
             assertEquals(2, maxRateLimitRequeues)

@@ -11,7 +11,7 @@
 1. **Choreography over Orchestration:** No central brain. A **Stateless Thin Proxy** (`:proxy`) validates and translates webhooks into queue events; **Autonomous Stateless Workers** (`:worker`) pull jobs, coordinate per-repository locks, and invoke `renovate-cli`.
 2. **Hexagonal Architecture (Ports & Adapters):** Queueing, repository coordination, throttling, repo-cache sync and platform credentials live behind Kotlin interfaces in `:core`. NATS JetStream and Valkey are pluggable adapters. The queue ports follow JetStream semantics (per-message ack, in-progress heartbeat, delayed NAK); Valkey Streams fits them, while Kafka/RabbitMQ would need semantic shims.
 3. **Stateless Compute:** `:proxy` and `:worker` are plain `Deployment`s with no PVCs. Workers use an `emptyDir` at `/tmp/renovate` and **delete each repo workspace and local cache after the run**. The Renovate toolchain ships in the pinned upstream `renovate:full` image (`RENOVATE_BINARYSOURCE=global`) that the worker pod's `renovate` sidecar runs; in-cluster **Spegel** distributes its layers P2P so cold worker pods start fast. Backing services (NATS, Valkey) come in two deployment profiles (§8).
-4. **Zero Dropped Commits (Atomic Dirty-Flag Coalescing):** A worker atomically either acquires the per-repo lock **or** marks the repo dirty (single Lua script), then ACKs the duplicate. On release, the lock holder atomically releases the lock and takes the dirty flag, and schedules a single coalesced follow-up run.
+4. **Zero Dropped Commits (Pre-Queue + Dirty-Flag Coalescing):** `:proxy` atomically coalesces duplicates before publishing (`IDLE` → `QUEUED` + publish; `QUEUED` → drop duplicate; `RUNNING` → set `dirty=1`), failing open to direct NATS publish if Valkey is unreachable during a Sentinel failover (KSH-30). On the worker side, `acquireOrMarkDirty` clears `queued`, acquires `:lock` (or marks `:dirty` if a fail-open duplicate arrived), and `releaseLockAndTakeDirty` atomically schedules a single `DIRTY_FOLLOWUP` run.
 5. **In-Flight Heartbeats & Fast Crash Recovery:** A heartbeat coroutine every 15s sends `msg.inProgress()` and extends the owner-tokened Valkey lock (TTL 45s). AckWait (60s) is longer than the lock TTL, so a crashed worker's lock has always expired by the time its job is redelivered. A worker that loses its lock kills its CLI process immediately.
 6. **Rate-Limit Aware & Tenant-Isolated:** A global concurrency cap plus per-credential run-slot caps (`github:inst-<id>`, `github:pat`, `gitlab:pat`), Renovate per-host request limits, and per-credential exponential cooldowns keep workers from hammering Git provider APIs while isolating tenants from one another (§7).
 
@@ -47,11 +47,11 @@ graph LR
     Git[GitHub App / GitLab]
     Cron[K8s CronJob <br/> Sweeper]
     Ingress[Ingress / Gateway <br/> HTTP/1.1 · HTTP/2 · HTTP/3]
-    Proxy[koshin-proxy <br/> Ktor Netty, h2c]
+    Proxy[koshin-proxy <br/> Ingest · Coalesce · DLQ Sweep]
     Queue[[NATS JetStream <br/> RENOVATE_JOBS <br/> renovate.jobs.github.* / .gitlab.pat]]
     DLQ[[RENOVATE_DLQ <br/> renovate.dlq.>]]
     OS[(NATS Object Store <br/> koshin-repo-cache)]
-    VK[(Valkey coordination <br/> locks · dirty · run slots · cooldowns)]
+    VK[(Valkey coordination <br/> queued · locks · dirty · run slots · cooldowns)]
     VC[(Valkey package cache)]
     KEDA[KEDA ScaledObject]
 
@@ -63,11 +63,13 @@ graph LR
     Git -->|webhooks| Ingress
     Ingress -->|h2c| Proxy
     Cron -->|POST /api/v1/trigger| Proxy
-    Proxy -->|publish| Queue
+    Proxy <-->|pre-queue coalesce| VK
+    Proxy -->|publish distinct runnable| Queue
+    Proxy -->|MaxDeliver forward / sweep| DLQ
     Queue -.->|stream messages| KEDA
     KEDA -.->|scale| Worker
     Queue <-->|pull · ack · heartbeat| Worker
-    Worker -->|requeue cap / MaxDeliver| DLQ
+    Worker -->|requeue cap| DLQ
     Worker <-->|coordination + throttle| VK
     Worker <-->|restore / persist| OS
     Worker -->|ProcessBuilder, 45m cap| CLI
@@ -143,13 +145,17 @@ interface JobQueueConsumer {
     suspend fun fetchNext(scope: CredentialScope, timeout: Duration): JobDelivery?
 }
 
+enum class EnqueueDecision { ENQUEUE, ALREADY_QUEUED, MARKED_DIRTY } // KSH-30
 enum class AcquireResult { ACQUIRED, COALESCED }
 enum class ReleaseResult { CLEAN, DIRTY, NOT_OWNER }
 interface RepoCoordinationPort {
+    suspend fun enqueueOrCoalesce(repo: RepoRef, queuedTtl: Duration, dirtyTtl: Duration): EnqueueDecision
+    suspend fun clearQueued(repo: RepoRef)                              // failed publish / dead-lettered
     suspend fun acquireOrMarkDirty(repo: RepoRef, token: String, lockTtl: Duration, dirtyTtl: Duration): AcquireResult
     suspend fun extendLock(repo: RepoRef, token: String, ttl: Duration): Boolean
-    suspend fun releaseLockAndTakeDirty(repo: RepoRef, token: String): ReleaseResult
-    suspend fun releaseLock(repo: RepoRef, token: String): Boolean   // keeps dirty flag (shutdown / requeue)
+    // A non-null queuedTtl re-arms `queued` for the job the caller publishes (DIRTY → follow-up) or NAKs back
+    suspend fun releaseLockAndTakeDirty(repo: RepoRef, token: String, queuedTtl: Duration? = null): ReleaseResult
+    suspend fun releaseLock(repo: RepoRef, token: String, queuedTtl: Duration? = null): Boolean // keeps dirty flag
 }
 interface PlatformThrottlePort {
     suspend fun tryAcquireRunSlot(scope: CredentialScope, token: String, ttl: Duration): Boolean
@@ -172,12 +178,15 @@ interface WorkspaceCleanerPort { suspend fun cleanup(repo: RepoRef); suspend fun
 
 ### 4.3. Health & public endpoints
 * `GET /healthz`: **liveness** only (process up, no dependency checks), so CI smoke tests can boot a single container.
-* `GET /readyz`: **readiness** (proxy: NATS; worker: NATS + Valkey).
+* `GET /readyz`: **readiness** (proxy: NATS — Valkey fails open on ingest; worker: NATS + Valkey).
 * `GET /api/v1/encryption-key`: unauthenticated on `:proxy`; serves the armored OpenPGP public key (`application/pgp-keys; charset=utf-8`) from `RENOVATE_PUBLIC_KEY_PATH` (`404` when unconfigured) so tenants can encrypt private registry secrets locally (KSH-25).
 
-## 5. Concurrency & Dirty-Flag Coalescing Protocol
+## 5. Concurrency & Pre-Queue / Dirty-Flag Coalescing Protocol
 
-Keys use hash tags so multi-key scripts work on Valkey Cluster: `koshin:{<platform>:<repo>}:lock`, `koshin:{<platform>:<repo>}:dirty`.
+Keys use single-slot hash tags so multi-key Lua scripts work on Valkey Cluster: `koshin:{<platform>:<repo>}:queued`, `koshin:{<platform>:<repo>}:lock`, `koshin:{<platform>:<repo>}:dirty`.
+* **Ingest (`:proxy`, KSH-30):** `IDLE` → sets `:queued` (`QUEUED_TTL_SECONDS`, default 24h) and publishes 1 event; `QUEUED` → drops the duplicate; `RUNNING` (`:lock` held) → sets `:dirty` without publishing. So `RENOVATE_JOBS` holds distinct runnable repos, not raw webhook volume. If Valkey fails or doesn't answer within `COALESCE_TIMEOUT_MS`, `:proxy` fails open and publishes directly (GitHub doesn't retry failed deliveries); a failed publish clears `:queued` again.
+* **Execution (`:worker`):** `acquireOrMarkDirty` clears `:queued` when acquiring `:lock` (or marks `:dirty` if a fail-open duplicate arrived). `releaseLockAndTakeDirty` re-arms `:queued` before publishing `DIRTY_FOLLOWUP`, as `releaseLock` does for `RATE_LIMIT_REQUEUE` and for a job NAKed back to the queue (SIGTERM, infra error). Dead-lettering a job clears `:queued`.
+* `:queued` outlives its job if the job is lost without being dead-lettered, e.g. a NATS restart on `emptyDir` (`minimal`): the repo's webhooks and sweeps are then dropped until the mark expires.
 
 ```mermaid
 sequenceDiagram
@@ -188,28 +197,48 @@ sequenceDiagram
     participant W2 as Worker 2
     participant VK as Valkey
 
+    Proxy->>VK: Lua enqueueOrCoalesce(hononeko/api) for delivery #1
+    VK-->>Proxy: ENQUEUE (queued set)
     Proxy->>NATS: Publish renovate.jobs.github.inst-42 (hononeko/api, delivery #1)
+    Proxy->>VK: Lua enqueueOrCoalesce for delivery #2
+    VK-->>Proxy: ALREADY_QUEUED (nothing published)
     NATS->>W1: Fetch #1
     W1->>VK: Lua acquireOrMarkDirty(token=T1)
-    VK-->>W1: ACQUIRED
+    VK-->>W1: ACQUIRED (queued cleared)
     W1->>W1: Heartbeat every 15s (inProgress + extendLock(T1)), restore repo cache, run CLI
 
-    Proxy->>NATS: Publish renovate.jobs.github.inst-42 (hononeko/api, delivery #2)
-    NATS->>W2: Fetch #2
+    Proxy->>VK: Lua enqueueOrCoalesce for delivery #3
+    VK-->>Proxy: MARKED_DIRTY (nothing published)
+
+    Note over Proxy,W2: Valkey down: the proxy fails open and publishes delivery #4
+    Proxy->>NATS: Publish renovate.jobs.github.inst-42 (hononeko/api, delivery #4)
+    NATS->>W2: Fetch #4
     W2->>VK: Lua acquireOrMarkDirty(token=T2)
     VK-->>W2: COALESCED (dirty flag set atomically)
-    W2->>NATS: ACK #2
+    W2->>NATS: ACK #4
 
-    W1->>VK: Lua releaseLockAndTakeDirty(T1)
-    VK-->>W1: DIRTY
+    W1->>VK: Lua releaseLockAndTakeDirty(T1, queuedTtl)
+    VK-->>W1: DIRTY (queued re-armed)
     W1->>NATS: Publish DIRTY_FOLLOWUP (fresh UUID, installationId=42)
     W1->>NATS: ACK #1
 ```
 
 ### Lua scripts
 ```lua
--- acquireOrMarkDirty: KEYS[1]=lock KEYS[2]=dirty ARGV[1]=token ARGV[2]=lockTtl ARGV[3]=dirtyTtl
-if redis.call("SET", KEYS[1], ARGV[1], "NX", "EX", ARGV[2]) then return 1 end
+-- enqueueOrCoalesce: KEYS[1]=lock KEYS[2]=dirty KEYS[3]=queued ARGV[1]=queuedTtl ARGV[2]=dirtyTtl
+-- returns 0 ENQUEUE, 1 ALREADY_QUEUED, 2 MARKED_DIRTY
+if redis.call("EXISTS", KEYS[1]) == 1 then
+  redis.call("SET", KEYS[2], "1", "EX", ARGV[2])
+  return 2
+end
+if redis.call("SET", KEYS[3], "1", "NX", "EX", ARGV[1]) then return 0 end
+return 1
+
+-- acquireOrMarkDirty: KEYS[1]=lock KEYS[2]=dirty KEYS[3]=queued ARGV[1]=token ARGV[2]=lockTtl ARGV[3]=dirtyTtl
+if redis.call("SET", KEYS[1], ARGV[1], "NX", "EX", ARGV[2]) then
+  redis.call("DEL", KEYS[3])
+  return 1
+end
 redis.call("SET", KEYS[2], "1", "EX", ARGV[3])
 return 0
 
@@ -217,15 +246,21 @@ return 0
 if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("EXPIRE", KEYS[1], ARGV[2]) end
 return 0
 
--- releaseLockAndTakeDirty: returns -1 NOT_OWNER, 1 DIRTY, 0 CLEAN
+-- releaseLockAndTakeDirty: KEYS[1]=lock KEYS[2]=dirty KEYS[3]=queued ARGV[1]=token ARGV[2]=queuedTtl (0: no mark)
+-- returns -1 NOT_OWNER, 1 DIRTY, 0 CLEAN
 if redis.call("GET", KEYS[1]) ~= ARGV[1] then return -1 end
 redis.call("DEL", KEYS[1])
-if redis.call("GETDEL", KEYS[2]) then return 1 end
+if redis.call("GETDEL", KEYS[2]) then
+  if tonumber(ARGV[2]) > 0 then redis.call("SET", KEYS[3], "1", "EX", ARGV[2]) end
+  return 1
+end
 return 0
 
--- releaseLock (keeps dirty): KEYS[1]=lock ARGV[1]=token
-if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("DEL", KEYS[1]) end
-return 0
+-- releaseLock (keeps dirty): KEYS[1]=lock KEYS[2]=queued ARGV[1]=token ARGV[2]=queuedTtl (0: no mark)
+if redis.call("GET", KEYS[1]) ~= ARGV[1] then return 0 end
+redis.call("DEL", KEYS[1])
+if tonumber(ARGV[2]) > 0 then redis.call("SET", KEYS[2], "1", "EX", ARGV[2]) end
+return 1
 ```
 
 ## 6. Worker Job Lifecycle & Failure Handling
@@ -239,17 +274,17 @@ return 0
 | :--- | :--- | :--- | :--- |
 | `Success` | `releaseLockAndTakeDirty` (DIRTY → publish follow-up) | `persist` | ACK, `resetBackoff(scope)` |
 | `Failed` / `TimedOut` | `releaseLockAndTakeDirty` | not persisted | ACK (next webhook or sweep retries) |
-| `RateLimited` | `releaseLock` (keep dirty) | not persisted | `registerRateLimit(scope)` → if `rateLimitAttempt < MAX_RATE_LIMIT_REQUEUES`: publish `RATE_LIMIT_REQUEUE` (fresh UUID, `rateLimitAttempt + 1`, same `installationId`), else `publishToDeadLetter`; ACK |
+| `RateLimited` | `releaseLock` (keep dirty; re-arm `queued` if requeued) | not persisted | `registerRateLimit(scope)` → if `rateLimitAttempt < MAX_RATE_LIMIT_REQUEUES`: publish `RATE_LIMIT_REQUEUE` (fresh UUID, `rateLimitAttempt + 1`, same `installationId`), else `publishToDeadLetter`; ACK |
 | Lost lock / `NOT_OWNER` | n/a | not persisted | NAK |
-| Infra error (Valkey/NATS) | best effort `releaseLock` | not persisted | NAK with backoff by `deliveryAttempt` |
-| SIGTERM | kill CLI, `releaseLock` (keep dirty) | not persisted | NAK(0) |
+| Infra error (Valkey/NATS) | best effort `releaseLock` (re-arm `queued`) | not persisted | NAK with backoff by `deliveryAttempt` |
+| SIGTERM | kill CLI, `releaseLock` (keep dirty, re-arm `queued`) | not persisted | NAK(0) |
 
 5. Always: cancel the heartbeat, `WorkspaceCleanerPort.cleanup(repo)` (deleting both `repos/` and `cache/`), `releaseRunSlot`.
-6. **`MaxDeliver` exhaustion → DLQ:** every worker runs a forwarder subscribed to `$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.RENOVATE_JOBS.*` in **queue group `koshin-dlq-forwarders`**, so exactly one worker handles each advisory.
+6. **`MaxDeliver` exhaustion → DLQ (KSH-18, KSH-30):** `:proxy` (always on, so this works with `0` worker pods) creates the durable pull consumers and runs a forwarder subscribed to `$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.RENOVATE_JOBS.*` in **queue group `koshin-dlq-forwarders`**, so exactly one proxy replica handles each advisory.
    * The advisory carries only metadata, so the forwarder reads `stream_seq` from it.
    * WorkQueue streams only delete on ACK, so the exhausted message is still stored there. It reads the original message with `jsm.getMessage("RENOVATE_JOBS", stream_seq)`.
-   * It republishes to `renovate.dlq.<platform>` (`Nats-Msg-Id = dlq:RENOVATE_JOBS:<stream_seq>`, so retries can't duplicate), then calls `jsm.deleteMessage`.
-   * **Sweep for missed advisories (KSH-18, KSH-24):** the advisory is core NATS, delivered at most once, so it's lost when no forwarder is subscribed (a rolling deployment) or the forwarder keeps failing. Every `NATS_EXHAUSTED_SWEEP_SECONDS` each worker iterates all consumers on `RENOVATE_JOBS` (`jsm.getConsumers`) and scans each consumer's `filterSubject` the same way. WorkQueue streams delete ACKed messages, and running jobs and jobs waiting for redelivery are ACK-pending and hold the consumer's ack floor back, while exhausted ones aren't and don't. So a job still stored is exhausted if it's at or below the ack floor, or, when nothing is ACK-pending, at or below the last delivered sequence (an exhausted job at the end of the queue never gets a later ACK to move the floor). Candidates are moved after a few seconds and only if still stored, since a just-ACKed job can stay visible briefly in a cluster. DLQ entries carry `Koshin-Dlq-Source: advisory` or `sweep`, and the DLQ deduplicates them for a day, so a move that failed after publishing can't create a second entry. Empty consumers inactive past 7 days are garbage-collected so uninstalled tenants leave no stale state.
+   * It republishes to `renovate.dlq.<platform>` (`Nats-Msg-Id = dlq:RENOVATE_JOBS:<stream_seq>`, so retries can't duplicate), calls `jsm.deleteMessage`, and clears the repo's `:queued` mark.
+   * **Sweep for missed advisories (KSH-18, KSH-24):** the advisory is core NATS, delivered at most once, so it's lost when no forwarder is subscribed (a rolling deployment) or the forwarder keeps failing. Every `NATS_EXHAUSTED_SWEEP_SECONDS` each proxy replica iterates all consumers on `RENOVATE_JOBS` (`jsm.getConsumers`) and scans each consumer's `filterSubject` the same way. WorkQueue streams delete ACKed messages, and running jobs and jobs waiting for redelivery are ACK-pending and hold the consumer's ack floor back, while exhausted ones aren't and don't. So a job still stored is exhausted if it's at or below the ack floor, or, when nothing is ACK-pending, at or below the last delivered sequence (an exhausted job at the end of the queue never gets a later ACK to move the floor). Candidates are moved after a few seconds and only if still stored, since a just-ACKed job can stay visible briefly in a cluster. DLQ entries carry `Koshin-Dlq-Source: advisory` or `sweep`, and the DLQ deduplicates them for a day, so a move that failed after publishing can't create a second entry. Empty consumers inactive past 7 days are garbage-collected so uninstalled tenants leave no stale state.
 
 ## 7. Rate Limiting & Multi-Tenancy
 
@@ -282,7 +317,7 @@ return 0
 | NATS | 1 replica, `emptyDir`, stream/bucket R1 | 3-node StatefulSet + PVCs, R3 |
 | Valkey (coordination) | 1 replica, `emptyDir`, shared with package cache, `noeviction` + sized `maxmemory` | Primary + replicas + 3 Sentinels, AOF on PVC, `noeviction` |
 | Valkey (package cache) | same instance | separate single instance, `allkeys-lru`, `emptyDir` (it's only a cache) |
-| On restart | pending jobs, locks and repo caches lost; the sweeper recovers | survives losing one node |
+| On restart | pending jobs, locks and repo caches lost; the sweeper recovers (repos whose `:queued` mark outlived a lost job wait for it to expire) | survives losing one node |
 
 **Autoscaling:** KEDA's `nats-jetstream` scaler requires static consumer names, so with dynamic per-installation consumers (KSH-24) the `ScaledObject` uses KEDA's `metrics-api` scaler against NATS `/jsz?streams=true` (`streams.#(name=="RENOVATE_JOBS").state.messages`, `targetValue: "1"`). On a `WorkQueue` stream where ACKed and exhausted jobs are deleted, `state.messages` equals `sum(num_pending + num_ack_pending)` across all consumers—with 1 job per pod, workers still scale one-to-one with active + pending jobs. Kubernetes picks which pod to remove on scale-in without knowing which are busy, so workers set `controller.kubernetes.io/pod-deletion-cost` while busy (KSH-8); the SIGTERM path keeps a wrong pick safe.
 
@@ -301,20 +336,22 @@ Packaged as a Helm chart (`charts/koshin`, KSH-13), the primary install path: `p
 | `NATS_URL` | Both | `nats://koshin-nats:4222` | NATS connection URL |
 | `NATS_STREAM_NAME` | Both | `RENOVATE_JOBS` | WorkQueue stream name |
 | `NATS_STREAM_REPLICAS` | Both | `1` | Stream / Object Store replicas (`3` in HA) |
-| `NATS_ACK_WAIT_SECONDS` | Worker | `60` | Must be > `LOCK_TTL_SECONDS` |
-| `NATS_MAX_DELIVER` | Worker | `5` | Redelivery cap before DLQ |
-| `NATS_EXHAUSTED_SWEEP_SECONDS` | Worker | `300` | How often to move exhausted jobs whose MaxDeliver advisory was missed to the DLQ (and GC idle consumers); `0` turns it off |
+| `NATS_ACK_WAIT_SECONDS` | Both | `60` | Must be > `LOCK_TTL_SECONDS` |
+| `NATS_MAX_DELIVER` | Both | `5` | Redelivery cap before DLQ |
+| `NATS_EXHAUSTED_SWEEP_SECONDS` | Proxy | `300` | How often to move exhausted jobs whose MaxDeliver advisory was missed to the DLQ (and GC idle consumers); `0` turns it off |
 | `GITHUB_WEBHOOK_SECRET` | Proxy | — | HMAC secret for `X-Hub-Signature-256` (GitHub App webhook secret) |
 | `GITLAB_WEBHOOK_SECRET` | Proxy | — | Shared token for `X-Gitlab-Token` (constant-time compare) |
 | `INTERNAL_TRIGGER_TOKEN` | Proxy | — | Bearer token for `POST /api/v1/trigger` |
 | `SWEEP_REPOSITORIES_FILE` | Proxy | — | Static repo list for discovery, added to the GitHub App's repositories (e.g. GitLab projects) |
-| `VALKEY_URL` | Worker | `redis://koshin-valkey:6379` | Coordination Valkey (`redis://` or `redis-sentinel://`) |
-| `VALKEY_SENTINEL_PASSWORD` | Worker | — | Sentinel's own password (the URL's password only applies to the Valkey nodes) |
-| `VALKEY_SENTINEL_USERNAME` | Worker | — | Sentinel's ACL user (`sentinel` with the official Valkey chart, which turns the default user off) |
+| `VALKEY_URL` | Both | `redis://koshin-valkey:6379` | Coordination Valkey (`redis://` or `redis-sentinel://`); the proxy coalesces ingest with it and fails open while it's down |
+| `VALKEY_SENTINEL_PASSWORD` | Both | — | Sentinel's own password (the URL's password only applies to the Valkey nodes) |
+| `VALKEY_SENTINEL_USERNAME` | Both | — | Sentinel's ACL user (`sentinel` with the official Valkey chart, which turns the default user off) |
 | `RENOVATE_REDIS_URL` | Worker | `$VALKEY_URL` | Renovate package cache Valkey (`RENOVATE_REDIS_PREFIX` defaults to `koshin:<scope>:`; private package/preset caching pinned off) |
 | `LOCK_TTL_SECONDS` | Worker | `45` | Per-repo lock TTL |
 | `HEARTBEAT_INTERVAL_SECONDS` | Worker | `15` | Heartbeat / lock / run-slot renewal interval |
-| `DIRTY_TTL_SECONDS` | Worker | `3600` | Must be > `CLI_TIMEOUT_MINUTES` |
+| `DIRTY_TTL_SECONDS` | Both | `3600` | Must be > `CLI_TIMEOUT_MINUTES` |
+| `QUEUED_TTL_SECONDS` | Both | `86400` | How long a repo stays marked queued (KSH-30); bounds how long a lost job blocks its webhooks |
+| `COALESCE_TIMEOUT_MS` | Proxy | `500` | How long ingest waits for Valkey before publishing without coalescing (fail-open) |
 | `LOCK_COLLISION_RETRY_SECONDS` | Worker | `30` | NAK delay for a redelivered job that hits a held lock |
 | `CLI_TIMEOUT_MINUTES` | Worker | `45` | Hard cap per `renovate-cli` run (`+ 5` must stay < 60 for GitHub App tokens) |
 | `RUNNER_SOCKET` | Worker | — | Unix socket of the Renovate runner (`/run/koshin/runner.sock` in the chart); unset: Renovate runs in the worker container (KSH-21) |

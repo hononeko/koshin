@@ -1,6 +1,7 @@
 package dev.hononeko.koshin.proxy
 
 import dev.hononeko.koshin.core.model.Platform
+import dev.hononeko.koshin.core.usecase.IngestConfig
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -19,6 +20,7 @@ data class ProxyConfig(
     val publishRetryBudget: Duration = DEFAULT_PUBLISH_RETRY_BUDGET,
     val maxRequestBodyBytes: Int = DEFAULT_MAX_REQUEST_BODY_BYTES,
     val requestReadTimeoutSeconds: Int = DEFAULT_REQUEST_READ_TIMEOUT_SECONDS,
+    val ingest: IngestConfig = IngestConfig(),
 ) {
     init {
         require(port in 0..MAX_PORT) { "port must be in 0..$MAX_PORT: $port" }
@@ -79,7 +81,21 @@ data class ProxyConfig(
                 internalTriggerToken = env["INTERNAL_TRIGGER_TOKEN"]?.takeIf { it.isNotBlank() },
                 sweepRepositoriesFile = env["SWEEP_REPOSITORIES_FILE"]?.takeIf { it.isNotBlank() },
                 botLogins = botLogins,
+                ingest = ingestFromEnv(env),
             )
+        }
+
+        private fun ingestFromEnv(env: Map<String, String>): IngestConfig {
+            val defaults = IngestConfig()
+            return IngestConfig(
+                queuedTtl = env.long("QUEUED_TTL_SECONDS")?.seconds ?: defaults.queuedTtl,
+                dirtyTtl = env.long("DIRTY_TTL_SECONDS")?.seconds ?: defaults.dirtyTtl,
+                coalesceTimeout = env.long("COALESCE_TIMEOUT_MS")?.milliseconds ?: defaults.coalesceTimeout,
+            )
+        }
+
+        private fun Map<String, String>.long(key: String): Long? = this[key]?.takeIf { it.isNotBlank() }?.let { raw ->
+            requireNotNull(raw.trim().toLongOrNull()) { "Invalid integer for $key: '$raw'" }
         }
 
         private fun parsePlatforms(raw: String?): Set<Platform> {

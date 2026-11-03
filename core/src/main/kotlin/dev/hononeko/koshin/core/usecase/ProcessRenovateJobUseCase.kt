@@ -101,7 +101,7 @@ class ProcessRenovateJobUseCase(
             )
         } catch (e: CancellationException) {
             withContext(NonCancellable) {
-                runCatching { coordinationPort.releaseLock(repo, lockToken) }
+                runCatching { coordinationPort.releaseLock(repo, lockToken, config.queuedTtl) }
                 runCatching { delivery.nack(Duration.ZERO) }
                 runCatching { throttlePort.releaseRunSlot(repo.platform, lockToken) }
             }
@@ -156,18 +156,18 @@ class ProcessRenovateJobUseCase(
             }
         } catch (@Suppress("SwallowedException") e: LostLockException) {
             withContext(NonCancellable) {
-                runCatching { coordinationPort.releaseLock(repo, lockToken) }
+                runCatching { coordinationPort.releaseLock(repo, lockToken, config.queuedTtl) }
                 delivery.nack(Duration.ZERO)
             }
         } catch (e: CancellationException) {
             withContext(NonCancellable) {
-                runCatching { coordinationPort.releaseLock(repo, lockToken) }
+                runCatching { coordinationPort.releaseLock(repo, lockToken, config.queuedTtl) }
                 delivery.nack(Duration.ZERO)
             }
             throw e
         } catch (@Suppress("TooGenericExceptionCaught", "SwallowedException") e: Exception) {
             withContext(NonCancellable) {
-                runCatching { coordinationPort.releaseLock(repo, lockToken) }
+                runCatching { coordinationPort.releaseLock(repo, lockToken, config.queuedTtl) }
                 delivery.nack(computeBackoffDelay(delivery.deliveryAttempt))
             }
         } finally {
@@ -306,7 +306,8 @@ class ProcessRenovateJobUseCase(
 
         heartbeatJob.cancelAndJoin()
 
-        val release = coordinationPort.releaseLockAndTakeDirty(repo, lockToken)
+        // A consumed dirty flag marks the repo queued for the follow-up published below
+        val release = coordinationPort.releaseLockAndTakeDirty(repo, lockToken, config.queuedTtl)
 
         when (release) {
             ReleaseResult.DIRTY -> {
@@ -359,14 +360,15 @@ class ProcessRenovateJobUseCase(
 
         heartbeatJob.cancelAndJoin()
 
-        val released = coordinationPort.releaseLock(repo, lockToken)
+        val requeue = event.rateLimitAttempt < config.maxRateLimitRequeues
+        val released = coordinationPort.releaseLock(repo, lockToken, config.queuedTtl.takeIf { requeue })
         if (!released) {
             delivery.nack(Duration.ZERO)
             return
         }
 
         throttlePort.registerRateLimit(repo.platform, result.retryAfter)
-        if (event.rateLimitAttempt < config.maxRateLimitRequeues) {
+        if (requeue) {
             queuePublisher.publish(
                 RenovateJobEvent(
                     repo = repo,
