@@ -124,18 +124,20 @@ class NatsScopeConsumers(
         moveLegacyJobs(platform)
     }
 
+    /** Another proxy replica may move the same job: the message ID dedupes its copy, and its delete is a no-op. */
     private fun moveLegacyJobs(platform: Platform): Int {
         val subject = config.legacyJobsSubjectFor(platform)
+        val ensured = mutableSetOf<CredentialScope>()
         var moved = 0
         var next = nextStored(1L, subject)
         while (next != null) {
             val scope = scopeOfJob(next) ?: CredentialScope.Token(platform)
-            ensure(scope)
+            if (ensured.add(scope)) ensure(scope)
             // A new message ID: the original one may still be in the duplicate window
             val options = PublishOptions.builder().messageId("migrated:${config.jobsStreamName}:${next.seq}").build()
             val js = checkNotNull(js) { "Moving jobs needs a JetStream context" }
             js.publish(config.jobsSubjectFor(scope), next.data, options)
-            jsm.deleteMessage(config.jobsStreamName, next.seq)
+            deleteMessage(next.seq)
             moved++
             next = nextStored(next.seq + 1, subject)
         }
@@ -157,6 +159,14 @@ class NatsScopeConsumers(
     } catch (e: JetStreamApiException) {
         if (!e.isNotFound()) throw e
         null
+    }
+
+    private fun deleteMessage(seq: Long) {
+        try {
+            jsm.deleteMessage(config.jobsStreamName, seq)
+        } catch (e: JetStreamApiException) {
+            if (!e.isNotFound()) throw e
+        }
     }
 
     /** False if it was already gone. */

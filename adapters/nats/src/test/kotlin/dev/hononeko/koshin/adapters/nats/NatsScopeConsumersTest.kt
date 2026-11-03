@@ -142,6 +142,7 @@ class NatsScopeConsumersTest {
         }
         every { jsm.getNextMessage(config.jobsStreamName, any(), "renovate.jobs.gitlab") } throws ApiError(10037)
         every { jsm.deleteConsumer(config.jobsStreamName, "koshin-workers-gitlab") } throws ApiError(10014)
+        every { jsm.deleteMessage(config.jobsStreamName, 5) } throws ApiError(10037) // another replica moved it
         val options = mutableListOf<PublishOptions>()
 
         assertEquals(2, consumers.migrateLegacy(Platform.entries))
@@ -151,7 +152,7 @@ class NatsScopeConsumersTest {
         assertEquals(listOf("migrated:RENOVATE_JOBS:3", "migrated:RENOVATE_JOBS:5"), options.map { it.messageId })
         verify { jsm.deleteMessage(config.jobsStreamName, 3) }
         verify { jsm.deleteMessage(config.jobsStreamName, 5) }
-        verify { jsm.addOrUpdateConsumer(any(), match { it.name == "koshin-workers-github-pat" }) }
+        verify(exactly = 1) { jsm.addOrUpdateConsumer(any(), match { it.name == "koshin-workers-github-pat" }) }
     }
 
     @Test
@@ -163,6 +164,10 @@ class NatsScopeConsumersTest {
         assertThrows<JetStreamApiException> { consumers.migrateLegacy(listOf(Platform.GITHUB)) }
 
         every { jsm.deleteConsumer(any(), any()) } returns false
+        every { jsm.getNextMessage(any(), any(), any()) } returns message(1, "{}") andThenThrows ApiError(10037)
+        every { jsm.deleteMessage(any(), any()) } throws ApiError(10071)
+        assertThrows<JetStreamApiException> { consumers.migrateLegacy(listOf(Platform.GITHUB)) }
+
         every { jsm.getNextMessage(any(), any(), any()) } throws ApiError(10071)
         assertThrows<JetStreamApiException> { consumers.migrateLegacy(listOf(Platform.GITHUB)) }
     }
