@@ -9,7 +9,7 @@ reference for the `minimal` profile.
 
 ## Prerequisites
 
-* Kubernetes 1.30+ (native sidecar containers, `ValidatingAdmissionPolicy`)
+* Kubernetes 1.30+ (native sidecar containers)
 * [KEDA](https://keda.sh) 2.21+ to scale workers with the job backlog. Without it the chart runs a fixed
   `worker.replicas` (the `ScaledObject` is rendered only when the `keda.sh/v1alpha1` API exists, so pass
   `--api-versions keda.sh/v1alpha1/ScaledObject` to `helm template`).
@@ -140,11 +140,8 @@ read-only at `/opt/koshin`, so a run can't change it.
   that run and the non-secret settings.
 * After each run, every process left in the `renovate` container is killed, so no process a run starts can watch the
   next one.
-* Only the `worker` container mounts a ServiceAccount token, valid for `worker.podDeletionCost.tokenExpirationSeconds`.
-  The token can patch pods (for the pod-deletion cost), so the chart also installs a cluster-scoped
-  `ValidatingAdmissionPolicy` that only lets it change the `controller.kubernetes.io/pod-deletion-cost` annotation of
-  the worker's own pod. If you can't install cluster-scoped resources, set `worker.podDeletionCost.admissionPolicy=false`
-  (the token can then patch any pod in the namespace) or turn off `worker.podDeletionCost.enabled`.
+* No worker container mounts a ServiceAccount token: workers never call the Kubernetes API (KSH-31), and the chart
+  installs no RBAC or cluster-scoped resources for them.
 
 ## Renovate version
 

@@ -265,15 +265,6 @@ worker:
   # -- `RENOVATE_REDIS_URL`: Renovate's package cache. Default: the `valkey-cache` subchart, else the coordination
   # Valkey when it's a plain `redis://` URL.
   renovateRedisUrl: ""
-  podDeletionCost:
-    # -- `POD_DELETION_COST_ENABLED`: mark busy workers expensive to delete, so KEDA scale-in removes idle ones. The
-    # worker container gets a ServiceAccount token for it; Renovate's container never does.
-    enabled: true
-    # -- Lifetime of that token in seconds (at least 600); the kubelet renews it before it expires
-    tokenExpirationSeconds: 600
-    # -- Create a ValidatingAdmissionPolicy (cluster-scoped) so the token can only change the pod-deletion-cost
-    # annotation of the worker's own pod. Without it, the token can patch any pod in the namespace.
-    admissionPolicy: true
   autoscaling:
     # -- Scale workers with KEDA (one per active or pending job). Rendered only when the `keda.sh/v1alpha1` API exists.
     enabled: true

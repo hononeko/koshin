@@ -14,12 +14,14 @@ import dev.hononeko.koshin.adapters.valkey.ValkeyConfig
 import dev.hononeko.koshin.adapters.valkey.ValkeyConnectionHealth
 import dev.hononeko.koshin.adapters.valkey.ValkeyPlatformThrottleAdapter
 import dev.hononeko.koshin.adapters.valkey.ValkeyRepoCoordinationAdapter
+import dev.hononeko.koshin.adapters.valkey.ValkeyWarmWorkerAdapter
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.ports.JobQueueConsumer
 import dev.hononeko.koshin.core.ports.JobQueuePublisher
 import dev.hononeko.koshin.core.ports.PlatformThrottlePort
 import dev.hononeko.koshin.core.ports.RepoCachePort
 import dev.hononeko.koshin.core.ports.RepoCoordinationPort
+import dev.hononeko.koshin.core.ports.WarmWorkerPort
 import io.lettuce.core.ExperimentalLettuceCoroutinesApi
 import io.lettuce.core.RedisClient
 import io.nats.client.Connection
@@ -59,6 +61,7 @@ class ValkeyBackend(
     val coordination: RepoCoordinationPort,
     val throttle: PlatformThrottlePort,
     private val healthy: suspend () -> Boolean,
+    val warmWorkers: WarmWorkerPort = NoWarmWorkers,
     private val onClose: () -> Unit = {},
 ) : AutoCloseable {
     suspend fun isHealthy(): Boolean = healthy()
@@ -79,6 +82,7 @@ class WorkerBackends(
         val coordination: RepoCoordinationPort,
         val throttle: PlatformThrottlePort,
         val repoCache: RepoCachePort,
+        val warmWorkers: WarmWorkerPort = NoWarmWorkers,
     )
 
     private val logger = LoggerFactory.getLogger(WorkerBackends::class.java)
@@ -101,6 +105,7 @@ class WorkerBackends(
                     coordination = valkeyBackend.coordination,
                     throttle = valkeyBackend.throttle,
                     repoCache = natsBackend.repoCache,
+                    warmWorkers = valkeyBackend.warmWorkers,
                 ),
             )
             logger.info("Connected to NATS and Valkey")
@@ -204,8 +209,10 @@ class WorkerBackends(
                 coordination.preloadScripts()
                 val throttle = ValkeyPlatformThrottleAdapter(connection, config, throttleConfig)
                 throttle.preloadScripts()
+                val warmWorkers = ValkeyWarmWorkerAdapter(connection, config)
+                warmWorkers.preloadScripts()
                 val health = ValkeyConnectionHealth(connection, pingTimeout = config.commandTimeout)
-                return ValkeyBackend(coordination, throttle, health::ping) {
+                return ValkeyBackend(coordination, throttle, health::ping, warmWorkers) {
                     runCatching { connection.close() }
                     client.shutdown()
                 }
@@ -215,4 +222,13 @@ class WorkerBackends(
             }
         }
     }
+}
+
+/** No presence to keep, e.g. in tests. */
+object NoWarmWorkers : WarmWorkerPort {
+    override suspend fun renew(workerId: String, ttl: Duration) = Unit
+
+    override suspend fun remove(workerId: String) = Unit
+
+    override suspend fun liveCount(): Int = 0
 }

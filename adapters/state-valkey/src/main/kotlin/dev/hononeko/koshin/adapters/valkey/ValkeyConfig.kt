@@ -63,6 +63,9 @@ data class ValkeyConfig(
     fun throttleKeyFor(platform: Platform, name: String): String =
         "$keyPrefix:{throttle:${platform.name.lowercase()}}:$name"
 
+    /** Leases of live warm workers (KSH-31). */
+    fun warmWorkersKey(): String = "$keyPrefix:{workers}:warm"
+
     companion object {
         const val DEFAULT_VALKEY_URL = "redis://koshin-valkey:6379"
         private val USER_INFO = Regex("(?<=://)[^@/]+@")

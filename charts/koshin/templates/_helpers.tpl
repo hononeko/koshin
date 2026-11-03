@@ -234,26 +234,6 @@ Image reference; pass (dict "ctx" $ "image" .Values.proxy.image). Without a `reg
 /run/koshin/runner.sock
 {{- end }}
 
-{{/* What automountServiceAccountToken would mount, but short-lived; mount it at kube-api-access's usual path */}}
-{{- define "koshin.kubeApiAccessVolume" -}}
-- name: kube-api-access
-  projected:
-    sources:
-      - serviceAccountToken:
-          path: token
-          expirationSeconds: {{ .Values.worker.podDeletionCost.tokenExpirationSeconds }}
-      - configMap:
-          name: kube-root-ca.crt
-          items:
-            - key: ca.crt
-              path: ca.crt
-      - downwardAPI:
-          items:
-            - path: namespace
-              fieldRef:
-                fieldPath: metadata.namespace
-{{- end }}
-
 {{- define "koshin.kedaEnabled" -}}
 {{- if and .Values.worker.autoscaling.enabled (.Capabilities.APIVersions.Has "keda.sh/v1alpha1/ScaledObject") }}true{{ end }}
 {{- end }}

@@ -11,7 +11,9 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import kotlin.io.path.Path
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.days
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
@@ -28,7 +30,8 @@ class WorkerSettingsTest {
         assertEquals("global", settings.renovateBinarySource)
         assertEquals("redis://koshin-valkey:6379", settings.renovateRedisUrl)
         assertNull(settings.githubToken)
-        assertFalse(settings.podDeletionCostEnabled)
+        assertEquals(Duration.ZERO, settings.idleTimeout)
+        assertEquals(Duration.ZERO, settings.maxLifetime)
         assertEquals(45.seconds, settings.jobConfig.lockTtl)
         assertEquals(45.minutes, settings.jobConfig.cliTimeout)
         assertEquals(3, settings.throttle.maxConcurrentRuns)
@@ -146,9 +149,8 @@ class WorkerSettingsTest {
                 "GITHUB_API_URL" to "https://ghe/api/v3",
                 "GITLAB_TOKEN" to "glpat",
                 "GITLAB_ENDPOINT" to "https://gitlab.example.com/api/v4",
-                "POD_DELETION_COST_ENABLED" to "true",
-                "POD_NAME" to "koshin-worker-0",
-                "POD_NAMESPACE" to "koshin",
+                "WORKER_IDLE_TIMEOUT_SECONDS" to "10",
+                "WORKER_MAX_LIFETIME_SECONDS" to "18000",
                 "NATS_ACK_WAIT_SECONDS" to "90",
                 "LOCK_TTL_SECONDS" to "60",
                 "HEARTBEAT_INTERVAL_SECONDS" to "20",
@@ -167,8 +169,8 @@ class WorkerSettingsTest {
         assertEquals("redis://coord:6379", settings.renovateRedisUrl)
         assertEquals("https://ghe/api/v3", settings.githubEndpoint)
         assertEquals("https://gitlab.example.com/api/v4", settings.gitlabEndpoint)
-        assertTrue(settings.podDeletionCostEnabled)
-        assertEquals("koshin-worker-0", settings.podName)
+        assertEquals(10.seconds, settings.idleTimeout)
+        assertEquals(5.hours, settings.maxLifetime)
         with(settings.jobConfig) {
             assertEquals(90.seconds, natsAckWait)
             assertEquals(60.seconds, lockTtl)
@@ -231,9 +233,8 @@ class WorkerSettingsTest {
         assertThrows<IllegalArgumentException> { WorkerSettings.fromEnv(mapOf("PLATFORMS" to " , ")) }
         assertThrows<IllegalArgumentException> { WorkerSettings.fromEnv(mapOf("RENOVATE_BASE_DIR" to "relative")) }
         assertThrows<IllegalArgumentException> { WorkerSettings.fromEnv(mapOf("LOCK_TTL_SECONDS" to "90")) }
-        assertThrows<IllegalArgumentException> {
-            WorkerSettings.fromEnv(mapOf("POD_DELETION_COST_ENABLED" to "true", "POD_NAME" to "pod"))
-        }
+        assertThrows<IllegalArgumentException> { WorkerSettings.fromEnv(mapOf("WORKER_IDLE_TIMEOUT_SECONDS" to "-1")) }
+        assertThrows<IllegalArgumentException> { WorkerSettings.fromEnv(mapOf("WORKER_MAX_LIFETIME_SECONDS" to "-1")) }
         assertThrows<IllegalArgumentException> { WorkerSettings(port = 70000) }
         assertThrows<IllegalArgumentException> { WorkerSettings(platforms = emptySet()) }
     }

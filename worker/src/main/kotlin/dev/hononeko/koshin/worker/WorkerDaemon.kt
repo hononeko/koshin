@@ -20,43 +20,99 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.slf4j.LoggerFactory
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 
-/** Runs one job at a time (1 job per pod) until stopped. */
+/**
+ * Runs one job at a time (1 job per pod). With a zero [idleTimeout] it runs until stopped (a warm or static worker);
+ * otherwise it drains runnable jobs back to back and finishes once it found none for [idleTimeout] (a burst `Job`
+ * pod, KSH-31). A positive [maxLifetime] finishes it after the job in flight once it's that old. Either way it then
+ * calls [onFinished], for the process to exit 0.
+ */
+@Suppress("LongParameterList") // All but the platforms and the use case have defaults
 class WorkerDaemon(
     private val platforms: Collection<Platform>,
     private val idleDelay: Duration = 1.seconds,
     private val errorDelay: Duration = 5.seconds,
     dispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val idleTimeout: Duration = Duration.ZERO,
+    private val maxLifetime: Duration = Duration.ZERO,
+    private val timeSource: TimeSource = TimeSource.Monotonic,
+    private val onFinished: () -> Unit = {},
     private val awaitUseCase: suspend () -> ProcessRenovateJobUseCase,
 ) {
     private val logger = LoggerFactory.getLogger(WorkerDaemon::class.java)
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
     private var job: Job? = null
 
+    init {
+        require(!idleTimeout.isNegative()) { "idleTimeout cannot be negative: $idleTimeout" }
+        require(!maxLifetime.isNegative()) { "maxLifetime cannot be negative: $maxLifetime" }
+    }
+
     @Synchronized
     fun start() {
         if (job == null) {
-            job = scope.launch { run() }
+            job = scope.launch {
+                loop()
+                onFinished()
+            }
         }
     }
 
-    private suspend fun run() {
-        val useCase = awaitUseCase()
-        logger.info("Worker daemon polling platforms {}", platforms)
-        while (currentCoroutineContext().isActive) {
-            try {
-                if (!useCase.processNext(platforms)) {
-                    delay(idleDelay)
-                }
-            } catch (e: CancellationException) {
-                currentCoroutineContext().ensureActive()
-                logger.warn("Job loop iteration was cancelled internally; retrying in {}", errorDelay, e)
-                delay(errorDelay)
-            } catch (@Suppress("TooGenericExceptionCaught") e: Exception) {
-                logger.error("Job loop iteration failed; retrying in {}", errorDelay, e)
-                delay(errorDelay)
-            }
+    /** Returns once the daemon finishes on its own; cancelled by [stop]. */
+    private suspend fun loop() {
+        val startedAt = timeSource.markNow()
+        val useCase = connect() ?: return
+        logger.info(
+            "Worker daemon polling platforms {} (idle timeout {}, max lifetime {})",
+            platforms,
+            idleTimeout.takeIf { it.isPositive() } ?: "none",
+            maxLifetime.takeIf { it.isPositive() } ?: "none",
+        )
+        var idleSince = timeSource.markNow()
+        while (currentCoroutineContext().isActive && !isDone(startedAt, idleSince)) {
+            if (runIteration(useCase)) idleSince = timeSource.markNow()
         }
+    }
+
+    /** Past the max lifetime, or idle for the idle timeout: checked between jobs, never during one. */
+    private fun isDone(startedAt: TimeMark, idleSince: TimeMark): Boolean = when {
+        maxLifetime.isPositive() && startedAt.elapsedNow() >= maxLifetime -> {
+            logger.info("Worker reached its max lifetime of {}; exiting", maxLifetime)
+            true
+        }
+
+        idleTimeout.isPositive() && idleSince.elapsedNow() >= idleTimeout -> {
+            logger.info("No runnable job for {}; exiting", idleTimeout)
+            true
+        }
+
+        else -> false
+    }
+
+    /** Waiting for NATS and Valkey counts as idle: a burst worker that can't reach them gives up (`null`). */
+    private suspend fun connect(): ProcessRenovateJobUseCase? {
+        if (!idleTimeout.isPositive()) return awaitUseCase()
+        val useCase = withTimeoutOrNull(idleTimeout) { awaitUseCase() }
+        if (useCase == null) logger.warn("Not connected within {}; exiting", idleTimeout)
+        return useCase
+    }
+
+    /** Whether it processed a job; waits a little before returning false. A failure isn't a job. */
+    private suspend fun runIteration(useCase: ProcessRenovateJobUseCase): Boolean {
+        try {
+            if (useCase.processNext(platforms)) return true
+            delay(idleDelay)
+        } catch (e: CancellationException) {
+            currentCoroutineContext().ensureActive()
+            logger.warn("Job loop iteration was cancelled internally; retrying in {}", errorDelay, e)
+            delay(errorDelay)
+        } catch (@Suppress("TooGenericExceptionCaught") e: Exception) {
+            logger.error("Job loop iteration failed; retrying in {}", errorDelay, e)
+            delay(errorDelay)
+        }
+        return false
     }
 
     /**

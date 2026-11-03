@@ -85,7 +85,8 @@ The coordination Valkey instance (`VALKEY_URL`, supporting both standalone `redi
 * **Timeouts and cancellation** (`CLI_TIMEOUT_MINUTES`, lost lock, shutdown) forcibly kill the whole CLI process tree.
 * **Workspaces:** `$RENOVATE_BASE_DIR/repos/<platform>/<repo>` is deleted after every run; everything under `$RENOVATE_BASE_DIR` is purged at startup.
 * **SIGTERM:** stops fetching, kills the CLI, releases the lock (keeping the dirty flag), NAKs the delivery and releases the run slot, without waiting for the run to finish.
-* **Pod deletion cost (optional):** with `POD_DELETION_COST_ENABLED=true` (plus `POD_NAME` / `POD_NAMESPACE` from the downward API), the worker sets `controller.kubernetes.io/pod-deletion-cost` to `1000` while Renovate runs and back to `0` afterwards. Failed patches are logged and ignored. Only the `worker` container gets a ServiceAccount token (projected, valid for 10 minutes), and a `ValidatingAdmissionPolicy` lets it change nothing but that annotation on its own pod.
+* **Drain-then-exit (KSH-31):** with `WORKER_IDLE_TIMEOUT_SECONDS` > 0 the worker runs jobs back to back while it finds any it can run, and exits 0 once it found none for that long (jobs of a platform in cooldown don't count). Past `WORKER_MAX_LIFETIME_SECONDS` it finishes the job in flight and exits 0 instead of fetching another. At `0` (the default) it runs until stopped and keeps a warm-worker lease in Valkey (`koshin:{workers}:warm`, renewed every heartbeat and dropped on SIGTERM), so the proxy's job dispatcher (KSH-32) can tell a worker is ready.
+* **No Kubernetes API access:** workers mount no ServiceAccount token and need no RBAC.
 * **Health:** `GET /healthz` is liveness only; `GET /readyz` checks NATS and Valkey.
 * **Dead-lettering (in the proxy, KSH-30):** a job that uses up its `NATS_MAX_DELIVER` deliveries is moved to `renovate.dlq.<platform>` when NATS announces it (the MaxDeliver advisory), and its repo's queued mark is cleared. That announcement is sent once, so every `NATS_EXHAUSTED_SWEEP_SECONDS` (5 minutes) each proxy replica also moves exhausted jobs whose announcement nobody handled, e.g. during a rolling deployment. The proxy does this, and creates the consumers, so it works with no worker running.
 
@@ -169,7 +170,7 @@ helm install koshin oci://ghcr.io/hononeko/charts/koshin -n koshin --create-name
 
 ## Kubernetes Deployment (Kustomize reference)
 
-The Kustomize manifests stay as a small, dependency-free reference for the `minimal` profile; `ha` is Helm-only. `k8s/base` holds the proxy (2 replicas, `appProtocol: kubernetes.io/h2c`), the worker, its KEDA `ScaledObject`, the 6-hourly sweeper `CronJob`, and the worker's RBAC with its `ValidatingAdmissionPolicy` (cluster-scoped). `k8s/overlays/minimal` adds the `koshin` namespace plus a single NATS, a coordination Valkey (`noeviction`) and a package-cache Valkey (`allkeys-lru`), all on `emptyDir`. Requires Kubernetes 1.30+ and [KEDA](https://keda.sh) 2.21+.
+The Kustomize manifests stay as a small, dependency-free reference for the `minimal` profile; `ha` is Helm-only. `k8s/base` holds the proxy (2 replicas, `appProtocol: kubernetes.io/h2c`), the worker (no ServiceAccount token or RBAC), its KEDA `ScaledObject` and the 6-hourly sweeper `CronJob`. `k8s/overlays/minimal` adds the `koshin` namespace plus a single NATS, a coordination Valkey (`noeviction`) and a package-cache Valkey (`allkeys-lru`), all on `emptyDir`. Requires Kubernetes 1.30+ and [KEDA](https://keda.sh) 2.21+.
 
 ```bash
 kubectl -n koshin create secret generic koshin-proxy-secrets \
@@ -180,7 +181,7 @@ kubectl apply -k k8s/overlays/minimal
 
 * **Repositories to sweep:** the `koshin-repositories` ConfigMap (`github:org/repo` per line), replaced from your overlay. Empty by default, so the sweeper enqueues nothing.
 * **Autoscaling:** one `nats-jetstream` trigger per platform consumer, summed with `scalingModifiers` (`github + gitlab`, target `1`); KEDA counts pending plus in-flight jobs, so workers scale one-to-one with jobs across platforms up to `maxReplicaCount`. The worker creates both platform consumers so neither trigger errors.
-* **Scale-in:** workers annotate their own pod with `controller.kubernetes.io/pod-deletion-cost` (`1000` while running), so idle pods are removed first. If a busy pod is still picked, the SIGTERM path NAKs its job for another worker.
+* **Scale-in:** KEDA may remove a busy pod; the SIGTERM path NAKs its job for another worker.
 * **`minimal` trade-off:** a NATS or Valkey restart loses pending jobs, locks, dirty flags and the package cache; proxy and worker recreate the streams and consumers on reconnect, and the sweeper re-enqueues every repository within 6 hours (after a NATS restart, those still marked queued only once the mark expires: `QUEUED_TTL_SECONDS`). NATS and Valkey are infrastructure, so they're the only stateful pieces; the Helm chart's `ha` profile gives them persistence.
 * **Edge HTTP/3:** `k8s/examples/gateway-http3.yaml` is an Envoy Gateway example that terminates TLS + HTTP/3 and exposes only `/webhooks/`.
 

@@ -1,3 +1,10 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: koshin-worker
+# Workers never call the Kubernetes API (KSH-31): no token is mounted
+automountServiceAccountToken: false
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -17,7 +24,7 @@ spec:
         app.kubernetes.io/component: worker
     spec:
       serviceAccountName: koshin-worker
-      # Only the worker container gets a token (kube-api-access), never Renovate's
+      # Workers never call the Kubernetes API (KSH-31): no container gets a token
       automountServiceAccountToken: false
       # Covers the SIGTERM path (kill the CLI, release the lock, NAK), not a full run
       terminationGracePeriodSeconds: 30
@@ -96,16 +103,6 @@ spec:
           env:
             - name: RUNNER_SOCKET
               value: /run/koshin/runner.sock
-            - name: POD_DELETION_COST_ENABLED
-              value: "true"
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-            - name: POD_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
           readinessProbe:
             httpGet:
               path: /readyz
@@ -134,9 +131,6 @@ spec:
             - name: runner
               mountPath: /run/koshin
               readOnly: true
-            - name: kube-api-access
-              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
-              readOnly: true
       volumes:
         # Per-run workspaces, deleted after each run and purged at startup
         - name: renovate
@@ -150,20 +144,3 @@ spec:
         - name: runner-bin
           emptyDir:
             sizeLimit: 512Mi
-        # What automountServiceAccountToken would mount, but short-lived and for the worker container only
-        - name: kube-api-access
-          projected:
-            sources:
-              - serviceAccountToken:
-                  path: token
-                  expirationSeconds: 600
-              - configMap:
-                  name: kube-root-ca.crt
-                  items:
-                    - key: ca.crt
-                      path: ca.crt
-              - downwardAPI:
-                  items:
-                    - path: namespace
-                      fieldRef:
-                        fieldPath: metadata.namespace
