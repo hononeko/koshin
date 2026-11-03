@@ -131,9 +131,10 @@ With `worker.autoscaling.enabled` (the default), no autoscaler is involved: the 
 (KSH-32). It reconciles right after it publishes a job and every `autoscaling.dispatchIntervalSeconds`, and only the
 proxy replica holding a Valkey lease does, so replicas never double up.
 
-* **Demand:** jobs it can run now, per platform, up to `rateLimits.maxConcurrentRunsPerPlatform` runs each and
-  `autoscaling.maxReplicas` workers in all. A platform in a rate-limit cooldown adds none, so a cooldown starts no idle
-  workers.
+* **Demand:** jobs it can run now, per credential scope (a GitHub App installation, or a platform's token), up to
+  `rateLimits.maxConcurrentRunsPerCredential` runs each, `rateLimits.maxConcurrentRunsGlobal` in all and
+  `autoscaling.maxReplicas` workers. A scope in a rate-limit cooldown adds none, so one installation's cooldown starts
+  no idle workers and holds up no other installation.
 * **Burst workers** run jobs back to back and exit 0 once none was runnable for `autoscaling.idleTimeoutSeconds`, or
   after the run in flight once they're `autoscaling.maxLifetimeSeconds` old (below the Job's
   `autoscaling.jobActiveDeadlineSeconds`). Finished Jobs go after `autoscaling.jobTtlSecondsAfterFinished`. The proxy
@@ -245,9 +246,9 @@ JetStream storage is mostly the repo cache: jobs are small and leave the stream 
 the job streams always have room. With `ha` you can raise it to a few Gi. When you raise `fileStore.maxSize`, raise
 `fileStore.pvc.size` with it: the PVC needs about 20% headroom for indexes and consumer state.
 
-The API budget is roughly run slots × requests per second per run. Keep `worker.autoscaling.maxReplicas` near
-`worker.rateLimits.maxConcurrentRunsPerPlatform` × platforms (the default): extra workers only wait for a slot. During
-a rate-limit cooldown the proxy starts no worker for that platform's jobs.
+A credential scope's API budget is roughly its run slots × requests per second per run. Keep
+`worker.autoscaling.maxReplicas` near `worker.rateLimits.maxConcurrentRunsGlobal` (the default): extra workers only wait
+for a slot. During a rate-limit cooldown the proxy starts no worker for that scope's jobs.
 
 ## Backups and recovery
 
@@ -365,7 +366,8 @@ Kubernetes: `>=1.30.0-0`
 | nats.reloader.merge.securityContext.capabilities.drop[0] | string | `"ALL"` |  |
 | nats.reloader.merge.securityContext.readOnlyRootFilesystem | bool | `true` |  |
 | natsSettings.ackWaitSeconds | int | `60` | `NATS_ACK_WAIT_SECONDS`; must be greater than `worker.config.lockTtlSeconds` |
-| natsSettings.exhaustedSweepSeconds | int | `300` | `NATS_EXHAUSTED_SWEEP_SECONDS`: how often the proxy moves exhausted jobs whose MaxDeliver advisory was missed to the DLQ; 0 turns it off |
+| natsSettings.consumerIdleTtlDays | int | `7` | `NATS_CONSUMER_IDLE_TTL_DAYS`: a credential scope's consumer is deleted once it's had no job for this long (e.g. an uninstalled GitHub App installation); 0 keeps them all |
+| natsSettings.exhaustedSweepSeconds | int | `300` | `NATS_EXHAUSTED_SWEEP_SECONDS`: how often the proxy moves exhausted jobs whose MaxDeliver advisory was missed to the DLQ and tidies the per-scope consumers; 0 turns it off |
 | natsSettings.maxDeliver | int | `5` | `NATS_MAX_DELIVER`: deliveries of a job before it's dead-lettered |
 | natsSettings.streamName | string | `"RENOVATE_JOBS"` | `NATS_STREAM_NAME`: the job stream (WorkQueue) |
 | natsSettings.streamReplicas | string | `nil` | `NATS_STREAM_REPLICAS` for the job and DLQ streams and the repo cache bucket. Default: the NATS cluster size (`nats.config.cluster.replicas` when clustered), else 1. |
@@ -449,7 +451,7 @@ Kubernetes: `>=1.30.0-0`
 | worker.autoscaling.jobActiveDeadlineSeconds | int | `21600` | `activeDeadlineSeconds` of burst worker Jobs |
 | worker.autoscaling.jobTtlSecondsAfterFinished | int | `60` | `ttlSecondsAfterFinished` of burst worker Jobs |
 | worker.autoscaling.maxLifetimeSeconds | int | `18000` | `WORKER_MAX_LIFETIME_SECONDS` of burst workers: past this, finish the job in flight and exit instead of fetching another. Keep it a run (`config.cliTimeoutMinutes`) below `jobActiveDeadlineSeconds`. |
-| worker.autoscaling.maxReplicas | string | `nil` | Maximum workers, warm and burst (default: `maxConcurrentRunsPerPlatform` × enabled platforms; more would only wait for a slot) |
+| worker.autoscaling.maxReplicas | string | `nil` | Maximum workers, warm and burst (default: `rateLimits.maxConcurrentRunsGlobal`; more would only wait for a slot) |
 | worker.autoscaling.minReplicas | int | `0` | Always-warm workers: `0` scales to zero (every job waits for a burst `Job` to start), `1` keeps one warm Deployment pod that picks a single job up at once. |
 | worker.config.cliTimeoutMinutes | int | `45` | `CLI_TIMEOUT_MINUTES`: hard cap per Renovate run (`+ 5` must stay below 60 for GitHub App tokens) |
 | worker.config.dirtyTtlSeconds | int | `3600` | `DIRTY_TTL_SECONDS` (worker and proxy); must exceed `cliTimeoutMinutes` |
@@ -467,11 +469,12 @@ Kubernetes: `>=1.30.0-0`
 | worker.podDisruptionBudget.enabled | string | `nil` | Create a PodDisruptionBudget for the workers (`maxUnavailable: 1`, for node drains). Default: on in `ha`. |
 | worker.podLabels | object | `{}` | Worker pod labels |
 | worker.podSecurityContext | object | `{"runAsGroup":0,"runAsNonRoot":true,"runAsUser":12021,"seccompProfile":{"type":"RuntimeDefault"}}` | Worker pod security context (both images run as Renovate's uid 12021) |
-| worker.rateLimits.backoffBaseSeconds | int | `60` | `RATE_LIMIT_BACKOFF_BASE_SECONDS`: platform cooldown base |
-| worker.rateLimits.backoffMaxSeconds | int | `3600` | `RATE_LIMIT_BACKOFF_MAX_SECONDS`: platform cooldown cap |
+| worker.rateLimits.backoffBaseSeconds | int | `60` | `RATE_LIMIT_BACKOFF_BASE_SECONDS`: a credential scope's cooldown base |
+| worker.rateLimits.backoffMaxSeconds | int | `3600` | `RATE_LIMIT_BACKOFF_MAX_SECONDS`: a credential scope's cooldown cap |
 | worker.rateLimits.concurrentRequestLimit | string | `nil` | `RENOVATE_CONCURRENT_REQUEST_LIMIT`, injected into Renovate's `hostRules` for the platform API |
 | worker.rateLimits.logPattern | string | `""` | `RATE_LIMIT_LOG_PATTERN`: regex for Renovate's rate-limit abort message (default `^Rate limit exceeded - aborting$`) |
-| worker.rateLimits.maxConcurrentRunsPerPlatform | int | `3` | `MAX_CONCURRENT_RUNS_PER_PLATFORM`: Renovate runs per platform across all workers |
+| worker.rateLimits.maxConcurrentRunsGlobal | int | `6` | `MAX_CONCURRENT_RUNS_GLOBAL`: Renovate runs across all scopes and workers |
+| worker.rateLimits.maxConcurrentRunsPerCredential | int | `2` | `MAX_CONCURRENT_RUNS_PER_CREDENTIAL`: Renovate runs per credential scope (a GitHub App installation, or a platform's token) across all workers |
 | worker.rateLimits.maxRequestsPerSecond | string | `nil` | `RENOVATE_MAX_REQUESTS_PER_SECOND`, injected into Renovate's `hostRules` for the platform API |
 | worker.rateLimits.maxRequeues | int | `5` | `MAX_RATE_LIMIT_REQUEUES` before a rate-limited job is dead-lettered |
 | worker.renovate.image.digest | string | `""` | Renovate image digest; takes precedence over the tag |

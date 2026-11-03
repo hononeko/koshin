@@ -1,5 +1,6 @@
 package dev.hononeko.koshin.core.usecase
 
+import dev.hononeko.koshin.core.model.CredentialScope
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.ports.BurstWorkerPort
 import dev.hononeko.koshin.core.ports.PlatformThrottlePort
@@ -7,6 +8,7 @@ import dev.hononeko.koshin.core.ports.QueueDepth
 import dev.hononeko.koshin.core.ports.QueueDepthPort
 import dev.hononeko.koshin.core.ports.WarmWorkerPort
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -15,11 +17,13 @@ import org.junit.jupiter.api.Test
 import kotlin.time.Duration.Companion.seconds
 
 class DispatchWorkersUseCaseTest {
-    private val github = Platform.GITHUB
-    private val gitlab = Platform.GITLAB
+    private val github = CredentialScope.Token(Platform.GITHUB)
+    private val gitlab = CredentialScope.Token(Platform.GITLAB)
+    private val inst111 = CredentialScope.Installation(111)
+    private val inst222 = CredentialScope.Installation(222)
 
-    private class Queue(val depths: MutableMap<Platform, QueueDepth> = mutableMapOf()) : QueueDepthPort {
-        override suspend fun depth(platform: Platform) = depths[platform] ?: QueueDepth(0, 0)
+    private class Queue(val depths: MutableMap<CredentialScope, QueueDepth> = mutableMapOf()) : QueueDepthPort {
+        override suspend fun depths(platforms: Collection<Platform>) = depths.filterKeys { it.platform in platforms }
     }
 
     private class BurstWorkers(var active: Int = 0) : BurstWorkerPort {
@@ -41,28 +45,29 @@ class DispatchWorkersUseCaseTest {
     private val warmFailures = mutableListOf<Throwable>()
 
     private fun useCase(
-        platforms: Set<Platform> = setOf(github),
+        platforms: Set<Platform> = setOf(Platform.GITHUB),
         maxWorkers: Int = 6,
         maxRunsPerScope: Int = 3,
         minWarmWorkers: Int = 0,
+        maxRunsGlobal: Int = maxWorkers,
     ) = DispatchWorkersUseCase(
         queue,
         throttle,
         warmWorkers,
         burst,
-        DispatchConfig(platforms, maxWorkers, maxRunsPerScope, minWarmWorkers),
+        DispatchConfig(platforms, maxWorkers, maxRunsPerScope, minWarmWorkers, maxRunsGlobal),
     ) { warmFailures += it }
 
     private fun state(
-        platform: Platform = github,
+        scope: CredentialScope = github,
         pending: Long = 0,
         ackPending: Long = 0,
         slots: Int = 0,
         cooldown: Boolean = false,
     ) {
-        queue.depths[platform] = QueueDepth(pending, ackPending)
-        coEvery { throttle.activeRunSlots(platform) } returns slots
-        coEvery { throttle.cooldownRemaining(platform) } returns if (cooldown) 30.seconds else null
+        queue.depths[scope] = QueueDepth(pending, ackPending)
+        coEvery { throttle.activeRunSlots(scope) } returns slots
+        coEvery { throttle.cooldownRemaining(scope) } returns if (cooldown) 30.seconds else null
     }
 
     private fun warm(count: Int) {
@@ -141,7 +146,7 @@ class DispatchWorkersUseCaseTest {
         state(github, pending = 5, ackPending = 1, slots = 1, cooldown = true)
         state(gitlab, pending = 1)
 
-        val result = useCase(setOf(github, gitlab)).reconcile()
+        val result = useCase(setOf(Platform.GITHUB, Platform.GITLAB)).reconcile()
 
         assertEquals(2, result.desiredWorkers, "GitHub's running job + GitLab's pending one")
         assertEquals(2, result.started)
@@ -153,10 +158,48 @@ class DispatchWorkersUseCaseTest {
         state(github, pending = 10)
         state(gitlab, pending = 10, ackPending = 2, slots = 2)
 
-        val result = useCase(setOf(github, gitlab), maxWorkers = 5, maxRunsPerScope = 3).reconcile()
+        val result = useCase(setOf(Platform.GITHUB, Platform.GITLAB), maxWorkers = 5, maxRunsPerScope = 3).reconcile()
 
         assertEquals(5, result.desiredWorkers, "min(5, 2 running + 3 GitHub + 1 GitLab)")
         assertEquals(5, result.desiredBurst)
+    }
+
+    @Test
+    fun `a cooled-down installation's backlog starts no worker until its cooldown ends`() = runTest {
+        warm(0)
+        state(inst111, pending = 100, cooldown = true)
+        state(inst222, pending = 1)
+
+        assertEquals(1, useCase(maxRunsPerScope = 2).reconcile().started, "inst-222's job only")
+
+        state(inst111, pending = 100, cooldown = false)
+        val result = useCase(maxRunsPerScope = 2).reconcile()
+
+        assertEquals(3, result.desiredWorkers, "inst-111 up to its 2 run slots, plus inst-222")
+        assertEquals(2, result.started)
+    }
+
+    @Test
+    fun `the global run slots cap the demand across scopes`() = runTest {
+        warm(0)
+        state(inst111, pending = 5)
+        state(inst222, pending = 5)
+        state(github, pending = 5)
+
+        val result = useCase(maxWorkers = 10, maxRunsPerScope = 2, maxRunsGlobal = 4).reconcile()
+
+        assertEquals(4, result.desiredWorkers, "min(4 global, 2 + 2 + 2)")
+    }
+
+    @Test
+    fun `empty scopes and other platforms' scopes aren't looked at`() = runTest {
+        warm(0)
+        state(inst111, pending = 0, ackPending = 0)
+        state(gitlab, pending = 3)
+
+        assertEquals(0, useCase(setOf(Platform.GITHUB)).reconcile().desiredWorkers)
+        coVerify(exactly = 0) { throttle.activeRunSlots(any()) }
+        coVerify(exactly = 0) { throttle.cooldownRemaining(any()) }
     }
 
     @Test
@@ -183,9 +226,11 @@ class DispatchWorkersUseCaseTest {
     @Test
     fun `invalid configurations and depths are rejected`() {
         assertThrows(IllegalArgumentException::class.java) { DispatchConfig(emptySet(), 1, 1) }
-        assertThrows(IllegalArgumentException::class.java) { DispatchConfig(setOf(github), 0, 1) }
-        assertThrows(IllegalArgumentException::class.java) { DispatchConfig(setOf(github), 1, 0) }
-        assertThrows(IllegalArgumentException::class.java) { DispatchConfig(setOf(github), 1, 1, minWarmWorkers = 2) }
+        val github = setOf(Platform.GITHUB)
+        assertThrows(IllegalArgumentException::class.java) { DispatchConfig(github, 0, 1) }
+        assertThrows(IllegalArgumentException::class.java) { DispatchConfig(github, 1, 0) }
+        assertThrows(IllegalArgumentException::class.java) { DispatchConfig(github, 1, 1, minWarmWorkers = 2) }
+        assertThrows(IllegalArgumentException::class.java) { DispatchConfig(github, 1, 1, maxRunsGlobal = 0) }
         assertThrows(IllegalArgumentException::class.java) { QueueDepth(-1, 0) }
     }
 }

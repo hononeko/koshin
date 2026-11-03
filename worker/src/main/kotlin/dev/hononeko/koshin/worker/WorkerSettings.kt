@@ -111,7 +111,11 @@ data class WorkerSettings(
         private fun throttleFromEnv(env: Map<String, String>): PlatformThrottleConfig {
             val defaults = PlatformThrottleConfig()
             return PlatformThrottleConfig(
-                maxConcurrentRuns = env.long("MAX_CONCURRENT_RUNS_PER_PLATFORM")?.toInt() ?: defaults.maxConcurrentRuns,
+                // The per-platform cap of earlier versions is the per-credential one now (KSH-24)
+                maxRunsPerCredential = (
+                    env.long("MAX_CONCURRENT_RUNS_PER_CREDENTIAL") ?: env.long("MAX_CONCURRENT_RUNS_PER_PLATFORM")
+                    )?.toInt() ?: defaults.maxRunsPerCredential,
+                maxRunsGlobal = env.long("MAX_CONCURRENT_RUNS_GLOBAL")?.toInt() ?: defaults.maxRunsGlobal,
                 backoffBase = env.long("RATE_LIMIT_BACKOFF_BASE_SECONDS")?.seconds ?: defaults.backoffBase,
                 backoffMax = env.long("RATE_LIMIT_BACKOFF_MAX_SECONDS")?.seconds ?: defaults.backoffMax,
             )

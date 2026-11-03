@@ -143,12 +143,16 @@ class ProxyConfigTest {
 
     @Test
     fun `fromEnv parses the worker dispatcher's settings`() {
-        val defaults = ProxyConfig.fromEnv(
-            mapOf("PLATFORMS" to "github,gitlab", "MAX_CONCURRENT_RUNS_PER_PLATFORM" to "2"),
-        )
+        val defaults = ProxyConfig.fromEnv(mapOf("PLATFORMS" to "github,gitlab"))
         assertFalse(defaults.dispatcher.enabled)
-        assertEquals(4, defaults.dispatcher.maxWorkers, "run slots × platforms")
+        assertEquals(6, defaults.dispatcher.maxWorkers, "the global run slots")
+        assertEquals(2, defaults.dispatcher.maxRunsPerCredential)
         assertEquals("koshin-worker", defaults.dispatcher.podTemplateName)
+        val global = ProxyConfig.fromEnv(mapOf("MAX_CONCURRENT_RUNS_GLOBAL" to "10")).dispatcher
+        assertEquals(10, global.maxWorkers)
+        assertEquals(10, global.maxRunsGlobal)
+        val legacy = ProxyConfig.fromEnv(mapOf("MAX_CONCURRENT_RUNS_PER_PLATFORM" to "3")).dispatcher
+        assertEquals(3, legacy.maxRunsPerCredential, "the per-platform cap of earlier versions")
 
         val config = ProxyConfig.fromEnv(
             mapOf(
@@ -156,7 +160,9 @@ class ProxyConfigTest {
                 "WORKER_POD_TEMPLATE_NAME" to "rel-koshin-worker",
                 "POD_NAMESPACE" to "koshin",
                 "WORKER_MAX_REPLICAS" to "8",
-                "MAX_CONCURRENT_RUNS_PER_PLATFORM" to "4",
+                "MAX_CONCURRENT_RUNS_PER_CREDENTIAL" to "4",
+                "MAX_CONCURRENT_RUNS_PER_PLATFORM" to "9",
+                "MAX_CONCURRENT_RUNS_GLOBAL" to "12",
                 "MIN_WARM_WORKERS" to "1",
                 "WORKER_DISPATCH_INTERVAL_SECONDS" to "2",
                 "WORKER_JOB_ACTIVE_DEADLINE_SECONDS" to "3600",
@@ -169,7 +175,8 @@ class ProxyConfigTest {
                 podTemplateName = "rel-koshin-worker",
                 namespace = "koshin",
                 maxWorkers = 8,
-                maxRunsPerPlatform = 4,
+                maxRunsPerCredential = 4,
+                maxRunsGlobal = 12,
                 minWarmWorkers = 1,
                 interval = 2.seconds,
                 jobActiveDeadline = 1.hours,

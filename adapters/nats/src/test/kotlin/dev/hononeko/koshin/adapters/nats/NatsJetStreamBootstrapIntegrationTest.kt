@@ -1,5 +1,6 @@
 package dev.hononeko.koshin.adapters.nats
 
+import dev.hononeko.koshin.core.model.CredentialScope
 import dev.hononeko.koshin.core.model.Platform
 import io.nats.client.Connection
 import io.nats.client.Nats
@@ -52,7 +53,7 @@ class NatsJetStreamBootstrapIntegrationTest {
         val bootstrapper = NatsJetStreamBootstrap(jsm, config)
 
         // 1. Initial bootstrap
-        bootstrapper.bootstrap(listOf(Platform.GITHUB, Platform.GITLAB))
+        bootstrapper.bootstrap()
 
         val jobsInfo = jsm.getStreamInfo(jobsStream)
         assertNotNull(jobsInfo)
@@ -65,17 +66,15 @@ class NatsJetStreamBootstrapIntegrationTest {
         assertEquals(RetentionPolicy.Limits, dlqInfo.configuration.retentionPolicy)
         assertEquals(listOf("bootstrap.dlq.>"), dlqInfo.configuration.subjects)
 
-        val ghConsumer = jsm.getConsumerInfo(jobsStream, "koshin-workers-github")
-        assertNotNull(ghConsumer)
-        assertEquals("bootstrap.jobs.github", ghConsumer.consumerConfiguration.filterSubject)
+        assertEquals(emptyList<String>(), jsm.getConsumerNames(jobsStream), "consumers are per scope, made on publish")
+        val github = CredentialScope.Token(Platform.GITHUB)
+        val ghConsumer = NatsScopeConsumers(jsm, config).ensure(github)
+        assertEquals("koshin-workers-github-pat", ghConsumer.name)
+        assertEquals("bootstrap.jobs.github.pat", ghConsumer.consumerConfiguration.filterSubject)
         assertEquals(3L, ghConsumer.consumerConfiguration.maxDeliver)
 
-        val glConsumer = jsm.getConsumerInfo(jobsStream, "koshin-workers-gitlab")
-        assertNotNull(glConsumer)
-        assertEquals("bootstrap.jobs.gitlab", glConsumer.consumerConfiguration.filterSubject)
-
         // 2. Second bootstrap is idempotent
-        bootstrapper.bootstrap(listOf(Platform.GITHUB, Platform.GITLAB))
+        bootstrapper.bootstrap()
         assertEquals(jobsInfo.createTime, jsm.getStreamInfo(jobsStream).createTime)
 
         // 3. Update configuration
@@ -84,12 +83,13 @@ class NatsJetStreamBootstrapIntegrationTest {
             maxDeliver = 7,
         )
         val updatedBootstrapper = NatsJetStreamBootstrap(jsm, updatedConfig)
-        updatedBootstrapper.bootstrap(listOf(Platform.GITHUB, Platform.GITLAB))
+        updatedBootstrapper.bootstrap()
 
         val updatedJobsInfo = jsm.getStreamInfo(jobsStream)
         assertEquals(Duration.ofMinutes(5), updatedJobsInfo.configuration.duplicateWindow)
 
-        val updatedGhConsumer = jsm.getConsumerInfo(jobsStream, "koshin-workers-github")
+        NatsScopeConsumers(jsm, updatedConfig).ensure(github)
+        val updatedGhConsumer = jsm.getConsumerInfo(jobsStream, "koshin-workers-github-pat")
         assertEquals(7L, updatedGhConsumer.consumerConfiguration.maxDeliver)
     }
 }

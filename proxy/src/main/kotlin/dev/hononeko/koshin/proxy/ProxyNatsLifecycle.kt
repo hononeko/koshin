@@ -1,13 +1,15 @@
 package dev.hononeko.koshin.proxy
 
 import dev.hononeko.koshin.adapters.nats.NatsConfig
-import dev.hononeko.koshin.adapters.nats.NatsDlqHousekeeping
+import dev.hononeko.koshin.adapters.nats.NatsHousekeeping
 import dev.hononeko.koshin.adapters.nats.NatsJetStreamBootstrap
 import dev.hononeko.koshin.adapters.nats.NatsJobQueuePublisher
 import dev.hononeko.koshin.adapters.nats.NatsQueueDepth
 import dev.hononeko.koshin.adapters.nats.NatsReconnectBootstrapper
+import dev.hononeko.koshin.adapters.nats.NatsScopeConsumers
 import dev.hononeko.koshin.adapters.nats.isConnected
 import dev.hononeko.koshin.adapters.nats.slf4jLogging
+import dev.hononeko.koshin.core.model.CredentialScope
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.ports.JobQueuePublisher
@@ -55,9 +57,10 @@ class ProxyNatsLifecycle(
             .build()
         Nats.connect(options)
     },
-    /** Every platform's consumer, whichever are enabled, so a worker never fetches from a missing one. */
+    /** The streams, then the scope consumers' upkeep (KSH-24), every platform's whichever are enabled. */
     private val bootstrap: (Connection, NatsConfig) -> Unit = { conn, cfg ->
-        NatsJetStreamBootstrap(conn, cfg).bootstrap(Platform.entries)
+        NatsJetStreamBootstrap(conn, cfg).bootstrap()
+        NatsHousekeeping.tidy(NatsScopeConsumers(conn.jetStreamManagement(), cfg, conn.jetStream()), Platform.entries)
     },
     private val publisherFactory: (Connection, NatsConfig) -> JobQueuePublisher = { conn, cfg ->
         NatsJobQueuePublisher(conn, cfg)
@@ -65,7 +68,7 @@ class ProxyNatsLifecycle(
     /** Called with each job moved to the DLQ. */
     private val onDeadLettered: (RenovateJobEvent) -> Unit = {},
     private val startHousekeeping: (Connection, CoroutineScope) -> AutoCloseable = { conn, scope ->
-        NatsDlqHousekeeping.start(conn, natsConfig, scope, ioDispatcher = ioDispatcher, onDeadLettered = onDeadLettered)
+        NatsHousekeeping.start(conn, natsConfig, scope, ioDispatcher = ioDispatcher, onDeadLettered = onDeadLettered)
     },
 ) : JobQueuePublisher,
     AutoCloseable {
@@ -108,12 +111,12 @@ class ProxyNatsLifecycle(
         }
     }
 
-    /** The job consumers' depth, for the worker dispatcher; fails until NATS is connected. */
+    /** The scope consumers' depths, for the worker dispatcher; fails until NATS is connected. */
     val queueDepth: QueueDepthPort = object : QueueDepthPort {
-        override suspend fun depth(platform: Platform): QueueDepth {
+        override suspend fun depths(platforms: Collection<Platform>): Map<CredentialScope, QueueDepth> {
             val conn = connectionRef.get()?.takeIf { bootstrapped.get() }
                 ?: throw IOException("NATS is not connected yet")
-            return NatsQueueDepth(conn.jetStreamManagement(), natsConfig, ioDispatcher).depth(platform)
+            return NatsQueueDepth(conn.jetStreamManagement(), natsConfig, ioDispatcher).depths(platforms)
         }
     }
 

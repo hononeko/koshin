@@ -5,6 +5,7 @@ import dev.hononeko.koshin.adapters.nats.NatsJetStreamBootstrap
 import dev.hononeko.koshin.adapters.nats.NatsJobQueueConsumer
 import dev.hononeko.koshin.adapters.nats.NatsJobQueuePublisher
 import dev.hononeko.koshin.adapters.nats.NatsObjectStoreRepoCache
+import dev.hononeko.koshin.adapters.nats.NatsQueueDepth
 import dev.hononeko.koshin.adapters.nats.NatsReconnectBootstrapper
 import dev.hononeko.koshin.adapters.nats.NatsRepoCacheConfig
 import dev.hononeko.koshin.adapters.nats.isConnected
@@ -15,10 +16,10 @@ import dev.hononeko.koshin.adapters.valkey.ValkeyConnectionHealth
 import dev.hononeko.koshin.adapters.valkey.ValkeyPlatformThrottleAdapter
 import dev.hononeko.koshin.adapters.valkey.ValkeyRepoCoordinationAdapter
 import dev.hononeko.koshin.adapters.valkey.ValkeyWarmWorkerAdapter
-import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.ports.JobQueueConsumer
 import dev.hononeko.koshin.core.ports.JobQueuePublisher
 import dev.hononeko.koshin.core.ports.PlatformThrottlePort
+import dev.hononeko.koshin.core.ports.QueueDepthPort
 import dev.hononeko.koshin.core.ports.RepoCachePort
 import dev.hononeko.koshin.core.ports.RepoCoordinationPort
 import dev.hononeko.koshin.core.ports.WarmWorkerPort
@@ -48,6 +49,7 @@ import kotlin.time.Duration.Companion.seconds
 
 class NatsBackend(
     val consumer: JobQueueConsumer,
+    val queueDepth: QueueDepthPort,
     val publisher: JobQueuePublisher,
     private val healthy: () -> Boolean,
     val repoCache: RepoCachePort = NoOpRepoCache,
@@ -78,6 +80,7 @@ class WorkerBackends(
 
     data class Ports(
         val consumer: JobQueueConsumer,
+        val queueDepth: QueueDepthPort,
         val publisher: JobQueuePublisher,
         val coordination: RepoCoordinationPort,
         val throttle: PlatformThrottlePort,
@@ -101,6 +104,7 @@ class WorkerBackends(
             ready.complete(
                 Ports(
                     consumer = natsBackend.consumer,
+                    queueDepth = natsBackend.queueDepth,
                     publisher = natsBackend.publisher,
                     coordination = valkeyBackend.coordination,
                     throttle = valkeyBackend.throttle,
@@ -147,14 +151,12 @@ class WorkerBackends(
     companion object {
         /**
          * With [repoCache] set, Renovate's repository caches under [cacheDir] are synced with that bucket. The streams
-         * and consumers are ensured here too, so a worker that starts before the proxy has a consumer to fetch from;
-         * the DLQ housekeeping runs in the proxy (KSH-30).
+         * are ensured here too; the scope consumers are created by publishers, and their upkeep and the DLQ
+         * housekeeping run in the proxy (KSH-24, KSH-30).
          */
-        @Suppress("LongParameterList")
         fun connectNats(
             url: String,
             config: NatsConfig,
-            platforms: Collection<Platform>,
             repoCache: NatsRepoCacheConfig? = null,
             cacheDir: Path? = null,
             ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
@@ -163,7 +165,7 @@ class WorkerBackends(
             val reconnectScope = CoroutineScope(SupervisorJob() + ioDispatcher)
             val cacheRef = AtomicReference<NatsObjectStoreRepoCache?>(null)
             val bootstrap = { conn: Connection ->
-                NatsJetStreamBootstrap(conn, config).bootstrap(platforms)
+                NatsJetStreamBootstrap(conn, config).bootstrap()
                 cacheRef.get()?.ensureBucket()
                 Unit
             }
@@ -181,7 +183,8 @@ class WorkerBackends(
                 val consumer = NatsJobQueueConsumer(connection, config)
                 return NatsBackend(
                     consumer = consumer,
-                    publisher = NatsJobQueuePublisher(connection, config),
+                    queueDepth = NatsQueueDepth(connection.jetStreamManagement(), config, ioDispatcher),
+                    publisher = NatsJobQueuePublisher(connection, config, ioDispatcher = ioDispatcher),
                     healthy = connection::isConnected,
                     repoCache = cacheRef.get() ?: NoOpRepoCache,
                 ) {

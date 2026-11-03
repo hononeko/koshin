@@ -80,8 +80,11 @@ natsSettings:
   # -- `NATS_MAX_DELIVER`: deliveries of a job before it's dead-lettered
   maxDeliver: 5
   # -- `NATS_EXHAUSTED_SWEEP_SECONDS`: how often the proxy moves exhausted jobs whose MaxDeliver advisory was missed to
-  # the DLQ; 0 turns it off
+  # the DLQ and tidies the per-scope consumers; 0 turns it off
   exhaustedSweepSeconds: 300
+  # -- `NATS_CONSUMER_IDLE_TTL_DAYS`: a credential scope's consumer is deleted once it's had no job for this long (e.g.
+  # an uninstalled GitHub App installation); 0 keeps them all
+  consumerIdleTtlDays: 7
 
 valkeySettings:
   # -- `VALKEY_KEY_PREFIX` for koshin's coordination keys
@@ -233,15 +236,18 @@ worker:
     # -- `RENOVATE_BINARY_SOURCE` (tools come from the `full` Renovate image)
     renovateBinarySource: global
   rateLimits:
-    # -- `MAX_CONCURRENT_RUNS_PER_PLATFORM`: Renovate runs per platform across all workers
-    maxConcurrentRunsPerPlatform: 3
+    # -- `MAX_CONCURRENT_RUNS_PER_CREDENTIAL`: Renovate runs per credential scope (a GitHub App installation, or a
+    # platform's token) across all workers
+    maxConcurrentRunsPerCredential: 2
+    # -- `MAX_CONCURRENT_RUNS_GLOBAL`: Renovate runs across all scopes and workers
+    maxConcurrentRunsGlobal: 6
     # -- `RENOVATE_MAX_REQUESTS_PER_SECOND`, injected into Renovate's `hostRules` for the platform API
     maxRequestsPerSecond: null
     # -- `RENOVATE_CONCURRENT_REQUEST_LIMIT`, injected into Renovate's `hostRules` for the platform API
     concurrentRequestLimit: null
-    # -- `RATE_LIMIT_BACKOFF_BASE_SECONDS`: platform cooldown base
+    # -- `RATE_LIMIT_BACKOFF_BASE_SECONDS`: a credential scope's cooldown base
     backoffBaseSeconds: 60
-    # -- `RATE_LIMIT_BACKOFF_MAX_SECONDS`: platform cooldown cap
+    # -- `RATE_LIMIT_BACKOFF_MAX_SECONDS`: a credential scope's cooldown cap
     backoffMaxSeconds: 3600
     # -- `MAX_RATE_LIMIT_REQUEUES` before a rate-limited job is dead-lettered
     maxRequeues: 5
@@ -275,8 +281,8 @@ worker:
     # -- Always-warm workers: `0` scales to zero (every job waits for a burst `Job` to start), `1` keeps one warm
     # Deployment pod that picks a single job up at once.
     minReplicas: 0
-    # -- Maximum workers, warm and burst (default: `maxConcurrentRunsPerPlatform` × enabled platforms; more would only
-    # wait for a slot)
+    # -- Maximum workers, warm and burst (default: `rateLimits.maxConcurrentRunsGlobal`; more would only wait for a
+    # slot)
     maxReplicas: null
     # -- `WORKER_IDLE_TIMEOUT_SECONDS` of burst workers: exit once no job was runnable for this long
     idleTimeoutSeconds: 10

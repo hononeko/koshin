@@ -4,6 +4,7 @@ import dev.hononeko.koshin.adapters.nats.MaxDeliverDlqForwarder
 import dev.hononeko.koshin.adapters.nats.NatsConfig
 import dev.hononeko.koshin.adapters.nats.NatsJobQueueConsumer
 import dev.hononeko.koshin.adapters.nats.NatsJobQueuePublisher
+import dev.hononeko.koshin.core.model.CredentialScope
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.model.RepoRef
@@ -66,8 +67,15 @@ class ProxyNatsHousekeepingIntegrationTest {
             await("the proxy to bootstrap NATS") { it.isReady() }
         }
 
-    private fun job(repo: String) =
-        RenovateJobEvent(RepoRef(Platform.GITHUB, "hononeko/$repo"), "delivery-$repo", TriggerReason.WEBHOOK)
+    /** An installation's job, queued in its credential scope (KSH-24). */
+    private fun job(repo: String) = RenovateJobEvent(
+        RepoRef(Platform.GITHUB, "hononeko/$repo"),
+        "delivery-$repo",
+        TriggerReason.WEBHOOK,
+        installationId = 3,
+    )
+
+    private val scope = CredentialScope.Installation(3)
 
     private fun await(what: String, condition: suspend () -> Boolean) = runBlocking {
         val deadline = TimeSource.Monotonic.markNow() + AWAIT_TIMEOUT
@@ -81,13 +89,13 @@ class ProxyNatsHousekeepingIntegrationTest {
     private fun exhaust(repo: String) = runBlocking {
         NatsJobQueueConsumer(connection, config).use { consumer ->
             repeat(config.maxDeliver.toInt()) {
-                val delivery = checkNotNull(consumer.fetchNext(Platform.GITHUB, AWAIT_TIMEOUT))
+                val delivery = checkNotNull(consumer.fetchNext(scope, AWAIT_TIMEOUT))
                 assertEquals("hononeko/$repo", delivery.event.repo.repository)
                 delivery.nack()
             }
             await("hononeko/$repo to be exhausted") {
-                assertNull(consumer.fetchNext(Platform.GITHUB, 100.milliseconds), "delivered past MaxDeliver")
-                jsm.getConsumerInfo(config.jobsStreamName, config.consumerNameFor(Platform.GITHUB)).numAckPending == 0L
+                assertNull(consumer.fetchNext(scope, 100.milliseconds), "delivered past MaxDeliver")
+                jsm.getConsumerInfo(config.jobsStreamName, config.consumerNameFor(scope)).numAckPending == 0L
             }
         }
     }
@@ -104,12 +112,13 @@ class ProxyNatsHousekeepingIntegrationTest {
     }
 
     @Test
-    fun `creates the consumers and dead-letters exhausted jobs through the advisory and the sweep`() {
+    fun `creates a scope's consumer as it publishes and dead-letters exhausted jobs, advisory and swept`() {
         assertThrows<JetStreamApiException> { jsm.getStreamInfo(config.jobsStreamName) }
         val proxy = startProxy()
-        Platform.entries.forEach { jsm.getConsumerInfo(config.jobsStreamName, config.consumerNameFor(it)) }
+        assertEquals(emptyList<String>(), jsm.getConsumerNames(config.jobsStreamName))
 
         runBlocking { proxy.publish(job("advisory")) }
+        assertEquals(listOf("koshin-workers-github-inst-3"), jsm.getConsumerNames(config.jobsStreamName))
         exhaust("advisory")
         await("the advisory forwarder to dead-letter it") { dlqSources().size == 1 }
         assertEquals(mapOf("hononeko/advisory" to MaxDeliverDlqForwarder.SOURCE_ADVISORY), dlqSources())

@@ -63,7 +63,7 @@ class MaxDeliverDlqForwarderIntegrationTest {
             )
 
             val jsm = connection1.jetStreamManagement()
-            NatsJetStreamBootstrap(jsm, config).bootstrap(listOf(Platform.GITHUB))
+            NatsJetStreamBootstrap(jsm, config).bootstrap()
 
             val forwarder1 = MaxDeliverDlqForwarder(connection1, config)
             val forwarder2 = MaxDeliverDlqForwarder(connection2, config)
@@ -96,7 +96,7 @@ class MaxDeliverDlqForwarderIntegrationTest {
         )
 
         val jsm = connection1.jetStreamManagement()
-        NatsJetStreamBootstrap(jsm, config).bootstrap(listOf(Platform.GITHUB))
+        NatsJetStreamBootstrap(jsm, config).bootstrap()
 
         val publisher = NatsJobQueuePublisher(connection1, config)
         val event = RenovateJobEvent(
@@ -124,13 +124,13 @@ class MaxDeliverDlqForwarderIntegrationTest {
         )
 
         val advisoryMsg = NatsMessage.builder()
-            .subject("\$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.$jobsStream.koshin-workers-github")
+            .subject("\$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.$jobsStream.koshin-workers-github-pat")
             .data(
                 """
                 {
                     "type": "io.nats.jetstream.advisory.v1.max_deliver",
                     "stream": "$jobsStream",
-                    "consumer": "koshin-workers-github",
+                    "consumer": "koshin-workers-github-pat",
                     "stream_seq": 1,
                     "deliveries": 2
                 }
@@ -159,24 +159,27 @@ class MaxDeliverDlqForwarderIntegrationTest {
     }
 
     private suspend fun exhaustJobDeliveries(publisher: NatsJobQueuePublisher, consumer: NatsJobQueueConsumer) {
+        // An installation's job: its subject has a scope token after the platform
         val event = RenovateJobEvent(
             repo = RepoRef(Platform.GITHUB, "hononeko/failing-job"),
             deliveryId = "fail-delivery-123",
             triggerReason = TriggerReason.WEBHOOK,
+            installationId = 7,
         )
+        val scope = event.scope
         publisher.publish(event)
 
-        val d1 = consumer.fetchNext(Platform.GITHUB, 2.seconds)
+        val d1 = consumer.fetchNext(scope, 2.seconds)
         assertNotNull(d1)
         assertEquals(1, d1?.deliveryAttempt)
         d1?.nack()
 
-        val d2 = consumer.fetchNext(Platform.GITHUB, 2.seconds)
+        val d2 = consumer.fetchNext(scope, 2.seconds)
         assertNotNull(d2)
         assertEquals(2, d2?.deliveryAttempt)
         d2?.nack()
 
-        assertNull(consumer.fetchNext(Platform.GITHUB, 500.milliseconds))
+        assertNull(consumer.fetchNext(scope, 500.milliseconds))
     }
 
     private suspend fun verifyDlqForwarding(dlqStream: String, jobsStream: String, jsm: JetStreamManagement) {
@@ -216,13 +219,13 @@ class MaxDeliverDlqForwarderIntegrationTest {
         {
             "type": "io.nats.jetstream.advisory.v1.max_deliver",
             "stream": "$jobsStream",
-            "consumer": "koshin-workers-github",
+            "consumer": "koshin-workers-github-pat",
             "stream_seq": 1,
             "deliveries": 2
         }
         """.trimIndent()
         connection1.publish(
-            "\$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.$jobsStream.koshin-workers-github",
+            "\$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.$jobsStream.koshin-workers-github-pat",
             advisoryJson.toByteArray(),
         )
 

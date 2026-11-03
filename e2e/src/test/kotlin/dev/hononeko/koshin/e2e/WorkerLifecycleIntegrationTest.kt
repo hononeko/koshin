@@ -1,5 +1,6 @@
 package dev.hononeko.koshin.e2e
 
+import dev.hononeko.koshin.core.model.CredentialScope
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.model.RepoRef
@@ -51,15 +52,15 @@ class WorkerLifecycleIntegrationTest {
     }
 
     @Test
-    fun `a burst worker finishes when the only queued jobs are in a cooled-down platform`() {
-        runBlocking { cluster.throttlePort.registerRateLimit(Platform.GITHUB, 5.minutes) }
+    fun `a burst worker finishes when the only queued jobs are in a cooled-down scope`() {
+        runBlocking { cluster.throttlePort.registerRateLimit(CredentialScope.Token(Platform.GITHUB), 5.minutes) }
         publish(repo("cooling"))
 
         val worker = cluster.startWorker("burst-1", idleTimeout = 1.seconds)
         worker.awaitFinished()
 
         assertTrue(worker.runs().isEmpty())
-        assertTrue(worker.deliveries.isEmpty(), "a cooled-down platform's jobs aren't even fetched")
+        assertTrue(worker.deliveries.isEmpty(), "a cooled-down scope's jobs aren't even fetched")
     }
 
     @Test
@@ -76,7 +77,7 @@ class WorkerLifecycleIntegrationTest {
         worker.awaitFinished()
 
         assertEquals(listOf(CliRun.State.COMPLETED), worker.runs().map { it.state })
-        assertEquals(1L, cluster.pendingJobs(Platform.GITHUB))
+        assertEquals(1L, cluster.pendingJobs(CredentialScope.Token(Platform.GITHUB)))
     }
 
     @Test

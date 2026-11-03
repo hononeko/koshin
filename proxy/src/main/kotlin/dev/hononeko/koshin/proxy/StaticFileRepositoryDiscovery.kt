@@ -2,6 +2,7 @@ package dev.hononeko.koshin.proxy
 
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RepoRef
+import dev.hononeko.koshin.core.model.RepoTarget
 import dev.hononeko.koshin.core.ports.RepositoryDiscoveryPort
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -35,7 +36,9 @@ class StaticFileRepositoryDiscovery(
         ioDispatcher = ioDispatcher,
     )
 
-    override suspend fun discover(): List<RepoRef> {
+    override suspend fun discover(): List<RepoTarget> = repositories().map(::RepoTarget)
+
+    private suspend fun repositories(): List<RepoRef> {
         val path = filePath
         return if (path == null) {
             emptyList()

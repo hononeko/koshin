@@ -1,6 +1,6 @@
 package dev.hononeko.koshin.adapters.valkey
 
-import dev.hononeko.koshin.core.model.Platform
+import dev.hononeko.koshin.core.model.CredentialScope
 import dev.hononeko.koshin.core.model.RepoRef
 import io.lettuce.core.RedisURI
 import kotlin.time.Duration
@@ -60,8 +60,11 @@ data class ValkeyConfig(
 
     fun queuedKeyFor(repo: RepoRef): String = "$keyPrefix:{${repo.platform.name.lowercase()}:${repo.repository}}:queued"
 
-    fun throttleKeyFor(platform: Platform, name: String): String =
-        "$keyPrefix:{throttle:${platform.name.lowercase()}}:$name"
+    /** A credential scope's run slots, cooldown or backoff counter (KSH-24): `koshin:{throttle:github:pat}:slots`. */
+    fun throttleKeyFor(scope: CredentialScope, name: String): String = "$keyPrefix:{throttle:$scope}:$name"
+
+    /** The run slots of all scopes together (`MAX_CONCURRENT_RUNS_GLOBAL`, KSH-24). */
+    fun globalSlotsKey(): String = "$keyPrefix:{throttle:global}:slots"
 
     /** Leases of live warm workers (KSH-31). */
     fun warmWorkersKey(): String = "$keyPrefix:{workers}:warm"

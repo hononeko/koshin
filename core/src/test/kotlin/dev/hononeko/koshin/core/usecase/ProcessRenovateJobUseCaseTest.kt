@@ -1,5 +1,6 @@
 package dev.hononeko.koshin.core.usecase
 
+import dev.hononeko.koshin.core.model.CredentialScope
 import dev.hononeko.koshin.core.model.JobExecutionResult
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.PlatformCredentials
@@ -14,6 +15,8 @@ import dev.hononeko.koshin.core.ports.JobQueueConsumer
 import dev.hononeko.koshin.core.ports.JobQueuePublisher
 import dev.hononeko.koshin.core.ports.PlatformCredentialsPort
 import dev.hononeko.koshin.core.ports.PlatformThrottlePort
+import dev.hononeko.koshin.core.ports.QueueDepth
+import dev.hononeko.koshin.core.ports.QueueDepthPort
 import dev.hononeko.koshin.core.ports.ReleaseResult
 import dev.hononeko.koshin.core.ports.RepoCachePort
 import dev.hononeko.koshin.core.ports.RepoCoordinationPort
@@ -48,6 +51,12 @@ import kotlin.time.TestTimeSource
 class ProcessRenovateJobUseCaseTest {
 
     private val queueConsumer = mockk<JobQueueConsumer>()
+    private val github = CredentialScope.Token(Platform.GITHUB)
+    private val gitlab = CredentialScope.Token(Platform.GITLAB)
+    private val depths = mutableMapOf<CredentialScope, QueueDepth>()
+    private val queueDepth = object : QueueDepthPort {
+        override suspend fun depths(platforms: Collection<Platform>) = depths.filterKeys { it.platform in platforms }
+    }
     private val queuePublisher = mockk<JobQueuePublisher>()
     private val coordinationPort = mockk<RepoCoordinationPort>()
     private val throttlePort = mockk<PlatformThrottlePort>()
@@ -75,6 +84,7 @@ class ProcessRenovateJobUseCaseTest {
     private val testTimeSource = TestTimeSource()
     private val useCase = ProcessRenovateJobUseCase(
         queueConsumer = queueConsumer,
+        queueDepth = queueDepth,
         queuePublisher = queuePublisher,
         coordinationPort = coordinationPort,
         throttlePort = throttlePort,
@@ -100,6 +110,9 @@ class ProcessRenovateJobUseCaseTest {
     @BeforeEach
     fun setup() {
         uuidCounter = 0
+        depths.clear()
+        depths[github] = QueueDepth(pending = 1, ackPending = 0)
+        coEvery { throttlePort.activeRunSlots(any()) } returns 0
         every { delivery.event } returns testEvent
         every { delivery.deliveryAttempt } returns 1
         coEvery { delivery.ack() } returns Unit
@@ -131,21 +144,22 @@ class ProcessRenovateJobUseCaseTest {
 
     @Test
     fun `processNext skips platform when platform is in cooldown`() = runTest {
-        coEvery { throttlePort.cooldownRemaining(Platform.GITHUB) } returns 42.seconds
-        coEvery { throttlePort.cooldownRemaining(Platform.GITLAB) } returns null
-        coEvery { queueConsumer.fetchNext(Platform.GITLAB, any()) } returns null
+        depths[gitlab] = QueueDepth(pending = 1, ackPending = 0)
+        coEvery { throttlePort.cooldownRemaining(github) } returns 42.seconds
+        coEvery { throttlePort.cooldownRemaining(gitlab) } returns null
+        coEvery { queueConsumer.fetchNext(gitlab, any()) } returns null
 
         val result = useCase.processNext(listOf(Platform.GITHUB, Platform.GITLAB))
 
         assertFalse(result)
-        coVerify(exactly = 0) { throttlePort.tryAcquireRunSlot(Platform.GITHUB, any(), any()) }
-        coVerify(exactly = 1) { throttlePort.tryAcquireRunSlot(Platform.GITLAB, any(), any()) }
-        coVerify(exactly = 1) { throttlePort.releaseRunSlot(Platform.GITLAB, any()) }
+        coVerify(exactly = 0) { throttlePort.tryAcquireRunSlot(github, any(), any()) }
+        coVerify(exactly = 1) { throttlePort.tryAcquireRunSlot(gitlab, any(), any()) }
+        coVerify(exactly = 1) { throttlePort.releaseRunSlot(gitlab, any()) }
     }
 
     @Test
     fun `processNext skips platform when run slot cannot be acquired`() = runTest {
-        coEvery { throttlePort.tryAcquireRunSlot(Platform.GITHUB, any(), any()) } returns false
+        coEvery { throttlePort.tryAcquireRunSlot(github, any(), any()) } returns false
 
         val result = useCase.processNext(listOf(Platform.GITHUB))
 
@@ -155,18 +169,18 @@ class ProcessRenovateJobUseCaseTest {
 
     @Test
     fun `processNext releases run slot when queueConsumer returns null`() = runTest {
-        coEvery { queueConsumer.fetchNext(Platform.GITHUB, any()) } returns null
+        coEvery { queueConsumer.fetchNext(github, any()) } returns null
 
         val result = useCase.processNext(listOf(Platform.GITHUB))
 
         assertFalse(result)
-        coVerify(exactly = 1) { throttlePort.tryAcquireRunSlot(Platform.GITHUB, any(), any()) }
-        coVerify(exactly = 1) { throttlePort.releaseRunSlot(Platform.GITHUB, any()) }
+        coVerify(exactly = 1) { throttlePort.tryAcquireRunSlot(github, any(), any()) }
+        coVerify(exactly = 1) { throttlePort.releaseRunSlot(github, any()) }
     }
 
     @Test
     fun `processNext releases run slot and rethrows when fetchNext throws exception`() = runTest {
-        coEvery { queueConsumer.fetchNext(Platform.GITHUB, any()) } throws IllegalStateException("NATS broker down")
+        coEvery { queueConsumer.fetchNext(github, any()) } throws IllegalStateException("NATS broker down")
 
         var thrown: Throwable? = null
         try {
@@ -177,7 +191,7 @@ class ProcessRenovateJobUseCaseTest {
 
         assertTrue(thrown is IllegalStateException)
         assertEquals("NATS broker down", thrown?.message)
-        coVerify(exactly = 1) { throttlePort.releaseRunSlot(Platform.GITHUB, any()) }
+        coVerify(exactly = 1) { throttlePort.releaseRunSlot(github, any()) }
     }
 
     @Test
@@ -189,7 +203,7 @@ class ProcessRenovateJobUseCaseTest {
         useCase.processDelivery(delivery, "token-1")
 
         coVerify(exactly = 1) { delivery.nack(testConfig.infraErrorBackoffBase) }
-        coVerify(exactly = 1) { throttlePort.releaseRunSlot(testRepo.platform, "token-1") }
+        coVerify(exactly = 1) { throttlePort.releaseRunSlot(github, "token-1") }
         coVerify(exactly = 0) { cliExecutor.execute(any(), any(), any()) }
     }
 
@@ -204,7 +218,7 @@ class ProcessRenovateJobUseCaseTest {
 
         coVerify(exactly = 1) { delivery.ack() }
         coVerify(exactly = 0) { delivery.nack(any()) }
-        coVerify(exactly = 1) { throttlePort.releaseRunSlot(testRepo.platform, "token-1") }
+        coVerify(exactly = 1) { throttlePort.releaseRunSlot(github, "token-1") }
         coVerify(exactly = 0) { cliExecutor.execute(any(), any(), any()) }
     }
 
@@ -219,7 +233,7 @@ class ProcessRenovateJobUseCaseTest {
 
         coVerify(exactly = 1) { delivery.nack(testConfig.lockCollisionRetryDelay) }
         coVerify(exactly = 0) { delivery.ack() }
-        coVerify(exactly = 1) { throttlePort.releaseRunSlot(testRepo.platform, "token-1") }
+        coVerify(exactly = 1) { throttlePort.releaseRunSlot(github, "token-1") }
         coVerify(exactly = 0) { cliExecutor.execute(any(), any(), any()) }
     }
 
@@ -235,9 +249,9 @@ class ProcessRenovateJobUseCaseTest {
             cliExecutor.execute(testRepo, testCreds, testConfig.cliTimeout)
             cachePort.persist(testRepo)
             coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1", queuedTtl)
-            throttlePort.resetBackoff(testRepo.platform)
+            throttlePort.resetBackoff(github)
             delivery.ack()
-            throttlePort.releaseRunSlot(testRepo.platform, "token-1")
+            throttlePort.releaseRunSlot(github, "token-1")
             workspaceCleaner.cleanup(testRepo)
         }
         coVerify(exactly = 0) { queuePublisher.publish(any()) }
@@ -258,9 +272,9 @@ class ProcessRenovateJobUseCaseTest {
             cachePort.persist(testRepo)
             coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1", queuedTtl)
             queuePublisher.publish(any())
-            throttlePort.resetBackoff(testRepo.platform)
+            throttlePort.resetBackoff(github)
             delivery.ack()
-            throttlePort.releaseRunSlot(testRepo.platform, "token-1")
+            throttlePort.releaseRunSlot(github, "token-1")
             workspaceCleaner.cleanup(testRepo)
         }
         val followUp = publishedSlot.captured
@@ -280,7 +294,7 @@ class ProcessRenovateJobUseCaseTest {
         coVerifyOrder {
             coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1", null)
             delivery.ack()
-            throttlePort.releaseRunSlot(testRepo.platform, "token-1")
+            throttlePort.releaseRunSlot(github, "token-1")
             workspaceCleaner.cleanup(testRepo)
         }
         coVerify(exactly = 0) { cachePort.restore(any()) }
@@ -370,7 +384,7 @@ class ProcessRenovateJobUseCaseTest {
         useCase.processDelivery(delivery, "token-1")
 
         coVerify(exactly = 1) { coordinationPort.releaseLock(testRepo, "token-1", queuedTtl) }
-        coVerify(exactly = 1) { throttlePort.registerRateLimit(testRepo.platform, 45.seconds) }
+        coVerify(exactly = 1) { throttlePort.registerRateLimit(github, 45.seconds) }
         coVerify(exactly = 1) { queuePublisher.publish(any()) }
         val requeued = publishedSlot.captured
         assertEquals(1, requeued.rateLimitAttempt)
@@ -436,7 +450,7 @@ class ProcessRenovateJobUseCaseTest {
         coVerify(exactly = 0) { delivery.ack() }
         coVerify(exactly = 0) { cachePort.persist(any()) }
         coVerify(exactly = 1) { workspaceCleaner.cleanup(testRepo) }
-        coVerify(exactly = 1) { throttlePort.releaseRunSlot(testRepo.platform, "token-1") }
+        coVerify(exactly = 1) { throttlePort.releaseRunSlot(github, "token-1") }
     }
 
     @Test
@@ -449,7 +463,7 @@ class ProcessRenovateJobUseCaseTest {
             cliShouldFinish.await()
             JobExecutionResult.Success
         }
-        coEvery { throttlePort.extendRunSlot(testRepo.platform, "token-1", any()) } returns false
+        coEvery { throttlePort.extendRunSlot(github, "token-1", any()) } returns false
 
         val job = launch {
             useCase.processDelivery(delivery, "token-1")
@@ -461,7 +475,7 @@ class ProcessRenovateJobUseCaseTest {
 
         coVerify(exactly = 1) { coordinationPort.releaseLock(testRepo, "token-1", queuedTtl) }
         coVerify(exactly = 1) { delivery.nack(Duration.ZERO) }
-        coVerify(exactly = 1) { throttlePort.releaseRunSlot(testRepo.platform, "token-1") }
+        coVerify(exactly = 1) { throttlePort.releaseRunSlot(github, "token-1") }
     }
 
     @Test
@@ -547,7 +561,7 @@ class ProcessRenovateJobUseCaseTest {
 
         coVerify(atLeast = 2) { delivery.heartbeat() }
         coVerify(atLeast = 2) { coordinationPort.extendLock(testRepo, "token-1", testConfig.lockTtl) }
-        coVerify(atLeast = 2) { throttlePort.extendRunSlot(testRepo.platform, "token-1", testConfig.lockTtl) }
+        coVerify(atLeast = 2) { throttlePort.extendRunSlot(github, "token-1", testConfig.lockTtl) }
         coVerify(exactly = 1) { delivery.ack() }
     }
 
@@ -590,7 +604,7 @@ class ProcessRenovateJobUseCaseTest {
 
     @Test
     fun `processNext returns true when a job is successfully fetched and processed`() = runTest {
-        coEvery { queueConsumer.fetchNext(Platform.GITHUB, any()) } returns delivery
+        coEvery { queueConsumer.fetchNext(github, any()) } returns delivery
 
         val result = useCase.processNext(listOf(Platform.GITHUB))
 
@@ -611,6 +625,7 @@ class ProcessRenovateJobUseCaseTest {
 
     @Test
     fun `processNext with default parameters iterates all platforms`() = runTest {
+        depths[gitlab] = QueueDepth(pending = 1, ackPending = 0)
         coEvery { queueConsumer.fetchNext(any(), any()) } returns null
 
         val result = useCase.processNext()
@@ -628,18 +643,18 @@ class ProcessRenovateJobUseCaseTest {
 
     @Test
     fun `processNext proceeds when cooldown is zero`() = runTest {
-        coEvery { throttlePort.cooldownRemaining(Platform.GITHUB) } returns Duration.ZERO
-        coEvery { queueConsumer.fetchNext(Platform.GITHUB, any()) } returns null
+        coEvery { throttlePort.cooldownRemaining(github) } returns Duration.ZERO
+        coEvery { queueConsumer.fetchNext(github, any()) } returns null
 
         val result = useCase.processNext(listOf(Platform.GITHUB))
 
         assertFalse(result)
-        coVerify(exactly = 1) { throttlePort.tryAcquireRunSlot(Platform.GITHUB, any(), any()) }
+        coVerify(exactly = 1) { throttlePort.tryAcquireRunSlot(github, any(), any()) }
     }
 
     @Test
     fun `cancellation during fetch releases run slot and rethrows CancellationException`() = runTest {
-        coEvery { queueConsumer.fetchNext(Platform.GITHUB, any()) } throws CancellationException("Worker shutdown")
+        coEvery { queueConsumer.fetchNext(github, any()) } throws CancellationException("Worker shutdown")
 
         var thrown: Throwable? = null
         try {
@@ -649,7 +664,7 @@ class ProcessRenovateJobUseCaseTest {
         }
 
         assertTrue(thrown is CancellationException)
-        coVerify(exactly = 1) { throttlePort.releaseRunSlot(Platform.GITHUB, any()) }
+        coVerify(exactly = 1) { throttlePort.releaseRunSlot(github, any()) }
     }
 
     @Test
@@ -668,7 +683,7 @@ class ProcessRenovateJobUseCaseTest {
         assertTrue(thrown is CancellationException)
         coVerify(exactly = 1) { coordinationPort.releaseLock(testRepo, "token-1", queuedTtl) }
         coVerify(exactly = 1) { delivery.nack(Duration.ZERO) }
-        coVerify(exactly = 1) { throttlePort.releaseRunSlot(testRepo.platform, "token-1") }
+        coVerify(exactly = 1) { throttlePort.releaseRunSlot(github, "token-1") }
     }
 
     @Test
@@ -677,7 +692,7 @@ class ProcessRenovateJobUseCaseTest {
 
         useCase.processDelivery(delivery, "token-1")
 
-        coVerify(exactly = 1) { throttlePort.releaseRunSlot(testRepo.platform, "token-1") }
+        coVerify(exactly = 1) { throttlePort.releaseRunSlot(github, "token-1") }
         coVerify(exactly = 1) { delivery.ack() }
     }
 
@@ -703,7 +718,7 @@ class ProcessRenovateJobUseCaseTest {
         job.join()
 
         coVerify(atLeast = 1) { coordinationPort.extendLock(testRepo, "token-1", testConfig.lockTtl) }
-        coVerify(atLeast = 1) { throttlePort.extendRunSlot(testRepo.platform, "token-1", testConfig.lockTtl) }
+        coVerify(atLeast = 1) { throttlePort.extendRunSlot(github, "token-1", testConfig.lockTtl) }
         coVerify(exactly = 1) { delivery.ack() }
     }
 
@@ -715,8 +730,8 @@ class ProcessRenovateJobUseCaseTest {
 
         coVerify(exactly = 1) { delivery.ack() }
         coVerify(exactly = 0) { delivery.nack(any()) }
-        coVerify(exactly = 1) { throttlePort.resetBackoff(testRepo.platform) }
-        coVerify(exactly = 1) { throttlePort.releaseRunSlot(testRepo.platform, "token-1") }
+        coVerify(exactly = 1) { throttlePort.resetBackoff(github) }
+        coVerify(exactly = 1) { throttlePort.releaseRunSlot(github, "token-1") }
     }
 
     @Test
@@ -759,6 +774,7 @@ class ProcessRenovateJobUseCaseTest {
         }
         val contextual = ProcessRenovateJobUseCase(
             queueConsumer = queueConsumer,
+            queueDepth = queueDepth,
             queuePublisher = queuePublisher,
             coordinationPort = coordinationPort,
             throttlePort = throttlePort,

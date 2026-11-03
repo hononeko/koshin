@@ -1,11 +1,13 @@
 package dev.hononeko.koshin.e2e
 
 import dev.hononeko.koshin.adapters.valkey.PlatformThrottleConfig
+import dev.hononeko.koshin.core.model.CredentialScope
 import dev.hononeko.koshin.core.model.JobExecutionResult
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.model.RepoRef
 import dev.hononeko.koshin.core.model.TriggerReason
+import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -14,12 +16,14 @@ import org.junit.jupiter.api.Test
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
-/** Platform cooldown and the rate-limit requeue cap, with the real Valkey throttle and NATS queue. */
+/** Credential-scope cooldowns and the rate-limit requeue cap, with the real Valkey throttle and NATS queue. */
 class RateLimitIntegrationTest {
     private val github = RepoRef(Platform.GITHUB, "hononeko/koshin")
     private val gitlab = RepoRef(Platform.GITLAB, "hononeko/koshin")
+    private val githubToken = CredentialScope.Token(Platform.GITHUB)
     private val clusters = mutableListOf<E2eCluster>()
 
     private fun cluster(maxRateLimitRequeues: Int = 5, throttle: PlatformThrottleConfig) =
@@ -30,10 +34,33 @@ class RateLimitIntegrationTest {
         clusters.forEach { it.close() }
     }
 
-    private fun job(repo: RepoRef) = RenovateJobEvent(repo, UUID.randomUUID().toString(), TriggerReason.WEBHOOK)
+    private fun job(repo: RepoRef, installationId: Long? = null) =
+        RenovateJobEvent(repo, UUID.randomUUID().toString(), TriggerReason.WEBHOOK, installationId = installationId)
 
     @Test
-    fun `a rate-limited platform cools down while the other keeps running, then its requeued job runs`() {
+    fun `a rate-limited installation's jobs wait undelivered while another installation's run`() {
+        val cluster = cluster(throttle = PlatformThrottleConfig())
+        val limited = CredentialScope.Installation(111)
+        val other = CredentialScope.Installation(222)
+        val waiting = (1..3).map { RepoRef(Platform.GITHUB, "tenant-111/repo-$it") }
+        waiting.forEach { cluster.publish(job(it, installationId = 111)) }
+        val runnable = RepoRef(Platform.GITHUB, "tenant-222/repo")
+        runBlocking { cluster.throttlePort.registerRateLimit(limited, 1.minutes) }
+
+        val worker = cluster.startWorker("worker-1")
+        cluster.publish(job(runnable, installationId = 222))
+        awaitValue("tenant 222's run") { worker.runs().firstOrNull { it.repo == runnable } }
+        cluster.awaitQuiescent(runnable, other)
+
+        assertEquals(3L, cluster.pendingJobs(limited), "still queued")
+        assertEquals(0L, cluster.deliveredCount(limited), "never delivered, so no delivery attempt spent")
+        assertTrue(worker.consumer.fetches.none { it.scope == limited }, "not even fetched")
+        assertTrue(worker.consumer.fetches.any { it.scope == other })
+        assertEquals(listOf(runnable), worker.runs().map { it.repo })
+    }
+
+    @Test
+    fun `a rate-limited scope cools down while another keeps running, then its requeued job runs`() {
         val cluster = cluster(throttle = PlatformThrottleConfig(backoffBase = 3.seconds, backoffMax = 12.seconds))
         val worker = cluster.startWorker("worker-1", platforms = setOf(Platform.GITHUB, Platform.GITLAB))
         val firstGithubRun = AtomicBoolean(true)
@@ -47,9 +74,9 @@ class RateLimitIntegrationTest {
 
         cluster.publish(job(github))
         val rateLimit = awaitValue("the GitHub rate limit") { worker.throttle.rateLimits.firstOrNull() }
-        assertEquals(Platform.GITHUB, rateLimit.platform)
+        assertEquals(githubToken, rateLimit.scope)
         assertTrue(rateLimit.cooldown in 2400.milliseconds..3600.milliseconds, "base 3s ± 20%: ${rateLimit.cooldown}")
-        assertTrue(cluster.hasBackoff(Platform.GITHUB))
+        assertTrue(cluster.hasBackoff(githubToken))
         val cooldownEnds = rateLimit.at + rateLimit.cooldown
 
         cluster.publish(job(gitlab))
@@ -64,7 +91,7 @@ class RateLimitIntegrationTest {
 
         val slack = 50.milliseconds
         val githubFetchesDuringCooldown = worker.consumer.fetches.filter {
-            it.platform == Platform.GITHUB && it.at > rateLimit.at && it.at < cooldownEnds - slack
+            it.scope == githubToken && it.at > rateLimit.at && it.at < cooldownEnds - slack
         }
         assertEquals(emptyList<Fetch>(), githubFetchesDuringCooldown, "no GitHub fetches during its cooldown")
         assertTrue(requeued.startedAt >= cooldownEnds - slack, "the requeued job runs after the cooldown")
@@ -72,7 +99,7 @@ class RateLimitIntegrationTest {
         val requeuedDelivery = worker.deliveries.single { it.event.triggerReason == TriggerReason.RATE_LIMIT_REQUEUE }
         assertEquals(1, requeuedDelivery.event.rateLimitAttempt)
         assertEquals(JobExecutionResult.Success, requeued.result)
-        assertFalse(cluster.hasBackoff(Platform.GITHUB), "a successful run resets the backoff")
+        assertFalse(cluster.hasBackoff(githubToken), "a successful run resets the backoff")
         assertTrue(cluster.deadLetters().isEmpty())
     }
 

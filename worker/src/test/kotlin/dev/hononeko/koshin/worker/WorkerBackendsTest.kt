@@ -32,7 +32,7 @@ class WorkerBackendsTest {
         val backends = WorkerBackends(
             connectNats = {
                 if (natsAttempts.incrementAndGet() < 3) throw IOException("nats down")
-                NatsBackend(consumer, publisher, natsHealthy::get) { closed += "nats" }
+                NatsBackend(consumer, consumer, publisher, natsHealthy::get) { closed += "nats" }
             },
             connectValkey = {
                 if (valkeyAttempts.incrementAndGet() < 2) throw IOException("valkey down")
@@ -46,6 +46,7 @@ class WorkerBackendsTest {
         val ports = withTimeout(5.seconds) { backends.awaitPorts() }
 
         assertSame(consumer, ports.consumer)
+        assertSame(consumer, ports.queueDepth)
         assertSame(publisher, ports.publisher)
         assertSame(coordination, ports.coordination)
         assertSame(throttle, ports.throttle)

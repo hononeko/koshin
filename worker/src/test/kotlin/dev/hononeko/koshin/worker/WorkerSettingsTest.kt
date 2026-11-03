@@ -34,7 +34,8 @@ class WorkerSettingsTest {
         assertEquals(Duration.ZERO, settings.maxLifetime)
         assertEquals(45.seconds, settings.jobConfig.lockTtl)
         assertEquals(45.minutes, settings.jobConfig.cliTimeout)
-        assertEquals(3, settings.throttle.maxConcurrentRuns)
+        assertEquals(2, settings.throttle.maxRunsPerCredential)
+        assertEquals(6, settings.throttle.maxRunsGlobal)
         assertEquals(60.seconds, settings.throttle.backoffBase)
         assertEquals(3600.seconds, settings.throttle.backoffMax)
         assertEquals(RenovateRequestLimits(), settings.requestLimits)
@@ -105,7 +106,8 @@ class WorkerSettingsTest {
     fun `fromEnv parses rate-limit settings`() {
         val settings = WorkerSettings.fromEnv(
             mapOf(
-                "MAX_CONCURRENT_RUNS_PER_PLATFORM" to "5",
+                "MAX_CONCURRENT_RUNS_PER_CREDENTIAL" to "5",
+                "MAX_CONCURRENT_RUNS_GLOBAL" to "9",
                 "RATE_LIMIT_BACKOFF_BASE_SECONDS" to "30",
                 "RATE_LIMIT_BACKOFF_MAX_SECONDS" to "600",
                 "RENOVATE_MAX_REQUESTS_PER_SECOND" to "2.5",
@@ -113,7 +115,8 @@ class WorkerSettingsTest {
                 "RATE_LIMIT_LOG_PATTERN" to "quota exhausted",
             ),
         )
-        assertEquals(5, settings.throttle.maxConcurrentRuns)
+        assertEquals(5, settings.throttle.maxRunsPerCredential)
+        assertEquals(9, settings.throttle.maxRunsGlobal)
         assertEquals(30.seconds, settings.throttle.backoffBase)
         assertEquals(600.seconds, settings.throttle.backoffMax)
         assertEquals(RenovateRequestLimits(2.5, 4), settings.requestLimits)
@@ -121,9 +124,20 @@ class WorkerSettingsTest {
     }
 
     @Test
+    fun `the per-platform run cap of earlier versions is the per-credential one`() {
+        val legacy = WorkerSettings.fromEnv(mapOf("MAX_CONCURRENT_RUNS_PER_PLATFORM" to "4"))
+        assertEquals(4, legacy.throttle.maxRunsPerCredential)
+
+        val both = mapOf("MAX_CONCURRENT_RUNS_PER_PLATFORM" to "4", "MAX_CONCURRENT_RUNS_PER_CREDENTIAL" to "1")
+        assertEquals(1, WorkerSettings.fromEnv(both).throttle.maxRunsPerCredential)
+    }
+
+    @Test
     fun `invalid rate-limit settings are rejected`() {
         listOf(
             mapOf("MAX_CONCURRENT_RUNS_PER_PLATFORM" to "0"),
+            mapOf("MAX_CONCURRENT_RUNS_PER_CREDENTIAL" to "0"),
+            mapOf("MAX_CONCURRENT_RUNS_GLOBAL" to "0"),
             mapOf("RATE_LIMIT_BACKOFF_BASE_SECONDS" to "120", "RATE_LIMIT_BACKOFF_MAX_SECONDS" to "60"),
             mapOf("RENOVATE_MAX_REQUESTS_PER_SECOND" to "fast"),
             mapOf("RENOVATE_MAX_REQUESTS_PER_SECOND" to "0"),

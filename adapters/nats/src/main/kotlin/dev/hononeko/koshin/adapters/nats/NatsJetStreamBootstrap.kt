@@ -1,12 +1,8 @@
 package dev.hononeko.koshin.adapters.nats
 
-import dev.hononeko.koshin.core.model.Platform
 import io.nats.client.Connection
 import io.nats.client.JetStreamApiException
 import io.nats.client.JetStreamManagement
-import io.nats.client.api.AckPolicy
-import io.nats.client.api.ConsumerConfiguration
-import io.nats.client.api.ConsumerInfo
 import io.nats.client.api.RetentionPolicy
 import io.nats.client.api.StreamConfiguration
 import io.nats.client.api.StreamInfo
@@ -21,11 +17,14 @@ class NatsJetStreamBootstrap(private val jsm: JetStreamManagement, private val c
 
     private val logger = LoggerFactory.getLogger(NatsJetStreamBootstrap::class.java)
 
-    fun bootstrap(platforms: Collection<Platform> = Platform.entries) {
-        logger.info("Bootstrapping NATS JetStream streams and consumers...")
+    /**
+     * Ensures the streams. The consumers are per credential scope (KSH-24): publishers create them as they publish,
+     * and the proxy's housekeeping tidies them ([NatsScopeConsumers]).
+     */
+    fun bootstrap() {
+        logger.info("Bootstrapping NATS JetStream streams...")
         ensureJobsStream()
         ensureDlqStream()
-        ensureConsumers(platforms)
         logger.info("NATS JetStream bootstrap completed successfully.")
     }
 
@@ -55,27 +54,6 @@ class NatsJetStreamBootstrap(private val jsm: JetStreamManagement, private val c
 
         return createOrUpdateStream(streamConfig)
     }
-
-    fun ensureConsumers(platforms: Collection<Platform> = Platform.entries): List<ConsumerInfo> =
-        platforms.map { platform ->
-            val durable = config.consumerNameFor(platform)
-            val filterSubject = config.jobsSubjectFor(platform)
-            val consumerConfig = ConsumerConfiguration.builder()
-                .durable(durable)
-                .name(durable)
-                .filterSubject(filterSubject)
-                .ackPolicy(AckPolicy.Explicit)
-                .ackWait(config.ackWait.toJavaDuration())
-                .maxDeliver(config.maxDeliver)
-                .build()
-
-            logger.info(
-                "Ensuring durable pull consumer {} for filter subject {}",
-                durable,
-                filterSubject,
-            )
-            jsm.addOrUpdateConsumer(config.jobsStreamName, consumerConfig)
-        }
 
     private fun createOrUpdateStream(streamConfig: StreamConfiguration): StreamInfo {
         val streamName = streamConfig.name

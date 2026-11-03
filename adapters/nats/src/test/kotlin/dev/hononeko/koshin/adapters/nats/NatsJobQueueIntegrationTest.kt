@@ -1,9 +1,11 @@
 package dev.hononeko.koshin.adapters.nats
 
+import dev.hononeko.koshin.core.model.CredentialScope
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.model.RepoRef
 import dev.hononeko.koshin.core.model.TriggerReason
+import dev.hononeko.koshin.core.ports.QueueDepth
 import io.nats.client.Connection
 import io.nats.client.Nats
 import io.nats.client.Options
@@ -22,6 +24,11 @@ import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 class NatsJobQueueIntegrationTest {
+    private val github = CredentialScope.Token(Platform.GITHUB)
+    private val gitlab = CredentialScope.Token(Platform.GITLAB)
+    private val inst1 = CredentialScope.Installation(1)
+    private val inst2 = CredentialScope.Installation(2)
+
     companion object {
         private lateinit var connection: Connection
 
@@ -46,56 +53,69 @@ class NatsJobQueueIntegrationTest {
     }
 
     @Test
-    fun `per-platform consumers only receive their platform jobs`() = runBlocking {
-        val jobsStream = "PLATFORM_ISOLATION_JOBS"
-        val dlqStream = "PLATFORM_ISOLATION_DLQ"
+    fun `each credential scope's consumer only receives its own jobs`() = runBlocking {
         val config = NatsConfig(
-            jobsStreamName = jobsStream,
-            dlqStreamName = dlqStream,
+            jobsStreamName = "SCOPE_ISOLATION_JOBS",
+            dlqStreamName = "SCOPE_ISOLATION_DLQ",
             jobsSubjectPrefix = "isolation.jobs",
             dlqSubjectPrefix = "isolation.dlq",
             storageType = StorageType.Memory,
             ackWait = 30.seconds,
         )
-
-        val jsm = connection.jetStreamManagement()
-        val bootstrap = NatsJetStreamBootstrap(jsm, config)
-        bootstrap.bootstrap(listOf(Platform.GITHUB, Platform.GITLAB))
-
+        NatsJetStreamBootstrap(connection.jetStreamManagement(), config).bootstrap()
         val publisher = NatsJobQueuePublisher(connection, config)
         val consumer = NatsJobQueueConsumer(connection, config)
 
-        val ghEvent = RenovateJobEvent(
-            repo = RepoRef(Platform.GITHUB, "hononeko/gh-repo"),
-            deliveryId = "gh-1",
-            triggerReason = TriggerReason.WEBHOOK,
+        fun event(platform: Platform, repo: String, installationId: Long? = null) =
+            RenovateJobEvent(RepoRef(platform, repo), "$repo-1", TriggerReason.WEBHOOK, installationId = installationId)
+        val events = mapOf(
+            github to event(Platform.GITHUB, "hononeko/pat-repo"),
+            gitlab to event(Platform.GITLAB, "hononeko/gl-repo"),
+            inst1 to event(Platform.GITHUB, "one/repo", installationId = 1),
+            inst2 to event(Platform.GITHUB, "two/repo", installationId = 2),
         )
-        val glEvent = RenovateJobEvent(
-            repo = RepoRef(Platform.GITLAB, "hononeko/gl-repo"),
-            deliveryId = "gl-1",
-            triggerReason = TriggerReason.WEBHOOK,
-        )
+        events.values.forEach { publisher.publish(it) }
 
-        publisher.publish(ghEvent)
-        publisher.publish(glEvent)
-
-        val receivedGh = consumer.fetchNext(Platform.GITHUB, 2.seconds)
-        assertNotNull(receivedGh)
-        assertEquals("hononeko/gh-repo", receivedGh?.event?.repo?.repository)
-        assertEquals(Platform.GITHUB, receivedGh?.event?.repo?.platform)
-        receivedGh?.ack()
-
-        val receivedGl = consumer.fetchNext(Platform.GITLAB, 2.seconds)
-        assertNotNull(receivedGl)
-        assertEquals("hononeko/gl-repo", receivedGl?.event?.repo?.repository)
-        assertEquals(Platform.GITLAB, receivedGl?.event?.repo?.platform)
-        receivedGl?.ack()
-
-        // No more messages
-        assertNull(consumer.fetchNext(Platform.GITHUB, 200.milliseconds))
-        assertNull(consumer.fetchNext(Platform.GITLAB, 200.milliseconds))
-
+        events.forEach { (scope, event) ->
+            val received = checkNotNull(consumer.fetchNext(scope, 2.seconds)) { "nothing for $scope" }
+            assertEquals(event, received.event)
+            received.ack()
+            assertNull(consumer.fetchNext(scope, 200.milliseconds), "only one job for $scope")
+        }
         consumer.close()
+    }
+
+    @Test
+    fun `publishing creates the scope's consumer, whose depth is listed by scope`() = runBlocking {
+        val config = NatsConfig(
+            jobsStreamName = "SCOPE_DEPTH_JOBS",
+            dlqStreamName = "SCOPE_DEPTH_DLQ",
+            jobsSubjectPrefix = "scopedepth.jobs",
+            dlqSubjectPrefix = "scopedepth.dlq",
+            storageType = StorageType.Memory,
+        )
+        val jsm = connection.jetStreamManagement()
+        NatsJetStreamBootstrap(jsm, config).bootstrap()
+        val depth = NatsQueueDepth(jsm, config)
+        assertEquals(emptyMap<CredentialScope, QueueDepth>(), depth.depths(Platform.entries))
+
+        val publisher = NatsJobQueuePublisher(connection, config)
+        repeat(3) { i ->
+            publisher.publish(
+                RenovateJobEvent(RepoRef(Platform.GITHUB, "o/r$i"), "d$i", TriggerReason.WEBHOOK, installationId = 42),
+            )
+        }
+        publisher.publish(RenovateJobEvent(RepoRef(Platform.GITLAB, "g/p"), "d", TriggerReason.WEBHOOK))
+
+        val info = jsm.getConsumerInfo(config.jobsStreamName, "koshin-workers-github-inst-42")
+        assertEquals("scopedepth.jobs.github.inst-42", info.consumerConfiguration.filterSubject)
+        assertEquals(
+            mapOf(CredentialScope.Installation(42) to QueueDepth(3, 0), gitlab to QueueDepth(1, 0)),
+            depth.depths(Platform.entries),
+        )
+        assertEquals(setOf(gitlab), depth.depths(listOf(Platform.GITLAB)).keys)
+        val noStream = NatsQueueDepth(jsm, NatsConfig(jobsStreamName = "NONE"))
+        assertEquals(emptyMap<CredentialScope, QueueDepth>(), noStream.depths(Platform.entries))
     }
 
     @Test
@@ -113,7 +133,7 @@ class NatsJobQueueIntegrationTest {
 
         val jsm = connection.jetStreamManagement()
         val bootstrap = NatsJetStreamBootstrap(jsm, config)
-        bootstrap.bootstrap(listOf(Platform.GITHUB))
+        bootstrap.bootstrap()
 
         val publisher = NatsJobQueuePublisher(connection, config)
         val consumer = NatsJobQueueConsumer(connection, config)
@@ -127,7 +147,7 @@ class NatsJobQueueIntegrationTest {
 
         assertEquals(1L, jsm.getStreamInfo(jobsStream).streamState.msgCount)
 
-        val delivery = consumer.fetchNext(Platform.GITHUB, 2.seconds)
+        val delivery = consumer.fetchNext(github, 2.seconds)
         assertNotNull(delivery)
         delivery?.ack()
 
@@ -136,7 +156,7 @@ class NatsJobQueueIntegrationTest {
             delay(50.milliseconds)
         }
         assertEquals(0L, jsm.getStreamInfo(jobsStream).streamState.msgCount)
-        assertNull(consumer.fetchNext(Platform.GITHUB, 200.milliseconds))
+        assertNull(consumer.fetchNext(github, 200.milliseconds))
 
         consumer.close()
     }
@@ -157,7 +177,7 @@ class NatsJobQueueIntegrationTest {
 
         val jsm = connection.jetStreamManagement()
         val bootstrap = NatsJetStreamBootstrap(jsm, config)
-        bootstrap.bootstrap(listOf(Platform.GITHUB))
+        bootstrap.bootstrap()
 
         val publisher = NatsJobQueuePublisher(connection, config)
 
@@ -201,7 +221,7 @@ class NatsJobQueueIntegrationTest {
 
         val jsm = connection.jetStreamManagement()
         val bootstrap = NatsJetStreamBootstrap(jsm, config)
-        bootstrap.bootstrap(listOf(Platform.GITHUB))
+        bootstrap.bootstrap()
 
         val publisher = NatsJobQueuePublisher(connection, config)
         val consumer = NatsJobQueueConsumer(connection, config)
@@ -213,7 +233,7 @@ class NatsJobQueueIntegrationTest {
         )
         publisher.publish(event)
 
-        val delivery = consumer.fetchNext(Platform.GITHUB, 3.seconds)
+        val delivery = consumer.fetchNext(github, 3.seconds)
         assertNotNull(delivery)
         assertEquals(1, delivery?.deliveryAttempt)
 
@@ -224,13 +244,13 @@ class NatsJobQueueIntegrationTest {
         // 2. Wait another 2.0s (total 3.5s > 3.0s initial AckWait, but only 2.0s since heartbeat).
         // Since heartbeat reset the timer, a fetch attempt should NOT see redelivery yet.
         delay(2000.milliseconds)
-        val earlyAttempt = consumer.fetchNext(Platform.GITHUB, 300.milliseconds)
+        val earlyAttempt = consumer.fetchNext(github, 300.milliseconds)
         assertNull(earlyAttempt)
 
         // 3. Now let AckWait expire without heartbeat (wait 2.0s more, total 4.0s since heartbeat > 3.0s AckWait)
         delay(2000.milliseconds)
 
-        val redelivered = consumer.fetchNext(Platform.GITHUB, 3.seconds)
+        val redelivered = consumer.fetchNext(github, 3.seconds)
         assertNotNull(redelivered)
         assertEquals(2, redelivered?.deliveryAttempt)
         redelivered?.ack()
@@ -243,8 +263,8 @@ class NatsJobQueueIntegrationTest {
         val config = NatsConfig(storageType = StorageType.Memory)
         val consumer = NatsJobQueueConsumer(connection, config)
 
-        assertNull(consumer.fetchNext(Platform.GITHUB, 0.seconds))
-        assertNull(consumer.fetchNext(Platform.GITHUB, (-5).seconds))
+        assertNull(consumer.fetchNext(github, 0.seconds))
+        assertNull(consumer.fetchNext(github, (-5).seconds))
 
         consumer.close()
     }

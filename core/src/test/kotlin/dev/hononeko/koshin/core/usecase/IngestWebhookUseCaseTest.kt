@@ -1,5 +1,6 @@
 package dev.hononeko.koshin.core.usecase
 
+import dev.hononeko.koshin.core.model.CredentialScope
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.model.RepoRef
@@ -51,6 +52,17 @@ class IngestWebhookUseCaseTest {
         assertEquals(0, result.event.rateLimitAttempt)
         assertTrue(result.published)
         coVerify(exactly = 1) { publisher.publish(any()) }
+    }
+
+    @Test
+    fun `a job for an installation is published in that installation's scope`() = runTest {
+        val slot = slot<RenovateJobEvent>()
+        coEvery { publisher.publish(capture(slot)) } returns Unit
+
+        useCase.execute(Platform.GITHUB, "hononeko/koshin", "d", TriggerReason.WEBHOOK, installationId = 42)
+
+        assertEquals(42L, slot.captured.installationId)
+        assertEquals(CredentialScope.Installation(42), slot.captured.scope)
     }
 
     @Test

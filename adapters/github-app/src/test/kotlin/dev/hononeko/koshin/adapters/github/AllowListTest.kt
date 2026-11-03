@@ -2,6 +2,7 @@ package dev.hononeko.koshin.adapters.github
 
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RepoRef
+import dev.hononeko.koshin.core.model.RepoTarget
 import dev.hononeko.koshin.core.ports.RepositoryRejectedException
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandleScope
@@ -141,7 +142,7 @@ class AllowListTest {
     fun `discovery skips installations by accounts that aren't allowed and suspends them once`() = runTest {
         val repos = app(listOf("100"), DisallowedAction.SUSPEND).discovery().discover()
 
-        assertEquals(listOf(RepoRef(Platform.GITHUB, "hononeko/koshin")), repos)
+        assertEquals(listOf(RepoTarget(RepoRef(Platform.GITHUB, "hononeko/koshin"), 1)), repos)
         assertEquals(1, requests.count { it == "PUT /app/installations/2/suspended" })
         assertTrue(requests.none { it.startsWith("POST /app/installations/2/") })
     }
@@ -166,27 +167,45 @@ class AllowListTest {
     }
 
     @Test
-    fun `trigger repositories by accounts that aren't allowed are dropped, with one lookup per owner`() = runTest {
-        val repos = listOf(
-            RepoRef(Platform.GITHUB, "hononeko/koshin"),
-            RepoRef(Platform.GITHUB, "stranger/repo"),
-            RepoRef(Platform.GITHUB, "stranger/other"),
-            RepoRef(Platform.GITHUB, "elsewhere/repo"),
-            RepoRef(Platform.GITHUB, "broken/repo"),
-            RepoRef(Platform.GITLAB, "stranger/project"),
-        )
+    fun `trigger repositories get their installation, and those of accounts that aren't allowed are dropped`() =
+        runTest {
+            val targets = listOf(
+                "hononeko/koshin",
+                "stranger/repo",
+                "stranger/other",
+                "elsewhere/repo",
+                "broken/repo",
+            ).map { RepoTarget(RepoRef(Platform.GITHUB, it)) } +
+                RepoTarget(RepoRef(Platform.GITLAB, "stranger/project"))
 
-        val kept = app(listOf("100")).withoutDisallowed(repos)
+            val kept = app(listOf("100")).resolve(targets)
 
-        assertEquals(
-            listOf("hononeko/koshin", "elsewhere/repo", "broken/repo", "stranger/project"),
-            kept.map { it.repository },
-        )
-        assertEquals(1, requests.count { it.startsWith("GET /repos/stranger/") })
+            assertEquals(
+                listOf(
+                    "github:hononeko/koshin (installation 1)",
+                    "github:elsewhere/repo",
+                    "github:broken/repo",
+                    "gitlab:stranger/project",
+                ),
+                kept.map { it.toString() },
+            )
+            assertEquals(1, requests.count { it.startsWith("GET /repos/stranger/") }, "one lookup per owner")
+        }
 
-        requests.clear()
-        assertEquals(repos, app(emptyList()).withoutDisallowed(repos))
-        assertTrue(requests.isEmpty())
+    @Test
+    fun `without an allow-list every trigger repository gets its installation, looked up once an hour`() = runTest {
+        val app = app(emptyList())
+        val discovered = RepoTarget(RepoRef(Platform.GITHUB, "stranger/known"), 2)
+        val targets = listOf(RepoTarget(RepoRef(Platform.GITHUB, "hononeko/koshin")), discovered)
+        val resolved = listOf(RepoTarget(RepoRef(Platform.GITHUB, "hononeko/koshin"), 1), discovered)
+
+        assertEquals(resolved, app.resolve(targets))
+        assertEquals(resolved, app.resolve(targets))
+        assertEquals(listOf("GET /repos/hononeko/koshin/installation"), requests, "cached, and none for a known one")
+
+        app.forgetInstallation(1)
+        assertEquals(resolved, app.resolve(targets))
+        assertEquals(2, requests.size, "looked up again once it's forgotten")
     }
 
     @Test

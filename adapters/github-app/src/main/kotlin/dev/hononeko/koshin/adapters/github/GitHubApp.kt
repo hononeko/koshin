@@ -3,6 +3,7 @@ package dev.hononeko.koshin.adapters.github
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.PlatformCredentials
 import dev.hononeko.koshin.core.model.RepoRef
+import dev.hononeko.koshin.core.model.RepoTarget
 import dev.hononeko.koshin.core.ports.InstallationPolicyPort
 import dev.hononeko.koshin.core.ports.PlatformCredentialsPort
 import dev.hononeko.koshin.core.ports.RepositoryDiscoveryPort
@@ -18,13 +19,14 @@ import kotlin.io.path.readText
 import kotlin.time.Clock
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Instant
 
 /** koshin as a GitHub App (KSH-14): installation tokens for Renovate runs, and the repositories to sweep. */
 class GitHubApp internal constructor(
     private val config: GitHubAppConfig,
     internal val api: GitHubAppApi,
     private val http: HttpClient,
-    clock: Clock,
+    private val clock: Clock,
 ) : AutoCloseable {
 
     constructor(config: GitHubAppConfig, http: HttpClient = gitHubHttpClient(), clock: Clock = Clock.System) : this(
@@ -35,6 +37,11 @@ class GitHubApp internal constructor(
     )
 
     private val logger = LoggerFactory.getLogger(GitHubApp::class.java)
+
+    /** The installation on each account (repository owner) that has one, as looked up for [resolve]. */
+    private val ownerInstallations = ConcurrentHashMap<String, CachedInstallation>()
+
+    private class CachedInstallation(val installation: InstallationInfo, val expiresAt: Instant)
 
     /** Installation tokens, shared by everything this process does as the App. */
     val tokens = InstallationTokens(api, clock)
@@ -67,34 +74,60 @@ class GitHubApp internal constructor(
     }
 
     /**
-     * [repos] without the GitHub ones whose owner's installation belongs to an account that isn't allowed: one lookup
-     * per owner, and only with an allow-list. A repo the App isn't installed on, or whose lookup fails, is kept: the
-     * worker checks again.
+     * [targets] with the App installation covering each GitHub repository (KSH-24), so its job is queued in that
+     * installation's scope, and without those whose installation belongs to an account that isn't allowed (KSH-17).
+     * One lookup per owner, cached for an hour. A target that names its installation already (from discovery, which
+     * checks the account) is kept as it is; one the App isn't installed on, or whose lookup fails, is kept without
+     * one: the worker checks again.
      */
-    suspend fun withoutDisallowed(repos: List<RepoRef>): List<RepoRef> {
-        if (allowList.allowsAll) return repos
-        val allowedOwners = repos.filter { it.platform == Platform.GITHUB }
-            .groupBy { it.repository.substringBefore('/') }
-            .mapValues { (_, ownerRepos) -> ownerAllowed(ownerRepos.first().repository) }
-        return repos.filter { repo ->
-            val owner = repo.repository.substringBefore('/')
-            repo.platform != Platform.GITHUB || allowedOwners[owner] != false
+    suspend fun resolve(targets: List<RepoTarget>): List<RepoTarget> {
+        val installations = targets.filter(::isUnresolved)
+            .groupBy { owner(it.repo) }
+            .mapValues { (owner, ownerTargets) -> installationOf(owner, ownerTargets.first().repo.repository) }
+        return targets.mapNotNull { target ->
+            val installation = if (isUnresolved(target)) installations[owner(target.repo)] else null
+            when {
+                installation == null -> target
+
+                !allowList.allows(installation.account) -> {
+                    logger.info("Dropping {}: its account {} isn't allowed", target.repo, installation.account)
+                    null
+                }
+
+                else -> target.copy(installationId = installation.id)
+            }
         }
     }
 
-    private suspend fun ownerAllowed(repository: String): Boolean = try {
-        val account = api.repositoryInstallation(repository)?.account
-        account == null || allowList.allows(account).also { allowed ->
-            if (!allowed) logger.info("Dropping repositories of {}: the account isn't allowed", account)
-        }
-    } catch (e: CancellationException) {
-        throw e
-    } catch (e: IOException) {
-        logger.warn("Could not look up the installation of {}; keeping it: {}", repository, e.message)
-        true
+    /** Forgets [installationId], e.g. once it's uninstalled. */
+    fun forgetInstallation(installationId: Long) {
+        tokens.evict(installationId)
+        ownerInstallations.values.removeIf { it.installation.id == installationId }
     }
+
+    /** The installation on [owner], which [repository] belongs to; `null` if there's none or the lookup failed. */
+    private suspend fun installationOf(owner: String, repository: String): InstallationInfo? =
+        ownerInstallations[owner]?.takeIf { it.expiresAt > clock.now() }?.installation ?: try {
+            api.repositoryInstallation(repository)?.also { installation ->
+                ownerInstallations[owner] = CachedInstallation(installation, clock.now() + INSTALLATION_CACHE_TTL)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            logger.warn("Could not look up the installation of {}; queueing it without one: {}", repository, e.message)
+            null
+        }
+
+    private fun owner(repo: RepoRef) = repo.repository.substringBefore('/').lowercase()
+
+    private fun isUnresolved(target: RepoTarget) =
+        target.repo.platform == Platform.GITHUB && target.installationId == null
 
     override fun close() = http.close()
+
+    private companion object {
+        val INSTALLATION_CACHE_TTL: Duration = 60.minutes
+    }
 }
 
 /**
@@ -257,7 +290,10 @@ class GitHubAppCredentialsProvider internal constructor(
     }
 }
 
-/** Every repository the App is installed on, skipping archived and disabled ones and suspended installations. */
+/**
+ * Every repository the App is installed on, with its installation (KSH-24), skipping archived and disabled ones and
+ * suspended installations.
+ */
 class GitHubAppRepositoryDiscovery internal constructor(
     private val api: GitHubAppApi,
     private val tokens: InstallationTokens,
@@ -267,14 +303,14 @@ class GitHubAppRepositoryDiscovery internal constructor(
 
     private val logger = LoggerFactory.getLogger(GitHubAppRepositoryDiscovery::class.java)
 
-    override suspend fun discover(): List<RepoRef> = api.installations()
+    override suspend fun discover(): List<RepoTarget> = api.installations()
         .filter { it.suspendedAt == null && isAllowed(it) }
         .flatMap { installation ->
             try {
                 val token = tokens.token(installation.id, DISCOVERY_MIN_REMAINING)
                 api.installationRepositories(token.token)
                     .filterNot { it.archived || it.disabled }
-                    .map { RepoRef(Platform.GITHUB, it.fullName) }
+                    .map { RepoTarget(RepoRef(Platform.GITHUB, it.fullName), installation.id) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: GitHubApiException) {

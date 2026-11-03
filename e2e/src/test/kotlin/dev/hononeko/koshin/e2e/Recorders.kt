@@ -1,7 +1,7 @@
 package dev.hononeko.koshin.e2e
 
+import dev.hononeko.koshin.core.model.CredentialScope
 import dev.hononeko.koshin.core.model.JobExecutionResult
-import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.PlatformCredentials
 import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.model.RepoRef
@@ -50,7 +50,7 @@ class DeliveryRecord(val event: RenovateJobEvent, val attempt: Int) {
     var settlement: Settlement? = null
 }
 
-data class Fetch(val platform: Platform, val at: TimeSource.Monotonic.ValueTimeMark)
+data class Fetch(val scope: CredentialScope, val at: TimeSource.Monotonic.ValueTimeMark)
 
 class RecordingConsumer(
     private val delegate: JobQueueConsumer,
@@ -59,9 +59,9 @@ class RecordingConsumer(
 ) : JobQueueConsumer {
     val fetches: MutableList<Fetch> = CopyOnWriteArrayList()
 
-    override suspend fun fetchNext(platform: Platform, timeout: Duration): JobDelivery? {
-        fetches += Fetch(platform, TimeSource.Monotonic.markNow())
-        val delivery = delegate.fetchNext(platform, timeout) ?: return null
+    override suspend fun fetchNext(scope: CredentialScope, timeout: Duration): JobDelivery? {
+        fetches += Fetch(scope, TimeSource.Monotonic.markNow())
+        val delivery = delegate.fetchNext(scope, timeout) ?: return null
         val record = DeliveryRecord(delivery.event, delivery.deliveryAttempt)
         deliveries += record
         return RecordingDelivery(delivery, record, stall)
@@ -121,15 +121,15 @@ class RecordingCoordination(private val delegate: RepoCoordinationPort, private 
         delegate.releaseLock(repo, token, queuedTtl).also { unlocks += Unlock(token, it) }
 }
 
-/** Records each platform cooldown the worker starts. */
+/** Records each credential scope's cooldown the worker starts. */
 class RecordingThrottle(private val delegate: PlatformThrottlePort) : PlatformThrottlePort by delegate {
-    data class RateLimit(val platform: Platform, val cooldown: Duration, val at: TimeSource.Monotonic.ValueTimeMark)
+    data class RateLimit(val scope: CredentialScope, val cooldown: Duration, val at: TimeSource.Monotonic.ValueTimeMark)
 
     val rateLimits: MutableList<RateLimit> = CopyOnWriteArrayList()
 
-    override suspend fun registerRateLimit(platform: Platform, retryAfter: Duration?): Duration {
+    override suspend fun registerRateLimit(scope: CredentialScope, retryAfter: Duration?): Duration {
         val at = TimeSource.Monotonic.markNow()
-        return delegate.registerRateLimit(platform, retryAfter).also { rateLimits += RateLimit(platform, it, at) }
+        return delegate.registerRateLimit(scope, retryAfter).also { rateLimits += RateLimit(scope, it, at) }
     }
 }
 

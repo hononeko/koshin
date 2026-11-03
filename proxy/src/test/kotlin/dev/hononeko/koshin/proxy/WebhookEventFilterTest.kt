@@ -55,6 +55,22 @@ class WebhookEventFilterTest {
     }
 
     @Test
+    fun `a GitHub App webhook names the installation that sent it`() {
+        fun push(installation: String) = """
+            {"ref":"refs/heads/main","after":"abc","installation":$installation,
+             "repository":{"full_name":"hononeko/koshin","default_branch":"main"},
+             "sender":{"login":"octocat","type":"User"}}
+        """.trimIndent()
+
+        assertEquals(
+            WebhookDecision.Enqueue("hononeko/koshin", installationId = 42),
+            filter.evaluateGitHub("push", push("""{"id":42}""")),
+        )
+        assertEquals(WebhookDecision.Enqueue("hononeko/koshin"), filter.evaluateGitHub("push", push("""{"id":0}""")))
+        assertEquals(WebhookDecision.Enqueue("hononeko/koshin"), filter.evaluateGitHub("push", push("null")))
+    }
+
+    @Test
     fun `GitHub push filters out non-default branch, renovate branch, and deleted branch`() {
         val nonDefaultBranch = """
             {

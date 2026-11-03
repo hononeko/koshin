@@ -1,5 +1,6 @@
 package dev.hononeko.koshin.worker
 
+import dev.hononeko.koshin.core.model.CredentialScope
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.PlatformCredentials
 import dev.hononeko.koshin.core.model.RenovateJobEvent
@@ -77,8 +78,10 @@ class WorkerShutdownTest {
             inheritedEnv = mapOf("PATH" to System.getenv("PATH")),
         )
 
+        val queue = QueueConsumer(delivery)
         val useCase = ProcessRenovateJobUseCase(
-            queueConsumer = QueueConsumer(delivery),
+            queueConsumer = queue,
+            queueDepth = queue,
             queuePublisher = publisher,
             coordinationPort = coordination,
             throttlePort = throttle,
@@ -110,7 +113,7 @@ class WorkerShutdownTest {
         assertFalse(coordination.locks.containsKey(repo), "lock should be released")
         assertTrue(repo in coordination.dirty, "dirty flag should be kept")
         assertTrue(publisher.published.isEmpty(), "no follow-up is published on shutdown")
-        coVerify(exactly = 1) { throttle.releaseRunSlot(Platform.GITHUB, any()) }
+        coVerify(exactly = 1) { throttle.releaseRunSlot(CredentialScope.Token(Platform.GITHUB), any()) }
         assertFalse(workspace.exists(), "workspace should be cleaned up")
         awaitDead(cliPid)
         awaitDead(childPid)

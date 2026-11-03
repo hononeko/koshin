@@ -178,11 +178,12 @@ class MaxDeliverDlqForwarder(
         }
     }
 
+    /** From `renovate.jobs.<platform>.<scope>` (KSH-24), or the legacy `renovate.jobs.<platform>`. */
     private fun extractPlatform(msgInfo: MessageInfo): String {
         val subject = msgInfo.subject.orEmpty()
         val prefix = "${config.jobsSubjectPrefix}."
         if (subject.startsWith(prefix)) {
-            return subject.removePrefix(prefix)
+            return subject.removePrefix(prefix).substringBefore('.')
         }
         return parseEventOrNull(msgInfo)?.repo?.platform?.name?.lowercase() ?: "unknown"
     }

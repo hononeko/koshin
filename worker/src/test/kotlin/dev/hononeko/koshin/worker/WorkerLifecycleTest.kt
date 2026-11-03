@@ -124,6 +124,7 @@ class WorkerLifecycleTest {
     fun `the job use case is wired to the connected ports`() {
         val ports = WorkerBackends.Ports(
             consumer = mockk(),
+            queueDepth = mockk(),
             publisher = mockk(),
             coordination = mockk(),
             throttle = mockk(),

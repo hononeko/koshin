@@ -16,6 +16,7 @@ data:
   NATS_ACK_WAIT_SECONDS: {{ .Values.natsSettings.ackWaitSeconds | quote }}
   NATS_MAX_DELIVER: {{ .Values.natsSettings.maxDeliver | quote }}
   NATS_EXHAUSTED_SWEEP_SECONDS: {{ .Values.natsSettings.exhaustedSweepSeconds | quote }}
+  NATS_CONSUMER_IDLE_TTL_DAYS: {{ .Values.natsSettings.consumerIdleTtlDays | quote }}
   VALKEY_URL: {{ include "koshin.valkeyUrl" . | quote }}
   VALKEY_KEY_PREFIX: {{ .Values.valkeySettings.keyPrefix | quote }}
   VALKEY_COMMAND_TIMEOUT_SECONDS: {{ .Values.valkeySettings.commandTimeoutSeconds | quote }}
@@ -34,7 +35,8 @@ data:
   RENOVATE_BINARY_SOURCE: {{ .renovateBinarySource | quote }}
   {{- end }}
   {{- with .Values.worker.rateLimits }}
-  MAX_CONCURRENT_RUNS_PER_PLATFORM: {{ .maxConcurrentRunsPerPlatform | quote }}
+  MAX_CONCURRENT_RUNS_PER_CREDENTIAL: {{ .maxConcurrentRunsPerCredential | quote }}
+  MAX_CONCURRENT_RUNS_GLOBAL: {{ .maxConcurrentRunsGlobal | quote }}
   {{- if not (kindIs "invalid" .maxRequestsPerSecond) }}
   RENOVATE_MAX_REQUESTS_PER_SECOND: {{ .maxRequestsPerSecond | quote }}
   {{- end }}

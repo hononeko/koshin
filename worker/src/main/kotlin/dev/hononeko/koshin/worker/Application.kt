@@ -4,7 +4,6 @@ import dev.hononeko.koshin.adapters.github.GitHubApp
 import dev.hononeko.koshin.adapters.github.GitHubAppConfig
 import dev.hononeko.koshin.adapters.nats.NatsConfig
 import dev.hononeko.koshin.adapters.valkey.ValkeyConfig
-import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.ports.CliExecutorPort
 import dev.hononeko.koshin.core.usecase.ProcessRenovateJobUseCase
 import io.ktor.http.HttpStatusCode
@@ -175,12 +174,10 @@ fun main() {
     }
 
     val backends = WorkerBackends(
-        // Consumers for every platform, like the proxy creates them
         connectNats = {
             WorkerBackends.connectNats(
                 url = settings.natsUrl,
                 config = natsConfig,
-                platforms = Platform.entries,
                 repoCache = settings.repoCache.natsConfig(natsConfig),
                 cacheDir = settings.renovateCacheDir,
             )
@@ -231,6 +228,7 @@ internal fun jobUseCase(
     workspaceCleaner: WorkspaceCleaner,
 ) = ProcessRenovateJobUseCase(
     queueConsumer = ports.consumer,
+    queueDepth = ports.queueDepth,
     queuePublisher = ports.publisher,
     coordinationPort = ports.coordination,
     throttlePort = ports.throttle,
