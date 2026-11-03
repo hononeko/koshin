@@ -9,7 +9,7 @@ reference for the `minimal` profile.
 
 ## Prerequisites
 
-* Kubernetes 1.30+ (native sidecar containers, `ValidatingAdmissionPolicy`)
+* Kubernetes 1.30+ (native sidecar containers)
 * [KEDA](https://keda.sh) 2.21+ to scale workers with the job backlog. Without it the chart runs a fixed
   `worker.replicas` (the `ScaledObject` is rendered only when the `keda.sh/v1alpha1` API exists, so pass
   `--api-versions keda.sh/v1alpha1/ScaledObject` to `helm template`).
@@ -140,11 +140,8 @@ read-only at `/opt/koshin`, so a run can't change it.
   that run and the non-secret settings.
 * After each run, every process left in the `renovate` container is killed, so no process a run starts can watch the
   next one.
-* Only the `worker` container mounts a ServiceAccount token, valid for `worker.podDeletionCost.tokenExpirationSeconds`.
-  The token can patch pods (for the pod-deletion cost), so the chart also installs a cluster-scoped
-  `ValidatingAdmissionPolicy` that only lets it change the `controller.kubernetes.io/pod-deletion-cost` annotation of
-  the worker's own pod. If you can't install cluster-scoped resources, set `worker.podDeletionCost.admissionPolicy=false`
-  (the token can then patch any pod in the namespace) or turn off `worker.podDeletionCost.enabled`.
+* No worker container mounts a ServiceAccount token: workers never call the Kubernetes API (KSH-31), and the chart
+  installs no RBAC or cluster-scoped resources for them.
 
 ## Renovate version
 
@@ -446,9 +443,6 @@ Kubernetes: `>=1.30.0-0`
 | worker.image.tag | string | `""` | Worker image tag (default: the chart's `appVersion`) |
 | worker.nodeSelector | object | `{}` | Worker node selector |
 | worker.podAnnotations | object | `{}` | Worker pod annotations |
-| worker.podDeletionCost.admissionPolicy | bool | `true` | Create a ValidatingAdmissionPolicy (cluster-scoped) so the token can only change the pod-deletion-cost annotation of the worker's own pod. Without it, the token can patch any pod in the namespace. |
-| worker.podDeletionCost.enabled | bool | `true` | `POD_DELETION_COST_ENABLED`: mark busy workers expensive to delete, so KEDA scale-in removes idle ones. The worker container gets a ServiceAccount token for it; Renovate's container never does. |
-| worker.podDeletionCost.tokenExpirationSeconds | int | `600` | Lifetime of that token in seconds (at least 600); the kubelet renews it before it expires |
 | worker.podDisruptionBudget.enabled | string | `nil` | Create a PodDisruptionBudget for the workers (`maxUnavailable: 1`, for node drains). Default: on in `ha`. |
 | worker.podLabels | object | `{}` | Worker pod labels |
 | worker.podSecurityContext | object | `{"runAsGroup":0,"runAsNonRoot":true,"runAsUser":12021,"seccompProfile":{"type":"RuntimeDefault"}}` | Worker pod security context (both images run as Renovate's uid 12021) |

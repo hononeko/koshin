@@ -26,6 +26,10 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 import org.slf4j.LoggerFactory
 import org.slf4j.bridge.SLF4JBridgeHandler
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.concurrent.thread
+import kotlin.system.exitProcess
 
 private val logger = LoggerFactory.getLogger("dev.hononeko.koshin.worker.Application")
 
@@ -77,26 +81,61 @@ fun createWorkerServer(
     },
 )
 
-internal fun cliExecutor(settings: WorkerSettings): CliExecutorPort {
-    val processExecutor = RenovateProcessExecutor(
-        baseDir = settings.renovateBaseDir,
-        binarySource = settings.renovateBinarySource,
-        redisUrl = settings.renovateRedisUrl,
-        requestLimits = settings.requestLimits,
-        rateLimitPattern = Regex(settings.rateLimitLogPattern),
-        repoCache = settings.repoCache,
-        cacheDir = settings.renovateCacheDir,
-        launcher = settings.runnerSocket?.let { RunnerRenovateLauncher(it) } ?: LocalRenovateLauncher(),
-    )
-    return if (settings.podDeletionCostEnabled) {
-        PodDeletionCostCliExecutor(
-            processExecutor,
-            KubernetesPodDeletionCostUpdater(checkNotNull(settings.podName), checkNotNull(settings.podNamespace)),
-        )
-    } else {
-        processExecutor
+/**
+ * Serves the health endpoints and runs the daemon [newDaemon] makes, keeping [presence]'s lease, until SIGTERM or until
+ * the daemon finishes on its own (drain-then-exit or max lifetime, KSH-31). Returns true in the second case, for the
+ * process to exit 0. Either way the server's stop hooks stop the daemon and then run [onStopped].
+ */
+internal fun serveWorker(
+    settings: WorkerSettings,
+    readinessCheck: suspend () -> Boolean,
+    presence: WarmPresence?,
+    onStopped: () -> Unit,
+    newDaemon: (onFinished: () -> Unit) -> WorkerDaemon,
+): Boolean {
+    val finished = AtomicBoolean(false)
+    val stopped = CountDownLatch(1)
+    lateinit var server: EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration>
+    val daemon = newDaemon {
+        finished.set(true)
+        // Off the daemon's coroutine, which stopping the server cancels and joins
+        thread(name = "koshin-worker-exit") { server.stop(EXIT_GRACE_MILLIS, EXIT_TIMEOUT_MILLIS) }
     }
+    server = createWorkerServer(
+        settings = settings,
+        readinessCheck = readinessCheck,
+        onStopping = {
+            presence?.stop()
+            daemon.stop()
+        },
+        onStopped = {
+            try {
+                onStopped()
+            } finally {
+                stopped.countDown()
+            }
+        },
+    )
+    server.start(wait = false)
+    presence?.start()
+    daemon.start()
+    stopped.await()
+    return finished.get()
 }
+
+private const val EXIT_GRACE_MILLIS = 500L
+private const val EXIT_TIMEOUT_MILLIS = 5_000L
+
+internal fun cliExecutor(settings: WorkerSettings): CliExecutorPort = RenovateProcessExecutor(
+    baseDir = settings.renovateBaseDir,
+    binarySource = settings.renovateBinarySource,
+    redisUrl = settings.renovateRedisUrl,
+    requestLimits = settings.requestLimits,
+    rateLimitPattern = Regex(settings.rateLimitLogPattern),
+    repoCache = settings.repoCache,
+    cacheDir = settings.renovateCacheDir,
+    launcher = settings.runnerSocket?.let { RunnerRenovateLauncher(it) } ?: LocalRenovateLauncher(),
+)
 
 /** The GitHub App for GitHub runs when it's configured, the platform tokens otherwise. */
 internal fun workerCredentials(settings: WorkerSettings, gitHubApp: GitHubApp?): WorkerCredentials {
@@ -150,30 +189,55 @@ fun main() {
     )
     backends.startAsync()
 
-    val daemon = WorkerDaemon(settings.platforms) {
-        val ports = backends.awaitPorts()
-        ProcessRenovateJobUseCase(
-            queueConsumer = ports.consumer,
-            queuePublisher = ports.publisher,
-            coordinationPort = ports.coordination,
-            throttlePort = ports.throttle,
-            cachePort = ports.repoCache,
-            credentialsPort = credentials,
-            cliExecutor = cliExecutor,
-            workspaceCleaner = workspaceCleaner,
-            config = settings.jobConfig,
-            jobContext = MdcJobContext,
-        )
-    }
-    daemon.start()
-
-    createWorkerServer(
+    val finished = serveWorker(
         settings = settings,
         readinessCheck = backends::isReady,
-        onStopping = { daemon.stop() },
+        presence = warmPresence(settings, backends),
         onStopped = {
             backends.close()
             gitHubApp?.close()
         },
-    ).start(wait = true)
+    ) { onFinished ->
+        WorkerDaemon(
+            platforms = settings.platforms,
+            idleTimeout = settings.idleTimeout,
+            maxLifetime = settings.maxLifetime,
+            onFinished = onFinished,
+        ) {
+            jobUseCase(settings, backends.awaitPorts(), credentials, cliExecutor, workspaceCleaner)
+        }
+    }
+    if (finished) {
+        logger.info("Worker finished; exiting")
+        exitProcess(0)
+    }
 }
+
+/** A daemon-mode worker tells the Job dispatcher it's ready (KSH-31); a burst Job pod drains and exits instead. */
+internal fun warmPresence(settings: WorkerSettings, backends: WorkerBackends): WarmPresence? =
+    if (settings.idleTimeout.isPositive()) {
+        null
+    } else {
+        WarmPresence(settings.jobConfig.heartbeatInterval, settings.jobConfig.lockTtl) {
+            backends.awaitPorts().warmWorkers
+        }
+    }
+
+internal fun jobUseCase(
+    settings: WorkerSettings,
+    ports: WorkerBackends.Ports,
+    credentials: WorkerCredentials,
+    cliExecutor: CliExecutorPort,
+    workspaceCleaner: WorkspaceCleaner,
+) = ProcessRenovateJobUseCase(
+    queueConsumer = ports.consumer,
+    queuePublisher = ports.publisher,
+    coordinationPort = ports.coordination,
+    throttlePort = ports.throttle,
+    cachePort = ports.repoCache,
+    credentialsPort = credentials,
+    cliExecutor = cliExecutor,
+    workspaceCleaner = workspaceCleaner,
+    config = settings.jobConfig,
+    jobContext = MdcJobContext,
+)

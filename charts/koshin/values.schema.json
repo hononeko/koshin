@@ -521,22 +521,6 @@
         "renovateRedisUrl": {
           "type": "string"
         },
-        "podDeletionCost": {
-          "type": "object",
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "tokenExpirationSeconds": {
-              "type": "integer",
-              "minimum": 600
-            },
-            "admissionPolicy": {
-              "type": "boolean"
-            }
-          },
-          "additionalProperties": false
-        },
         "autoscaling": {
           "type": "object",
           "properties": {

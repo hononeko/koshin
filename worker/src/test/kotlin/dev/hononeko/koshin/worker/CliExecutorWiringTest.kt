@@ -61,13 +61,4 @@ class CliExecutorWiringTest {
         assertFalse(workerCredentials(WorkerSettings(), null).isConfigured(Platform.GITHUB))
         assertTrue(workerCredentials(WorkerSettings(githubToken = "ghp"), null).isConfigured(Platform.GITHUB))
     }
-
-    @Test
-    fun `pod deletion cost wraps the executor when enabled`() {
-        val settings = WorkerSettings.fromEnv(
-            mapOf("POD_DELETION_COST_ENABLED" to "true", "POD_NAME" to "worker-0", "POD_NAMESPACE" to "koshin"),
-        )
-
-        assertTrue(cliExecutor(settings) is PodDeletionCostCliExecutor)
-    }
 }

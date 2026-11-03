@@ -113,38 +113,24 @@ class ValkeyPlatformThrottleAdapter(
         private const val UNKNOWN = "-1"
         private const val JITTER = 0.2
 
-        private val NOW =
-            """
-            local t = redis.call('TIME')
-            local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
-            """.trimIndent()
-
-        // Keeps the ZSET's own TTL at least as long as its longest lease, so an abandoned key goes away.
-        private val LEASE =
-            """
-            redis.call('ZADD', KEYS[1], now + ttl, ARGV[1])
-            if redis.call('PTTL', KEYS[1]) < ttl then redis.call('PEXPIRE', KEYS[1], ttl) end
-            return 1
-            """.trimIndent()
-
         val ACQUIRE_SLOT_SCRIPT =
             """
-            $NOW
+            ${LeaseScripts.NOW}
             local ttl = tonumber(ARGV[2])
             redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now)
             if not redis.call('ZSCORE', KEYS[1], ARGV[1]) and redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[3]) then
               return 0
             end
-            $LEASE
+            ${LeaseScripts.LEASE}
             """.trimIndent()
 
         val EXTEND_SLOT_SCRIPT =
             """
-            $NOW
+            ${LeaseScripts.NOW}
             local ttl = tonumber(ARGV[2])
             redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now)
             if not redis.call('ZSCORE', KEYS[1], ARGV[1]) then return 0 end
-            $LEASE
+            ${LeaseScripts.LEASE}
             """.trimIndent()
 
         val REGISTER_RATE_LIMIT_SCRIPT =

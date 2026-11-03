@@ -8,7 +8,6 @@ labels:
 resources:
   - proxy-deployment.yaml
   - proxy-service.yaml
-  - worker-rbac.yaml
   - worker-deployment.yaml
   - worker-scaledobject.yaml
   - cronjob-sweeper.yaml

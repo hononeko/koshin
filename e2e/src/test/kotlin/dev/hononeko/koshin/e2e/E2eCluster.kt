@@ -7,7 +7,9 @@ import dev.hononeko.koshin.adapters.nats.NatsJobQueuePublisher
 import dev.hononeko.koshin.adapters.nats.NatsRepoCacheConfig
 import dev.hononeko.koshin.adapters.valkey.PlatformThrottleConfig
 import dev.hononeko.koshin.adapters.valkey.ValkeyConfig
+import dev.hononeko.koshin.adapters.valkey.ValkeyPlatformThrottleAdapter
 import dev.hononeko.koshin.adapters.valkey.ValkeyRepoCoordinationAdapter
+import dev.hononeko.koshin.adapters.valkey.ValkeyWarmWorkerAdapter
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RenovateJobEvent
 import dev.hononeko.koshin.core.model.RepoRef
@@ -90,6 +92,13 @@ class E2eCluster(
     /** Plays a worker the suite doesn't run, e.g. one holding a lock. */
     val coordination = ValkeyRepoCoordinationAdapter(redis, valkeyConfig)
 
+    /** Rate limits as a worker would register them. */
+    val throttlePort = ValkeyPlatformThrottleAdapter(redis, valkeyConfig, throttle)
+
+    private val warmWorkers = ValkeyWarmWorkerAdapter(redis, valkeyConfig)
+
+    fun liveWarmWorkers(): Int = runBlocking { warmWorkers.liveCount() }
+
     init {
         NatsJetStreamBootstrap(nats, natsConfig).bootstrap(Platform.entries)
     }
@@ -101,11 +110,14 @@ class E2eCluster(
             it.start()
         }
 
+    /** With a positive [idleTimeout], a burst worker that drains and exits (KSH-31). */
     fun startWorker(
         name: String,
         runTime: Duration = DEFAULT_RUN_TIME,
         platforms: Set<Platform> = setOf(Platform.GITHUB),
-    ): TestWorker = TestWorker(name, this, runTime, platforms).also {
+        idleTimeout: Duration = Duration.ZERO,
+        maxLifetime: Duration = Duration.ZERO,
+    ): TestWorker = TestWorker(name, this, runTime, platforms, idleTimeout, maxLifetime).also {
         workers += it
         it.start()
     }
@@ -140,6 +152,9 @@ class E2eCluster(
         if (store.getInfo(name) == null) return null
         return ByteArrayOutputStream().also { store.get(name, it) }.toString(Charsets.UTF_8)
     }
+
+    fun pendingJobs(platform: Platform): Long =
+        jsm.getConsumerInfo(natsConfig.jobsStreamName, natsConfig.consumerNameFor(platform)).numPending
 
     fun publishedCount(): Long = jsm.getStreamInfo(natsConfig.jobsStreamName).streamState.lastSequence
 

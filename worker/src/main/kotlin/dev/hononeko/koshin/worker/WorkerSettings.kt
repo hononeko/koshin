@@ -6,6 +6,7 @@ import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.usecase.WorkerConfig
 import java.nio.file.Path
 import kotlin.io.path.Path
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
@@ -24,9 +25,13 @@ data class WorkerSettings(
     val githubEndpoint: String? = null,
     val gitlabToken: String? = null,
     val gitlabEndpoint: String? = null,
-    val podDeletionCostEnabled: Boolean = false,
-    val podName: String? = null,
-    val podNamespace: String? = null,
+    /**
+     * `WORKER_IDLE_TIMEOUT_SECONDS` (KSH-31): zero runs as a daemon until stopped, keeping a warm-worker lease;
+     * positive drains runnable jobs back to back and exits 0 once none was found for this long (a burst `Job` pod).
+     */
+    val idleTimeout: Duration = Duration.ZERO,
+    /** `WORKER_MAX_LIFETIME_SECONDS`: past this, finish the job in flight and exit 0 instead of fetching another. */
+    val maxLifetime: Duration = Duration.ZERO,
     val jobConfig: WorkerConfig = WorkerConfig(),
     val throttle: PlatformThrottleConfig = PlatformThrottleConfig(),
     val requestLimits: RenovateRequestLimits = RenovateRequestLimits(),
@@ -41,14 +46,18 @@ data class WorkerSettings(
         require(renovateCacheDir.isAbsolute) { "RENOVATE_CACHE_DIR must be absolute: $renovateCacheDir" }
         require(renovateBinarySource.isNotBlank()) { "renovateBinarySource cannot be blank" }
         require(runnerSocket?.isAbsolute != false) { "RUNNER_SOCKET must be absolute: $runnerSocket" }
-        require(!podDeletionCostEnabled || (!podName.isNullOrBlank() && !podNamespace.isNullOrBlank())) {
-            "POD_DELETION_COST_ENABLED requires POD_NAME and POD_NAMESPACE"
+        require(!idleTimeout.isNegative() && idleTimeout.isFinite()) {
+            "WORKER_IDLE_TIMEOUT_SECONDS must be >= 0: $idleTimeout"
+        }
+        require(!maxLifetime.isNegative() && maxLifetime.isFinite()) {
+            "WORKER_MAX_LIFETIME_SECONDS must be >= 0: $maxLifetime"
         }
         Regex(rateLimitLogPattern)
     }
 
     override fun toString(): String = "WorkerSettings(port=$port, http2Enabled=$http2Enabled, platforms=$platforms, " +
         "natsUrl=${natsUrl.withoutUserInfo()}, renovateBaseDir=$renovateBaseDir, runnerSocket=$runnerSocket, " +
+        "idleTimeout=$idleTimeout, maxLifetime=$maxLifetime, " +
         "githubToken=${githubToken.redacted()}, gitlabToken=${gitlabToken.redacted()}, jobConfig=$jobConfig, " +
         "throttle=$throttle, requestLimits=$requestLimits, repoCache=$repoCache)"
 
@@ -87,9 +96,8 @@ data class WorkerSettings(
             githubEndpoint = env.nonBlank("GITHUB_API_URL"),
             gitlabToken = env.nonBlank("GITLAB_TOKEN"),
             gitlabEndpoint = env.nonBlank("GITLAB_ENDPOINT"),
-            podDeletionCostEnabled = env.boolean("POD_DELETION_COST_ENABLED") ?: false,
-            podName = env.nonBlank("POD_NAME"),
-            podNamespace = env.nonBlank("POD_NAMESPACE"),
+            idleTimeout = env.long("WORKER_IDLE_TIMEOUT_SECONDS")?.seconds ?: Duration.ZERO,
+            maxLifetime = env.long("WORKER_MAX_LIFETIME_SECONDS")?.seconds ?: Duration.ZERO,
             jobConfig = jobConfigFromEnv(env),
             throttle = throttleFromEnv(env),
             requestLimits = RenovateRequestLimits(

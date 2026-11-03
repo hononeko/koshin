@@ -26,7 +26,7 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "koshin.fullname" . }}-worker
-      # Only the worker container gets a token (kube-api-access), never Renovate's
+      # Workers never call the Kubernetes API (KSH-31): no container gets a token
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}
       {{- with .Values.imagePullSecrets }}
@@ -125,16 +125,6 @@ spec:
               value: /tmp/renovate
             - name: RUNNER_SOCKET
               value: {{ include "koshin.runnerSocket" . }}
-            - name: POD_DELETION_COST_ENABLED
-              value: {{ .Values.worker.podDeletionCost.enabled | quote }}
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-            - name: POD_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
             {{- with include "koshin.sentinelPasswordEnv" . }}{{ . | nindent 12 }}{{- end }}
             {{- with .Values.worker.extraEnv }}
             {{- toYaml . | nindent 12 }}
@@ -161,11 +151,6 @@ spec:
             - name: runner
               mountPath: /run/koshin
               readOnly: true
-            {{- if .Values.worker.podDeletionCost.enabled }}
-            - name: kube-api-access
-              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
-              readOnly: true
-            {{- end }}
             {{- with include "koshin.githubAppVolumeMount" . }}{{ . | nindent 12 }}{{- end }}
       volumes:
         # Per-run workspaces, deleted after each run and purged at startup
@@ -180,8 +165,4 @@ spec:
         - name: runner-bin
           emptyDir:
             sizeLimit: 512Mi
-        {{- if .Values.worker.podDeletionCost.enabled }}
-        # Mounted by the worker container only
-        {{- include "koshin.kubeApiAccessVolume" . | nindent 8 }}
-        {{- end }}
         {{- with include "koshin.githubAppVolume" . }}{{ . | nindent 8 }}{{- end }}
