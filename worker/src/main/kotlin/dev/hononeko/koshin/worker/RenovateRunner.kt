@@ -199,8 +199,8 @@ fun main() {
     val killer = if (ProcessKiller.isContainerMain()) {
         ProcessKiller.sweep()
     } else {
-        logger.warn("Not the main process of a container: only each run's own process tree is killed after it")
-        ProcessKiller.TREE
+        logger.warn("Not the main process of a container: only each run's own processes are killed after it")
+        ProcessKiller.adopting()
     }
     val runner = RenovateRunner(socket, LocalRenovateLauncher(killer))
     Runtime.getRuntime().addShutdownHook(Thread(runner::close))
