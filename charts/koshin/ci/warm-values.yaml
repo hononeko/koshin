@@ -1,0 +1,27 @@
+# `ct install` on kind: the minimal profile with one always-warm worker (worker.autoscaling.minReplicas: 1), which
+# should take the test run without a burst Job (tests.jobProcessing)
+proxy:
+  replicas: 1
+  secrets:
+    githubWebhookSecret: ci-webhook-secret
+    internalTriggerToken: ci-trigger-token
+  sweepRepositories:
+    - github:hononeko/koshin
+worker:
+  secrets:
+    # Rejected by GitHub: Renovate fails at its first API call and the worker ACKs the job
+    githubToken: ci-invalid-token
+  autoscaling:
+    minReplicas: 1
+  renovate:
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        memory: 2Gi
+  workspaceSizeLimit: 2Gi
+tests:
+  jobProcessing:
+    enabled: true
+    timeoutSeconds: 300

@@ -123,7 +123,7 @@ jobs:
             echo "Validating the $profile profile..."
             args=()
             [ "$profile" = ha ] && args=(-f charts/koshin/values-ha.yaml)
-            helm template koshin charts/koshin -n koshin "${args[@]}" --api-versions keda.sh/v1alpha1/ScaledObject \
+            helm template koshin charts/koshin -n koshin "${args[@]}" \
               | docker run --rm -i ghcr.io/yannh/kubeconform:v0.8.0@sha256:faffaf43f95aa6425306e1ab8d6fcad72acb9049158f38e574c085ea1ec0f64e -summary -ignore-missing-schemas -strict
           done
 

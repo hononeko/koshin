@@ -101,7 +101,7 @@ spec:
     - name: client
       port: 4222
       targetPort: client
-    # Polled by KEDA's nats-jetstream scaler
+    # NATS monitoring (`/healthz`, `/jsz`)
     - name: monitor
       port: 8222
       targetPort: monitor

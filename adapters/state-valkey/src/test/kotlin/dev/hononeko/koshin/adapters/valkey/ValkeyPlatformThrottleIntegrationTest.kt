@@ -128,6 +128,21 @@ class ValkeyPlatformThrottleIntegrationTest {
     }
 
     @Test
+    fun `activeRunSlots counts unexpired leases only`() = runBlocking {
+        val throttle = adapter(maxConcurrentRuns = 3)
+        assertEquals(0, throttle.activeRunSlots(Platform.GITHUB))
+        throttle.tryAcquireRunSlot(Platform.GITHUB, "long", 10.seconds)
+        throttle.tryAcquireRunSlot(Platform.GITHUB, "short", 200.milliseconds)
+        throttle.tryAcquireRunSlot(Platform.GITLAB, "other", 10.seconds)
+        assertEquals(2, throttle.activeRunSlots(Platform.GITHUB))
+
+        delay(300.milliseconds)
+        assertEquals(1, throttle.activeRunSlots(Platform.GITHUB))
+        throttle.releaseRunSlot(Platform.GITHUB, "long")
+        assertEquals(0, throttle.activeRunSlots(Platform.GITHUB))
+    }
+
+    @Test
     fun `platforms have separate slots`() = runBlocking {
         val throttle = adapter(maxConcurrentRuns = 1)
         assertTrue(throttle.tryAcquireRunSlot(Platform.GITHUB, "gh", 10.seconds))

@@ -1,6 +1,6 @@
 # koshin
 
-Distributed Renovate orchestrator - a stateless webhook proxy and KEDA-scaled workers on NATS JetStream and Valkey
+Distributed Renovate orchestrator - a stateless webhook proxy dispatching scale-to-zero workers on NATS JetStream and Valkey
 
 ![Version: 0.8.0](https://img.shields.io/badge/Version-0.8.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 0.8.0](https://img.shields.io/badge/AppVersion-0.8.0-informational?style=flat-square)
 
@@ -10,9 +10,7 @@ reference for the `minimal` profile.
 ## Prerequisites
 
 * Kubernetes 1.30+ (native sidecar containers)
-* [KEDA](https://keda.sh) 2.21+ to scale workers with the job backlog. Without it the chart runs a fixed
-  `worker.replicas` (the `ScaledObject` is rendered only when the `keda.sh/v1alpha1` API exists, so pass
-  `--api-versions keda.sh/v1alpha1/ScaledObject` to `helm template`).
+* No autoscaler: the proxy starts worker `Job`s itself (see [Workers](#workers)).
 * Workers run Renovate from the upstream `ghcr.io/renovatebot/renovate:<version>-full` image (`worker.renovate.image`),
   about 10 GB uncompressed with its tools. The koshin images are small Temurin JRE images.
 
@@ -48,7 +46,8 @@ helm install koshin oci://ghcr.io/hononeko/charts/koshin -n koshin \
 
 Survives losing one node: a 3-node NATS cluster on PVCs (streams and the repo cache bucket at 3 replicas), Valkey as a
 primary with 2 replicas, AOF on PVCs and 3 Sentinels (workers find the primary through Sentinel), PodDisruptionBudgets
-and spread across nodes. The package-cache Valkey stays a single, disposable instance.
+and spread across nodes. The package-cache Valkey stays a single, disposable instance. One worker stays warm
+(`worker.autoscaling.minReplicas: 1`).
 
 Helm can't switch subchart defaults from a single value, so `ha` comes as a values file, `values-ha.yaml`. It sets
 `profile: ha` along with the NATS and Valkey topology, and the chart refuses to render a `profile` that doesn't match
@@ -73,8 +72,6 @@ nats:
   enabled: false
 externalNats:
   url: nats://nats.messaging:4222
-  # For KEDA; for a cluster, the headless Service so KEDA can reach each node
-  monitoringEndpoint: nats-headless.messaging.svc.cluster.local:8222
 valkey:
   enabled: false
 externalValkey:
@@ -126,6 +123,29 @@ publishing for a few seconds; the proxy retries, so webhooks are still accepted.
 
 The inline `*.secrets.*` and `github.app.privateKey` values exist for testing only. Without `INTERNAL_TRIGGER_TOKEN`
 the sweeper CronJob isn't installed.
+
+## Workers
+
+With `worker.autoscaling.enabled` (the default), no autoscaler is involved: the proxy starts burst workers as Kubernetes
+`Job`s, cloned from the `<release>-worker` `PodTemplate` the chart renders, so every pod setting stays in your values
+(KSH-32). It reconciles right after it publishes a job and every `autoscaling.dispatchIntervalSeconds`, and only the
+proxy replica holding a Valkey lease does, so replicas never double up.
+
+* **Demand:** jobs it can run now, per platform, up to `rateLimits.maxConcurrentRunsPerPlatform` runs each and
+  `autoscaling.maxReplicas` workers in all. A platform in a rate-limit cooldown adds none, so a cooldown starts no idle
+  workers.
+* **Burst workers** run jobs back to back and exit 0 once none was runnable for `autoscaling.idleTimeoutSeconds`, or
+  after the run in flight once they're `autoscaling.maxLifetimeSeconds` old (below the Job's
+  `autoscaling.jobActiveDeadlineSeconds`). Finished Jobs go after `autoscaling.jobTtlSecondsAfterFinished`. The proxy
+  never stops a worker, and uninstalling the chart removes the Jobs with their `PodTemplate`.
+* **`minReplicas: 0`** (the default) scales to zero: every job waits for a burst worker pod to start, the Renovate image
+  pull included. **`minReplicas: 1`** keeps one warm worker in a Deployment (rolled by `helm upgrade`, never scaled in)
+  that picks a single job up at once; burst Jobs start only for a second concurrent job, or while the warm worker is
+  restarting.
+* The proxy gets a Role in the release namespace: `get` on the worker `PodTemplate`, and Jobs. Its token is a projected
+  one valid for `proxy.serviceAccount.tokenExpirationSeconds`. Workers get no token.
+
+Without autoscaling, `worker.replicas` static workers run in a Deployment.
 
 ## Worker isolation
 
@@ -208,7 +228,7 @@ Resource requests with the defaults:
 | Component | Pods (`minimal` / `ha`) | Requests per pod | Limits per pod | Storage per pod |
 | :--- | :--- | :--- | :--- | :--- |
 | Proxy | 2 / 3 | 100m CPU, 256 Mi | 512 Mi | — |
-| Worker: `renovate` container | 1 to `autoscaling.maxReplicas` | 500m CPU, 1 Gi | 4 Gi | 10 Gi `emptyDir`, plus the ~10 GB Renovate image on each node |
+| Worker: `renovate` container | `autoscaling.minReplicas` (0 / 1) to `autoscaling.maxReplicas` | 500m CPU, 1 Gi | 4 Gi | 10 Gi `emptyDir`, plus the ~10 GB Renovate image on each node |
 | Worker: `worker` container | (same pods) | 100m CPU, 256 Mi | 768 Mi | — |
 | NATS | 1 / 3 | 50m CPU, 64 Mi | 256 Mi | 2 Gi `emptyDir` / 10 Gi PVC |
 | Valkey (coordination) | 1 / 3 | 50m CPU, 32 Mi | 128 Mi | `emptyDir` / 1 Gi PVC |
@@ -227,7 +247,7 @@ the job streams always have room. With `ha` you can raise it to a few Gi. When y
 
 The API budget is roughly run slots × requests per second per run. Keep `worker.autoscaling.maxReplicas` near
 `worker.rateLimits.maxConcurrentRunsPerPlatform` × platforms (the default): extra workers only wait for a slot. During
-a rate-limit cooldown KEDA still counts the pending jobs and may scale up workers that sit idle until it ends.
+a rate-limit cooldown the proxy starts no worker for that platform's jobs.
 
 ## Backups and recovery
 
@@ -279,10 +299,9 @@ Kubernetes: `>=1.30.0-0`
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| clusterDomain | string | `"cluster.local"` | Kubernetes cluster domain, used for the KEDA monitoring endpoint |
+| clusterDomain | string | `"cluster.local"` | Kubernetes cluster domain, used by `tests.jobProcessing` to reach NATS monitoring |
 | commonLabels | object | `{}` | Labels added to every koshin resource |
-| externalNats | object | `{"monitoringEndpoint":"","url":""}` | NATS server used when `nats.enabled` is false |
-| externalNats.monitoringEndpoint | string | `""` | NATS monitoring endpoint (`host:8222`) for the KEDA scaler; for a cluster, the headless Service so KEDA can reach each node, e.g. `nats-headless.messaging.svc.cluster.local:8222` |
+| externalNats | object | `{"url":""}` | NATS server used when `nats.enabled` is false |
 | externalNats.url | string | `""` | NATS URL, e.g. `nats://nats.messaging:4222` |
 | externalValkey | object | `{"sentinelPasswordSecret":{"key":"","name":""},"sentinelUsername":"","url":""}` | Coordination Valkey used when `valkey.enabled` is false |
 | externalValkey.sentinelPasswordSecret | object | `{"key":"","name":""}` | Secret with Sentinel's own password (`VALKEY_SENTINEL_PASSWORD`), if Sentinel requires one |
@@ -350,10 +369,9 @@ Kubernetes: `>=1.30.0-0`
 | natsSettings.maxDeliver | int | `5` | `NATS_MAX_DELIVER`: deliveries of a job before it's dead-lettered |
 | natsSettings.streamName | string | `"RENOVATE_JOBS"` | `NATS_STREAM_NAME`: the job stream (WorkQueue) |
 | natsSettings.streamReplicas | string | `nil` | `NATS_STREAM_REPLICAS` for the job and DLQ streams and the repo cache bucket. Default: the NATS cluster size (`nats.config.cluster.replicas` when clustered), else 1. |
-| networkPolicy.enabled | bool | `false` | Create NetworkPolicies: the proxy accepts webhooks from anywhere, and NATS/Valkey accept only this release's pods (plus KEDA on the NATS monitoring port) |
-| networkPolicy.kedaNamespaceSelector | object | `{"matchLabels":{"kubernetes.io/metadata.name":"keda"}}` | Namespace selector of the KEDA operator, allowed to reach NATS monitoring |
+| networkPolicy.enabled | bool | `false` | Create NetworkPolicies: the proxy accepts webhooks from anywhere, and NATS/Valkey accept only this release's pods |
 | networkPolicy.proxyFrom | list | `[]` | Sources allowed to reach the proxy (default: anywhere) |
-| platforms | list | `["github"]` | Enabled platforms (`github`, `gitlab`). Each gets a KEDA trigger and its own NATS consumer. |
+| platforms | list | `["github"]` | Enabled platforms (`github`, `gitlab`). Each gets its own NATS consumer and run slots. |
 | profile | string | `"minimal"` | Deployment profile: `minimal` (single NATS and Valkey on `emptyDir`) or `ha` (3-node NATS on PVCs, Valkey with Sentinel). Install `ha` with `-f values-ha.yaml`: Helm can't switch subchart defaults from a single value, so the file sets both this and the NATS/Valkey topology, and the chart refuses to render a profile that doesn't match them. |
 | proxy.affinity | object | `{}` | Proxy affinity |
 | proxy.existingSecret | string | `""` | Existing Secret with any of `GITHUB_WEBHOOK_SECRET`, `GITLAB_WEBHOOK_SECRET` and `INTERNAL_TRIGGER_TOKEN`. With it set, the sweeper (and `tests.jobProcessing`) expect `INTERNAL_TRIGGER_TOKEN` in it. |
@@ -387,6 +405,7 @@ Kubernetes: `>=1.30.0-0`
 | proxy.service.port | int | `80` | Proxy Service port |
 | proxy.service.type | string | `"ClusterIP"` | Proxy Service type |
 | proxy.serviceAccount.annotations | object | `{}` | Proxy ServiceAccount annotations |
+| proxy.serviceAccount.tokenExpirationSeconds | int | `600` | Lifetime in seconds (at least 600) of the token the proxy's worker dispatcher uses for the Kubernetes API; the kubelet renews it before it expires. Mounted only with `worker.autoscaling.enabled`. |
 | proxy.sweepRepositories | list | `[]` | Repositories the sweeper schedules (`github:org/repo` or `gitlab:group/project`), served to the proxy as `SWEEP_REPOSITORIES_FILE` |
 | proxy.tolerations | list | `[]` | Proxy tolerations |
 | proxy.topologySpreadConstraints | list | `[]` | Proxy topology spread constraints (default: spread across nodes) |
@@ -396,7 +415,7 @@ Kubernetes: `>=1.30.0-0`
 | sweeper.image.tag | string | `"8.23.0"` | Sweeper image tag |
 | sweeper.resources | object | `{"limits":{"memory":"64Mi"},"requests":{"cpu":"10m","memory":"16Mi"}}` | Sweeper resources |
 | sweeper.schedule | string | `"0 */6 * * *"` | Cron schedule |
-| tests.jobProcessing.enabled | bool | `false` | `helm test` also triggers a Renovate run of `repository` and waits until a worker acknowledges it. Off by default because it starts a real run; needs `INTERNAL_TRIGGER_TOKEN`. |
+| tests.jobProcessing.enabled | bool | `false` | `helm test` also triggers a Renovate run of `repository` and waits until a worker acknowledges it, and with `worker.autoscaling` checks the burst workers: one starts and exits again with `minReplicas: 0`, none starts with `minReplicas: 1`. Off by default because it starts a real run; needs `INTERNAL_TRIGGER_TOKEN` and the `nats` subchart. |
 | tests.jobProcessing.platform | string | `"github"` | Platform of the test repository |
 | tests.jobProcessing.repository | string | `"hononeko/koshin"` | Repository the test triggers |
 | tests.jobProcessing.timeoutSeconds | int | `600` | How long to wait for the run to finish |
@@ -424,12 +443,14 @@ Kubernetes: `>=1.30.0-0`
 | valkeySettings.lockReplicaAckTimeoutMs | int | `0` | `LOCK_REPLICA_ACK_TIMEOUT_MS`: after acquiring a lock, wait this long for a replica to acknowledge it (`WAIT 1`). 0 disables it. |
 | valkeySettings.queuedTtlSeconds | int | `86400` | `QUEUED_TTL_SECONDS`: how long a repo stays marked queued, so its webhooks are coalesced instead of published. Bounds how long a lost job (e.g. NATS restarting on `emptyDir`) blocks the repo's webhooks. |
 | worker.affinity | object | `{}` | Worker affinity |
-| worker.autoscaling.enabled | bool | `true` | Scale workers with KEDA (one per active or pending job). Rendered only when the `keda.sh/v1alpha1` API exists. |
-| worker.autoscaling.maxReplicas | string | `nil` | Maximum workers (default: `maxConcurrentRunsPerPlatform` × enabled platforms; more would only wait for a slot) |
-| worker.autoscaling.minReplicas | int | `1` | Minimum workers |
-| worker.autoscaling.natsAccount | string | `"$G"` | KEDA trigger `account` (`$G` without NATS accounts) |
-| worker.autoscaling.pollingInterval | int | `15` | KEDA polling interval (seconds) |
-| worker.autoscaling.scaleDownStabilizationSeconds | int | `60` | Scale-down stabilization window (seconds) |
+| worker.autoscaling.dispatchIntervalSeconds | int | `5` | How often the proxy reconciles burst workers when it publishes nothing (it also does after every publish) |
+| worker.autoscaling.enabled | bool | `true` | The proxy starts burst worker `Job`s from the worker `PodTemplate` as jobs queue up, and they exit once the queue is drained (KSH-32). No KEDA: the proxy gets a namespaced Role on Jobs. Off: `worker.replicas` static workers. |
+| worker.autoscaling.idleTimeoutSeconds | int | `10` | `WORKER_IDLE_TIMEOUT_SECONDS` of burst workers: exit once no job was runnable for this long |
+| worker.autoscaling.jobActiveDeadlineSeconds | int | `21600` | `activeDeadlineSeconds` of burst worker Jobs |
+| worker.autoscaling.jobTtlSecondsAfterFinished | int | `60` | `ttlSecondsAfterFinished` of burst worker Jobs |
+| worker.autoscaling.maxLifetimeSeconds | int | `18000` | `WORKER_MAX_LIFETIME_SECONDS` of burst workers: past this, finish the job in flight and exit instead of fetching another. Keep it a run (`config.cliTimeoutMinutes`) below `jobActiveDeadlineSeconds`. |
+| worker.autoscaling.maxReplicas | string | `nil` | Maximum workers, warm and burst (default: `maxConcurrentRunsPerPlatform` × enabled platforms; more would only wait for a slot) |
+| worker.autoscaling.minReplicas | int | `0` | Always-warm workers: `0` scales to zero (every job waits for a burst `Job` to start), `1` keeps one warm Deployment pod that picks a single job up at once. |
 | worker.config.cliTimeoutMinutes | int | `45` | `CLI_TIMEOUT_MINUTES`: hard cap per Renovate run (`+ 5` must stay below 60 for GitHub App tokens) |
 | worker.config.dirtyTtlSeconds | int | `3600` | `DIRTY_TTL_SECONDS` (worker and proxy); must exceed `cliTimeoutMinutes` |
 | worker.config.heartbeatIntervalSeconds | int | `15` | `HEARTBEAT_INTERVAL_SECONDS`: heartbeat, lock and run-slot renewal interval |
@@ -460,7 +481,7 @@ Kubernetes: `>=1.30.0-0`
 | worker.renovate.image.tag | string | `"44.178.3-full"` | Renovate version, upgradable without a koshin release |
 | worker.renovate.resources | object | `{"limits":{"memory":"4Gi"},"requests":{"cpu":"500m","memory":"1Gi"}}` | Resources of the `renovate` container, where Renovate runs (KSH-21) |
 | worker.renovateRedisUrl | string | `""` | `RENOVATE_REDIS_URL`: Renovate's package cache. Default: the `valkey-cache` subchart, else the coordination Valkey when it's a plain `redis://` URL. |
-| worker.replicas | int | `1` | Worker replicas when KEDA isn't installed or `autoscaling.enabled` is false |
+| worker.replicas | int | `1` | Worker replicas when `autoscaling.enabled` is false |
 | worker.repoCache.bucket | string | `"koshin-repo-cache"` | `REPO_CACHE_BUCKET`: Object Store bucket |
 | worker.repoCache.maxBytes | int | `536870912` | `REPO_CACHE_MAX_BYTES`: bucket size cap; it shares JetStream storage with the job streams |
 | worker.repoCache.provider | string | `"nats"` | `REPO_CACHE_PROVIDER`: `nats` (Object Store sync), `s3` (native Renovate S3) or `local` (pod only) |

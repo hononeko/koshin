@@ -140,4 +140,43 @@ class ProxyConfigTest {
             ProxyConfig(requestReadTimeoutSeconds = 0)
         }
     }
+
+    @Test
+    fun `fromEnv parses the worker dispatcher's settings`() {
+        val defaults = ProxyConfig.fromEnv(
+            mapOf("PLATFORMS" to "github,gitlab", "MAX_CONCURRENT_RUNS_PER_PLATFORM" to "2"),
+        )
+        assertFalse(defaults.dispatcher.enabled)
+        assertEquals(4, defaults.dispatcher.maxWorkers, "run slots × platforms")
+        assertEquals("koshin-worker", defaults.dispatcher.podTemplateName)
+
+        val config = ProxyConfig.fromEnv(
+            mapOf(
+                "WORKER_DISPATCHER_ENABLED" to "true",
+                "WORKER_POD_TEMPLATE_NAME" to "rel-koshin-worker",
+                "POD_NAMESPACE" to "koshin",
+                "WORKER_MAX_REPLICAS" to "8",
+                "MAX_CONCURRENT_RUNS_PER_PLATFORM" to "4",
+                "MIN_WARM_WORKERS" to "1",
+                "WORKER_DISPATCH_INTERVAL_SECONDS" to "2",
+                "WORKER_JOB_ACTIVE_DEADLINE_SECONDS" to "3600",
+                "WORKER_JOB_TTL_SECONDS" to "30",
+            ),
+        )
+        assertEquals(
+            DispatcherConfig(
+                enabled = true,
+                podTemplateName = "rel-koshin-worker",
+                namespace = "koshin",
+                maxWorkers = 8,
+                maxRunsPerPlatform = 4,
+                minWarmWorkers = 1,
+                interval = 2.seconds,
+                jobActiveDeadline = 1.hours,
+                jobTtlAfterFinished = 30.seconds,
+            ),
+            config.dispatcher,
+        )
+        assertThrows<IllegalArgumentException> { ProxyConfig.fromEnv(mapOf("WORKER_DISPATCHER_ENABLED" to "yes")) }
+    }
 }

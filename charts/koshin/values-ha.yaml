@@ -8,6 +8,11 @@ profile: ha
 proxy:
   replicas: 3
 
+# One always-warm worker picks a single job up at once; burst Jobs add the rest
+worker:
+  autoscaling:
+    minReplicas: 1
+
 # 3-node JetStream cluster on PVCs; streams and the repo cache bucket get 3 replicas (NATS_STREAM_REPLICAS).
 nats:
   config:

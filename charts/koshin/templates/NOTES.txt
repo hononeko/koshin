@@ -13,7 +13,9 @@ WARNING: no worker Secret (worker.existingSecret): Renovate runs have no platfor
 
 NOTE: the sweeper CronJob isn't installed: it needs INTERNAL_TRIGGER_TOKEN in proxy.existingSecret.
 {{- end }}
-{{- if and .Values.worker.autoscaling.enabled (not (include "koshin.kedaEnabled" .)) }}
 
-NOTE: KEDA (keda.sh/v1alpha1) isn't installed, so workers run at a fixed {{ .Values.worker.replicas }} replica(s).
+Workers: {{ if .Values.worker.autoscaling.enabled -}}
+{{ if eq (int .Values.worker.autoscaling.minReplicas) 1 }}1 always warm, plus{{ else }}none while idle;{{ end }} burst Jobs started by the proxy as jobs queue up, up to {{ include "koshin.workerMaxReplicas" . }} in all.
+{{- else -}}
+{{ .Values.worker.replicas }} static replica(s).
 {{- end }}

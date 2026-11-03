@@ -80,14 +80,10 @@ Image reference; pass (dict "ctx" $ "image" .Values.proxy.image). Without a `reg
 {{- end }}
 {{- end }}
 
-{{/* KEDA resolves the endpoint from its own namespace, and in a cluster it reaches each node as <pod>.<endpoint> */}}
+{{/* NATS monitoring, for the job-processing test; for a cluster, the headless Service reaching each node */}}
 {{- define "koshin.natsMonitoringEndpoint" -}}
-{{- if .Values.nats.enabled }}
 {{- $headless := dig "headlessService" "name" "" .Values.nats | default (printf "%s-headless" (include "koshin.subchartFullname" (list . "nats"))) }}
 {{- printf "%s.%s.svc.%s:%v" $headless .Release.Namespace .Values.clusterDomain .Values.nats.config.monitor.port }}
-{{- else }}
-{{- required "externalNats.monitoringEndpoint is required for KEDA when nats.enabled is false" .Values.externalNats.monitoringEndpoint }}
-{{- end }}
 {{- end }}
 
 {{- define "koshin.natsStreamReplicas" -}}
@@ -234,10 +230,32 @@ Image reference; pass (dict "ctx" $ "image" .Values.proxy.image). Without a `reg
 /run/koshin/runner.sock
 {{- end }}
 
-{{- define "koshin.kedaEnabled" -}}
-{{- if and .Values.worker.autoscaling.enabled (.Capabilities.APIVersions.Has "keda.sh/v1alpha1/ScaledObject") }}true{{ end }}
+{{/* The worker Deployment: fixed replicas without autoscaling, else the single warm worker of minReplicas: 1 */}}
+{{- define "koshin.workerDeploymentEnabled" -}}
+{{- if or (not .Values.worker.autoscaling.enabled) (eq (int .Values.worker.autoscaling.minReplicas) 1) }}true{{ end }}
 {{- end }}
 
+{{/* Warm and burst workers together: more than the run slots would only wait for one */}}
 {{- define "koshin.workerMaxReplicas" -}}
 {{- .Values.worker.autoscaling.maxReplicas | default (mul .Values.worker.rateLimits.maxConcurrentRunsPerPlatform (len .Values.platforms)) }}
+{{- end }}
+
+{{/* What automountServiceAccountToken would mount, but short-lived; mount it at kube-api-access's usual path */}}
+{{- define "koshin.kubeApiAccessVolume" -}}
+- name: kube-api-access
+  projected:
+    sources:
+      - serviceAccountToken:
+          path: token
+          expirationSeconds: {{ .Values.proxy.serviceAccount.tokenExpirationSeconds }}
+      - configMap:
+          name: kube-root-ca.crt
+          items:
+            - key: ca.crt
+              path: ca.crt
+      - downwardAPI:
+          items:
+            - path: namespace
+              fieldRef:
+                fieldPath: metadata.namespace
 {{- end }}

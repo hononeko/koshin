@@ -21,6 +21,7 @@ data class ProxyConfig(
     val maxRequestBodyBytes: Int = DEFAULT_MAX_REQUEST_BODY_BYTES,
     val requestReadTimeoutSeconds: Int = DEFAULT_REQUEST_READ_TIMEOUT_SECONDS,
     val ingest: IngestConfig = IngestConfig(),
+    val dispatcher: DispatcherConfig = DispatcherConfig(),
 ) {
     init {
         require(port in 0..MAX_PORT) { "port must be in 0..$MAX_PORT: $port" }
@@ -82,6 +83,30 @@ data class ProxyConfig(
                 sweepRepositoriesFile = env["SWEEP_REPOSITORIES_FILE"]?.takeIf { it.isNotBlank() },
                 botLogins = botLogins,
                 ingest = ingestFromEnv(env),
+                dispatcher = dispatcherFromEnv(env, platforms),
+            )
+        }
+
+        private fun dispatcherFromEnv(env: Map<String, String>, platforms: Set<Platform>): DispatcherConfig {
+            val defaults = DispatcherConfig()
+            val runsPerPlatform = env.long("MAX_CONCURRENT_RUNS_PER_PLATFORM")?.toInt() ?: defaults.maxRunsPerPlatform
+            return DispatcherConfig(
+                enabled = env["WORKER_DISPATCHER_ENABLED"]?.takeIf { it.isNotBlank() }?.let { raw ->
+                    requireNotNull(raw.trim().lowercase().toBooleanStrictOrNull()) {
+                        "Invalid boolean for WORKER_DISPATCHER_ENABLED: '$raw'"
+                    }
+                } ?: defaults.enabled,
+                podTemplateName = env["WORKER_POD_TEMPLATE_NAME"]?.takeIf { it.isNotBlank() }
+                    ?: defaults.podTemplateName,
+                namespace = env["POD_NAMESPACE"]?.takeIf { it.isNotBlank() },
+                // More workers than run slots would only wait for one
+                maxWorkers = env.long("WORKER_MAX_REPLICAS")?.toInt() ?: (runsPerPlatform * platforms.size),
+                maxRunsPerPlatform = runsPerPlatform,
+                minWarmWorkers = env.long("MIN_WARM_WORKERS")?.toInt() ?: defaults.minWarmWorkers,
+                interval = env.long("WORKER_DISPATCH_INTERVAL_SECONDS")?.seconds ?: defaults.interval,
+                jobActiveDeadline = env.long("WORKER_JOB_ACTIVE_DEADLINE_SECONDS")?.seconds
+                    ?: defaults.jobActiveDeadline,
+                jobTtlAfterFinished = env.long("WORKER_JOB_TTL_SECONDS")?.seconds ?: defaults.jobTtlAfterFinished,
             )
         }
 

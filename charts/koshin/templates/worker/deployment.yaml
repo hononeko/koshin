@@ -1,3 +1,7 @@
+{{- if include "koshin.workerDeploymentEnabled" . }}
+{{- $autoscaling := .Values.worker.autoscaling.enabled }}
+# With autoscaling, the always-warm worker of `minReplicas: 1`: one replica that `helm upgrade` rolls and nothing
+# scales in, while burst Jobs add the rest. Without it, `worker.replicas` static workers.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -5,164 +9,10 @@ metadata:
   labels:
     {{- include "koshin.labels" (dict "ctx" . "component" "worker") | nindent 4 }}
 spec:
-  {{- if not (include "koshin.kedaEnabled" .) }}
-  replicas: {{ .Values.worker.replicas }}
-  {{- end }}
+  replicas: {{ ternary 1 .Values.worker.replicas $autoscaling }}
   selector:
     matchLabels:
       {{- include "koshin.selectorLabels" (dict "ctx" . "component" "worker") | nindent 6 }}
   template:
-    metadata:
-      labels:
-        {{- include "koshin.labels" (dict "ctx" . "component" "worker") | nindent 8 }}
-        {{- with .Values.worker.podLabels }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
-      annotations:
-        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
-        checksum/secrets: {{ include (print $.Template.BasePath "/secrets.yaml") . | sha256sum }}
-        {{- with .Values.worker.podAnnotations }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
-    spec:
-      serviceAccountName: {{ include "koshin.fullname" . }}-worker
-      # Workers never call the Kubernetes API (KSH-31): no container gets a token
-      automountServiceAccountToken: false
-      terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}
-      {{- with .Values.imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      securityContext:
-        {{- toYaml .Values.worker.podSecurityContext | nindent 8 }}
-      {{- with .Values.worker.topologySpreadConstraints }}
-      topologySpreadConstraints:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.worker.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.worker.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.worker.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      initContainers:
-        # Copies the Renovate runner (JRE, koshin's jars, scripts) from the worker image for the `renovate` container
-        - name: koshin-runner-init
-          image: {{ include "koshin.image" (dict "ctx" . "image" .Values.worker.image) }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["/opt/koshin/bin/koshin-runner-init", "/opt/koshin-dist"]
-          resources:
-            requests:
-              cpu: 50m
-              memory: 32Mi
-            limits:
-              memory: 256Mi
-          securityContext:
-            {{- toYaml .Values.worker.securityContext | nindent 12 }}
-          volumeMounts:
-            - name: runner-bin
-              mountPath: /opt/koshin-dist
-        # Renovate, and any repo code it runs, live in this container: no worker secrets, no ServiceAccount token.
-        # The worker hands it each run over the runner socket. A native sidecar: it starts before the worker and
-        # stops after it, so the SIGTERM path still kills the run itself.
-        - name: renovate
-          {{- with .Values.worker.renovate.image }}
-          image: {{ include "koshin.image" (dict "ctx" $ "image" .) }}
-          imagePullPolicy: {{ .pullPolicy | default $.Values.image.pullPolicy }}
-          {{- end }}
-          restartPolicy: Always
-          # containerbase's entrypoint, without Renovate's, which would take a missing runner for a repository name
-          command: ["/usr/local/sbin/docker-entrypoint.sh", "/opt/koshin/bin/koshin-runner"]
-          env:
-            - name: RUNNER_SOCKET
-              value: {{ include "koshin.runnerSocket" . }}
-          startupProbe:
-            exec:
-              command: ["test", "-S", {{ include "koshin.runnerSocket" . | quote }}]
-            periodSeconds: 2
-            failureThreshold: 60
-          resources:
-            {{- toYaml .Values.worker.renovate.resources | nindent 12 }}
-          securityContext:
-            {{- toYaml .Values.worker.securityContext | nindent 12 }}
-          volumeMounts:
-            - name: renovate
-              mountPath: /tmp/renovate
-            - name: runner
-              mountPath: /run/koshin
-            # Read-only, so a run can't change the runner for the next one
-            - name: runner-bin
-              mountPath: /opt/koshin
-              readOnly: true
-      containers:
-        - name: worker
-          image: {{ include "koshin.image" (dict "ctx" . "image" .Values.worker.image) }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          ports:
-            - name: http
-              containerPort: 8080
-          envFrom:
-            - configMapRef:
-                name: {{ include "koshin.fullname" . }}-config
-            {{- with include "koshin.workerSecretName" . }}
-            # GITHUB_TOKEN, GITLAB_TOKEN
-            - secretRef:
-                name: {{ . }}
-            {{- end }}
-            {{- if and (eq .Values.worker.repoCache.provider "s3") .Values.worker.repoCache.s3.existingSecret }}
-            # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION for Renovate's S3 repository cache
-            - secretRef:
-                name: {{ .Values.worker.repoCache.s3.existingSecret }}
-            {{- end }}
-          env:
-            - name: RENOVATE_BASE_DIR
-              value: /tmp/renovate
-            - name: RUNNER_SOCKET
-              value: {{ include "koshin.runnerSocket" . }}
-            {{- with include "koshin.sentinelPasswordEnv" . }}{{ . | nindent 12 }}{{- end }}
-            {{- with .Values.worker.extraEnv }}
-            {{- toYaml . | nindent 12 }}
-            {{- end }}
-          readinessProbe:
-            httpGet:
-              path: /readyz
-              port: http
-            periodSeconds: 10
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: http
-            initialDelaySeconds: 10
-            periodSeconds: 20
-          resources:
-            {{- toYaml .Values.worker.resources | nindent 12 }}
-          securityContext:
-            {{- toYaml .Values.worker.securityContext | nindent 12 }}
-          volumeMounts:
-            - name: renovate
-              mountPath: /tmp/renovate
-            # Connecting needs no write access
-            - name: runner
-              mountPath: /run/koshin
-              readOnly: true
-            {{- with include "koshin.githubAppVolumeMount" . }}{{ . | nindent 12 }}{{- end }}
-      volumes:
-        # Per-run workspaces, deleted after each run and purged at startup
-        - name: renovate
-          emptyDir:
-            sizeLimit: {{ .Values.worker.workspaceSizeLimit }}
-        - name: runner
-          emptyDir:
-            medium: Memory
-            sizeLimit: 1Mi
-        # The runner, filled by koshin-runner-init
-        - name: runner-bin
-          emptyDir:
-            sizeLimit: 512Mi
-        {{- with include "koshin.githubAppVolume" . }}{{ . | nindent 8 }}{{- end }}
+    {{- include "koshin.workerPod" (dict "ctx" . "mode" (ternary "warm" "static" $autoscaling) "restartPolicy" "Always" "idleTimeoutSeconds" 0 "maxLifetimeSeconds" 0) | nindent 4 }}
+{{- end }}

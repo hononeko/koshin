@@ -23,6 +23,7 @@ spec:
         app.kubernetes.io/component: proxy
     spec:
       serviceAccountName: koshin-proxy
+      # The worker dispatcher gets a short-lived token (kube-api-access) instead
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
@@ -54,6 +55,15 @@ spec:
           env:
             - name: SWEEP_REPOSITORIES_FILE
               value: /etc/koshin/repositories.txt
+            # Burst worker Jobs from the koshin-worker PodTemplate (KSH-32)
+            - name: WORKER_DISPATCHER_ENABLED
+              value: "true"
+            - name: WORKER_POD_TEMPLATE_NAME
+              value: koshin-worker
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           readinessProbe:
             httpGet:
               path: /readyz
@@ -82,12 +92,32 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            - name: kube-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
       volumes:
         - name: repositories
           configMap:
             name: koshin-repositories
         - name: tmp
           emptyDir: {}
+        # What automountServiceAccountToken would mount, but short-lived
+        - name: kube-api-access
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef:
+                        fieldPath: metadata.namespace
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget

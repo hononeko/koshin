@@ -53,11 +53,13 @@ class ValkeyPlatformThrottleAdapter(
     private val acquireSlotScript = LuaScript(commands, ACQUIRE_SLOT_SCRIPT)
     private val extendSlotScript = LuaScript(commands, EXTEND_SLOT_SCRIPT)
     private val registerRateLimitScript = LuaScript(commands, REGISTER_RATE_LIMIT_SCRIPT)
+    private val countSlotsScript = LuaScript(commands, COUNT_SLOTS_SCRIPT)
 
     suspend fun preloadScripts() {
         acquireSlotScript.load()
         extendSlotScript.load()
         registerRateLimitScript.load()
+        countSlotsScript.load()
     }
 
     override suspend fun tryAcquireRunSlot(platform: Platform, token: String, ttl: Duration): Boolean {
@@ -77,6 +79,9 @@ class ValkeyPlatformThrottleAdapter(
             commands.zrem(config.throttleKeyFor(platform, SLOTS), token)
         }
     }
+
+    override suspend fun activeRunSlots(platform: Platform): Int =
+        countSlotsScript.evalLong(arrayOf(config.throttleKeyFor(platform, SLOTS))).toInt()
 
     override suspend fun cooldownRemaining(platform: Platform): Duration? {
         val millis = commands.pttl(config.throttleKeyFor(platform, COOLDOWN)) ?: return null
@@ -131,6 +136,13 @@ class ValkeyPlatformThrottleAdapter(
             redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now)
             if not redis.call('ZSCORE', KEYS[1], ARGV[1]) then return 0 end
             ${LeaseScripts.LEASE}
+            """.trimIndent()
+
+        /** Leases that haven't expired. */
+        val COUNT_SLOTS_SCRIPT =
+            """
+            ${LeaseScripts.NOW}
+            return redis.call('ZCOUNT', KEYS[1], '(' .. now, '+inf')
             """.trimIndent()
 
         val REGISTER_RATE_LIMIT_SCRIPT =
