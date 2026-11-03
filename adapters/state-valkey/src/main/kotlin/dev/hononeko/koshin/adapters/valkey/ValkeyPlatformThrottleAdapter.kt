@@ -81,7 +81,8 @@ class ValkeyPlatformThrottleAdapter(
         val global = try {
             lease(config.globalSlotsKey(), token, millis, throttle.maxRunsGlobal)
         } catch (@Suppress("TooGenericExceptionCaught") e: Throwable) {
-            withContext(NonCancellable) { runCatching { commands.zrem(scopeKey, token) } }
+            // The global lease may have been taken before the reply was lost
+            withContext(NonCancellable) { runCatching { releaseRunSlot(scope, token) } }
             throw e
         }
         if (!global) withContext(NonCancellable) { commands.zrem(scopeKey, token) }

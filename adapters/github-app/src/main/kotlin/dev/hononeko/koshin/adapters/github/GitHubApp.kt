@@ -83,7 +83,7 @@ class GitHubApp internal constructor(
     suspend fun resolve(targets: List<RepoTarget>): List<RepoTarget> {
         val installations = targets.filter(::isUnresolved)
             .groupBy { owner(it.repo) }
-            .mapValues { (owner, ownerTargets) -> installationOf(owner, ownerTargets.first().repo.repository) }
+            .mapValues { (owner, ownerTargets) -> installationOf(owner, ownerTargets.map { it.repo.repository }) }
         return targets.mapNotNull { target ->
             val installation = if (isUnresolved(target)) installations[owner(target.repo)] else null
             when {
@@ -105,18 +105,34 @@ class GitHubApp internal constructor(
         ownerInstallations.values.removeIf { it.installation.id == installationId }
     }
 
-    /** The installation on [owner], which [repository] belongs to; `null` if there's none or the lookup failed. */
-    private suspend fun installationOf(owner: String, repository: String): InstallationInfo? =
-        ownerInstallations[owner]?.takeIf { it.expiresAt > clock.now() }?.installation ?: try {
-            api.repositoryInstallation(repository)?.also { installation ->
+    /** The installation on [owner], whose [repositories] these are; `null` if there's none or a lookup failed. */
+    private suspend fun installationOf(owner: String, repositories: List<String>): InstallationInfo? =
+        ownerInstallations[owner]?.takeIf { it.expiresAt > clock.now() }?.installation
+            ?: lookUp(repositories)?.also { installation ->
                 ownerInstallations[owner] = CachedInstallation(installation, clock.now() + INSTALLATION_CACHE_TTL)
             }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: IOException) {
-            logger.warn("Could not look up the installation of {}; queueing it without one: {}", repository, e.message)
-            null
+
+    /**
+     * The installation of the first of [repositories] the App can reach. With "selected repositories" it may not reach
+     * them all, but an account has one installation of the App, so it's theirs too. Stops at a failed lookup.
+     */
+    private suspend fun lookUp(repositories: List<String>): InstallationInfo? {
+        var found: InstallationInfo? = null
+        var failed = false
+        val remaining = repositories.iterator()
+        while (found == null && !failed && remaining.hasNext()) {
+            val repository = remaining.next()
+            try {
+                found = api.repositoryInstallation(repository)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: IOException) {
+                logger.warn("Could not look up the installation of {}; queueing without it: {}", repository, e.message)
+                failed = true
+            }
         }
+        return found
+    }
 
     private fun owner(repo: RepoRef) = repo.repository.substringBefore('/').lowercase()
 

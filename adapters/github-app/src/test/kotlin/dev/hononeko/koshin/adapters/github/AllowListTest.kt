@@ -51,7 +51,10 @@ class AllowListTest {
             "GET /repos/stranger/repo/installation", "GET /repos/stranger/other/installation" ->
                 json("""{"id":2,"account":{"id":200,"login":"stranger"}}""")
 
-            "GET /repos/elsewhere/repo/installation" -> respond("{}", HttpStatusCode.NotFound)
+            "GET /repos/elsewhere/repo/installation", "GET /repos/mixed/hidden/installation" ->
+                respond("{}", HttpStatusCode.NotFound)
+
+            "GET /repos/mixed/shown/installation" -> json("""{"id":3,"account":{"id":300,"login":"mixed"}}""")
 
             "GET /repos/broken/repo/installation" -> respond("{}", HttpStatusCode.InternalServerError)
 
@@ -191,6 +194,17 @@ class AllowListTest {
             )
             assertEquals(1, requests.count { it.startsWith("GET /repos/stranger/") }, "one lookup per owner")
         }
+
+    @Test
+    fun `an owner's installation is found through any repository the App can reach`() = runTest {
+        val targets = listOf("mixed/hidden", "mixed/shown", "mixed/other")
+            .map { RepoTarget(RepoRef(Platform.GITHUB, it)) }
+
+        val resolved = app(emptyList()).resolve(targets)
+
+        assertEquals(listOf(3L, 3L, 3L), resolved.map { it.installationId }, "the account's one installation")
+        assertEquals(2, requests.size, "stops at the first repository it reaches")
+    }
 
     @Test
     fun `without an allow-list every trigger repository gets its installation, looked up once an hour`() = runTest {

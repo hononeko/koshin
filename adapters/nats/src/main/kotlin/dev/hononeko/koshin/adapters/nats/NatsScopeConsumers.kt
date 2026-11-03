@@ -165,7 +165,7 @@ class NatsScopeConsumers(
         try {
             jsm.deleteMessage(config.jobsStreamName, seq)
         } catch (e: JetStreamApiException) {
-            if (!e.isNotFound()) throw e
+            if (e.apiErrorCode != SEQUENCE_NOT_FOUND && !e.isNotFound()) throw e
         }
     }
 
@@ -182,5 +182,8 @@ class NatsScopeConsumers(
     private companion object {
         /** No message, no consumer, no stream. */
         val NOT_FOUND_CODES = setOf(10037, 10014, 10059)
+
+        /** What deleting a message that's already gone answers. */
+        const val SEQUENCE_NOT_FOUND = 10043
     }
 }

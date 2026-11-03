@@ -142,7 +142,7 @@ class NatsScopeConsumersTest {
         }
         every { jsm.getNextMessage(config.jobsStreamName, any(), "renovate.jobs.gitlab") } throws ApiError(10037)
         every { jsm.deleteConsumer(config.jobsStreamName, "koshin-workers-gitlab") } throws ApiError(10014)
-        every { jsm.deleteMessage(config.jobsStreamName, 5) } throws ApiError(10037) // another replica moved it
+        every { jsm.deleteMessage(config.jobsStreamName, 5) } throws ApiError(10043) // another replica moved it
         val options = mutableListOf<PublishOptions>()
 
         assertEquals(2, consumers.migrateLegacy(Platform.entries))

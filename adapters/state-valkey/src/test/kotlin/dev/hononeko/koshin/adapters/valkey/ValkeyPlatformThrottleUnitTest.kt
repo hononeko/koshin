@@ -96,6 +96,7 @@ class ValkeyPlatformThrottleUnitTest {
         assertThrows<IllegalStateException> { adapter.tryAcquireRunSlot(github, "tok", 45.seconds) }
 
         coVerify(exactly = 2) { commands.zrem(slotsKey, "tok") }
+        coVerify(exactly = 1) { commands.zrem(globalKey, "tok") } // its reply may have been lost after it leased
     }
 
     @Test

@@ -234,7 +234,7 @@ class MaxDeliverDlqForwarder(
                 logger.info("Successfully evicted sequence {} from {}", streamSeq, config.jobsStreamName)
                 return
             } catch (e: JetStreamApiException) {
-                if (e.errorCode == MESSAGE_NOT_FOUND_ERROR_CODE || e.apiErrorCode == MESSAGE_NOT_FOUND_ERROR_CODE) {
+                if (e.apiErrorCode in ALREADY_DELETED_ERROR_CODES) {
                     logger.info("Message {} was already deleted from {}", streamSeq, config.jobsStreamName)
                     return
                 } else {
@@ -283,6 +283,9 @@ class MaxDeliverDlqForwarder(
         const val SOURCE_ADVISORY = "advisory"
         const val SOURCE_SWEEP = "sweep"
         private const val MESSAGE_NOT_FOUND_ERROR_CODE = 10037
+
+        /** Deleting a message that's gone answers 10043 (sequence not found). */
+        private val ALREADY_DELETED_ERROR_CODES = setOf(MESSAGE_NOT_FOUND_ERROR_CODE, 10043)
         private const val DEFAULT_MAX_RETRIES = 5
         private const val RETRY_BACKOFF_BASE_MS = 100L
         private const val RETRY_BACKOFF_MAX_MS = 1000L
