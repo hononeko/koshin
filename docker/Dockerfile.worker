@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Bytecode is platform-independent: build natively, even for a cross-platform image
-FROM --platform=$BUILDPLATFORM eclipse-temurin:25.0.4_7-jdk-noble AS build
+FROM --platform=$BUILDPLATFORM eclipse-temurin:25.0.5_8-jdk-noble AS build
 WORKDIR /src
 # Build scripts first, so dependency resolution is cached until they change
 COPY gradlew settings.gradle.kts build.gradle.kts gradle.properties .java-version ./
@@ -17,7 +17,7 @@ RUN ./gradlew --no-daemon --quiet :worker:dependencies --configuration runtimeCl
 COPY . .
 RUN ./gradlew --no-daemon :worker:installDist
 
-FROM eclipse-temurin:25.0.4_7-jre-noble
+FROM eclipse-temurin:25.0.5_8-jre-noble
 ARG VERSION=dev
 LABEL org.opencontainers.image.title="koshin-worker" \
       org.opencontainers.image.source="https://github.com/hononeko/koshin" \
