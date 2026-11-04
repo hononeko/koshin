@@ -132,6 +132,7 @@ class GitHubAppTest {
         val creds = app().credentialsProvider(45.minutes).credentialsFor(repo)
 
         assertEquals("ghs_7_1", creds.token)
+        assertEquals(7L, creds.installationId)
         assertNull(creds.endpoint)
         assertEquals("koshin[bot]", creds.username)
         assertEquals("koshin[bot] <424242+koshin[bot]@users.noreply.github.com>", creds.gitAuthor)
@@ -152,7 +153,9 @@ class GitHubAppTest {
         gone += 7
         installationOfRepo = 8
         now += 20.minutes
-        assertEquals("ghs_8_3", provider.credentialsFor(repo).token)
+        val reinstalled = provider.credentialsFor(repo)
+        assertEquals("ghs_8_3", reinstalled.token)
+        assertEquals(8L, reinstalled.installationId)
         assertEquals(2, requests.count { it == "GET /repos/hononeko/koshin/installation" })
     }
 

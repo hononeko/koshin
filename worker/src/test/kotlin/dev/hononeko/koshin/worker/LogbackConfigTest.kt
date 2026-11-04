@@ -70,4 +70,28 @@ class LogbackConfigTest {
         assertNull(json["@version"])
         assertNull(json["level_value"])
     }
+
+    @Test
+    fun `tokens are scrubbed from messages, fields and stack traces (KSH-26)`() {
+        val context = configure()
+        val logger = context.getLogger("dev.hononeko.koshin.worker.Test")
+
+        @Suppress("UNCHECKED_CAST")
+        val appender = context.getLogger("ROOT").getAppender("STDOUT") as ConsoleAppender<ILoggingEvent>
+        val error = IllegalStateException("clone of x-access-token:ghs_abc@github.com/o/r failed")
+        val encoded = SecretRedactor.shared.track("gitlab-run-token-1234").use {
+            val event = LoggingEvent("test", logger, Level.WARN, "Run with {} failed", error, arrayOf("glpat-xyz"))
+                .apply {
+                    prepareForDeferredProcessing()
+                    addKeyValuePair(KeyValuePair("auth", "oauth2:gitlab-run-token-1234"))
+                }
+            appender.encoder.encode(event).decodeToString()
+        }
+        val json = Json.parseToJsonElement(encoded).jsonObject
+
+        assertEquals("Run with **redacted** failed", json["message"]?.jsonPrimitive?.content)
+        assertEquals("oauth2:**redacted**", json["auth"]?.jsonPrimitive?.content)
+        assertTrue(json["stack_trace"]?.jsonPrimitive?.content.orEmpty().contains("x-access-token:**redacted**@"))
+        assertFalse(encoded.contains("ghs_abc") || encoded.contains("glpat-xyz") || encoded.contains("run-token"))
+    }
 }

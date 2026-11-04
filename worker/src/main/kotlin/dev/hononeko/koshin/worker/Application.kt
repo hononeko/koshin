@@ -162,10 +162,11 @@ fun main() {
     logger.info("Starting koshin-worker with {}", settings)
 
     val gitHubApp = GitHubAppConfig.fromEnv()?.let(::GitHubApp)
+    settings.repoCache.requireSingleTenant(multiTenant = gitHubApp != null)
     gitHubApp?.let { runBlocking { it.allowList.resolveLogins() } }
     val credentials = workerCredentials(settings, gitHubApp)
 
-    val workspaceCleaner = WorkspaceCleaner(settings.renovateBaseDir)
+    val workspaceCleaner = WorkspaceCleaner(settings.renovateBaseDir, settings.renovateCacheDir)
     runBlocking { workspaceCleaner.purgeAll() }
 
     val cliExecutor = cliExecutor(settings)

@@ -216,9 +216,10 @@ class InstallationTokens internal constructor(private val api: GitHubAppApi, pri
 }
 
 /**
- * Credentials for GitHub runs as the App: an installation token for the repo's installation, plus the bot identity
- * (`RENOVATE_USERNAME`, `RENOVATE_GIT_AUTHOR`). Installation tokens last 60 minutes, so one is handed to a run only
- * while it has at least `CLI_TIMEOUT_MINUTES + 5` minutes left, and can't expire mid-run.
+ * Credentials for GitHub runs as the App: an installation token for the repo's installation, with its ID (whose caches
+ * the run gets, KSH-26), plus the bot identity (`RENOVATE_USERNAME`, `RENOVATE_GIT_AUTHOR`). Installation tokens last
+ * 60 minutes, so one is handed to a run only while it has at least `CLI_TIMEOUT_MINUTES + 5` minutes left, and can't
+ * expire mid-run.
  */
 class GitHubAppCredentialsProvider internal constructor(
     private val api: GitHubAppApi,
@@ -245,9 +246,15 @@ class GitHubAppCredentialsProvider internal constructor(
 
     override suspend fun credentialsFor(repo: RepoRef): PlatformCredentials {
         require(repo.platform == Platform.GITHUB) { "The GitHub App only covers GitHub repositories: $repo" }
-        val token = tokenFor(repo.repository)
+        val (installationId, token) = tokenFor(repo.repository)
         val bot = identity ?: resolveIdentity(token.token)
-        return PlatformCredentials(token.token, config.renovateEndpoint, bot.username, bot.gitAuthor)
+        return PlatformCredentials(
+            token = token.token,
+            endpoint = config.renovateEndpoint,
+            username = bot.username,
+            gitAuthor = bot.gitAuthor,
+            installationId = installationId,
+        )
     }
 
     /** Forgets [repository]'s installation, e.g. after it was removed from the App. */
@@ -255,10 +262,12 @@ class GitHubAppCredentialsProvider internal constructor(
         installations.remove(repository)
     }
 
-    private suspend fun tokenFor(repository: String): InstallationToken {
+    /** The repository's installation, and a token for it. */
+    private suspend fun tokenFor(repository: String): Pair<Long, InstallationToken> {
         installations[repository]?.let { cached ->
             try {
-                return tokens.token(allowed(repository, cached), minRemaining)
+                val installationId = allowed(repository, cached)
+                return installationId to tokens.token(installationId, minRemaining)
             } catch (e: GitHubApiException) {
                 if (e.status !in STALE_INSTALLATION) throw e
                 // Uninstalled, or the repo moved: look it up again.
@@ -275,7 +284,8 @@ class GitHubAppCredentialsProvider internal constructor(
         val installation = api.repositoryInstallation(repository)
             ?: throw GitHubApiException(NOT_FOUND, "The GitHub App isn't installed on $repository")
         installations[repository] = installation
-        return tokens.token(allowed(repository, installation), minRemaining)
+        val installationId = allowed(repository, installation)
+        return installationId to tokens.token(installationId, minRemaining)
     }
 
     /** The installation's ID, unless its account isn't allowed: then no token is minted for it, ever. */

@@ -7,6 +7,7 @@ import dev.hononeko.koshin.core.model.RepoRef
 import dev.hononeko.koshin.core.model.TriggerReason
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
 import java.util.UUID
@@ -70,6 +71,7 @@ class RepoCacheIntegrationTest {
         worker.renovate("from-failed-run", JobExecutionResult.Failed(1))
         run()
         assertEquals("cache-v1", cluster.storedCache(repo))
+        assertFalse(worker.cacheFile(repo).exists(), "the cache dir is wiped after every run (KSH-26)")
         worker.renovate("from-timed-out-run", JobExecutionResult.TimedOut)
         run()
         assertEquals("cache-v1", cluster.storedCache(repo))
@@ -77,7 +79,7 @@ class RepoCacheIntegrationTest {
         worker.renovate("cache-v2", JobExecutionResult.Success)
         run()
 
-        // Each run restores the stored cache over whatever the previous, unpersisted run left behind.
+        // Each run restores the stored cache, never what the previous, unpersisted run wrote.
         assertEquals(listOf(COLD, "cache-v1", "cache-v1", "cache-v1"), seen)
         assertEquals("cache-v2", cluster.storedCache(repo))
     }

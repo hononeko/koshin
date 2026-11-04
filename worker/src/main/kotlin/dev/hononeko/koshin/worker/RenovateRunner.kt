@@ -126,9 +126,10 @@ class RenovateRunner(
         replies.send(RunnerMessage.Exited(code))
     }
 
-    // Never a raw private key, from either side: Renovate reads the keys from files (KSH-25)
+    // Never a raw private key, from either side: Renovate reads the keys from files (KSH-25). A `github.com` token only
+    // from the worker, which passes it on to GitLab and GHES runs only (KSH-26).
     internal fun runEnvironment(requested: Map<String, String>): Map<String, String> = buildMap {
-        putAll(ownEnv - RUNNER_ENV)
+        putAll(ownEnv - RUNNER_ENV - RenovateProcessExecutor.GITHUB_COM_TOKEN_ENV)
         putAll(requested - WORKER_LOCAL_ENV)
     } - RenovateProcessExecutor.RAW_PRIVATE_KEY_ENV
 

@@ -237,7 +237,10 @@ class ProcessRenovateJobUseCase(
             handleRejected(delivery, lockToken, heartbeatJob)
             return
         }
-        restoreCache(repo)
+        // The cache is the credential's (KSH-26), which needn't be the scope the job was queued in: a proxy without
+        // GitHub App auth queues every GitHub job as `github:pat`.
+        val cacheScope = creds.scope(repo.platform)
+        restoreCache(repo, cacheScope)
         val result = cliExecutor.execute(repo, creds, config.cliTimeout)
 
         when (result) {
@@ -245,7 +248,7 @@ class ProcessRenovateJobUseCase(
             is JobExecutionResult.Failed,
             is JobExecutionResult.TimedOut,
             -> {
-                handleTerminalResult(delivery, lockToken, scope, result, heartbeatJob)
+                handleTerminalResult(delivery, lockToken, scope, result, heartbeatJob, cacheScope)
             }
 
             is JobExecutionResult.RateLimited -> {
@@ -255,9 +258,9 @@ class ProcessRenovateJobUseCase(
     }
 
     /** A failed upload only means a colder next run. */
-    private suspend fun persistCache(repo: RepoRef) {
+    private suspend fun persistCache(repo: RepoRef, cacheScope: CredentialScope) {
         try {
-            cachePort.persist(repo)
+            cachePort.persist(repo, cacheScope)
         } catch (e: CancellationException) {
             throw e
         } catch (@Suppress("TooGenericExceptionCaught", "SwallowedException") _: Exception) {
@@ -266,9 +269,9 @@ class ProcessRenovateJobUseCase(
     }
 
     /** A missing or unreadable cache only means a cold run. */
-    private suspend fun restoreCache(repo: RepoRef) {
+    private suspend fun restoreCache(repo: RepoRef, cacheScope: CredentialScope) {
         try {
-            cachePort.restore(repo)
+            cachePort.restore(repo, cacheScope)
         } catch (e: CancellationException) {
             throw e
         } catch (@Suppress("TooGenericExceptionCaught", "SwallowedException") _: Exception) {
@@ -336,17 +339,19 @@ class ProcessRenovateJobUseCase(
         }
     }
 
+    @Suppress("LongParameterList")
     private suspend fun handleTerminalResult(
         delivery: JobDelivery,
         lockToken: String,
         scope: CredentialScope,
         result: JobExecutionResult,
         heartbeatJob: Job,
+        cacheScope: CredentialScope,
     ) {
         val repo = delivery.event.repo
 
         if (result is JobExecutionResult.Success) {
-            persistCache(repo)
+            persistCache(repo, cacheScope)
         }
 
         heartbeatJob.cancelAndJoin()

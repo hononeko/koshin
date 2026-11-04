@@ -12,10 +12,12 @@ import dev.hononeko.koshin.core.ports.CliExecutorPort
 import dev.hononeko.koshin.core.ports.JobDelivery
 import dev.hononeko.koshin.core.ports.JobQueueConsumer
 import dev.hononeko.koshin.core.ports.JobQueuePublisher
+import dev.hononeko.koshin.core.ports.PlatformCredentialsPort
 import dev.hononeko.koshin.core.ports.PlatformThrottlePort
 import dev.hononeko.koshin.core.ports.QueueDepth
 import dev.hononeko.koshin.core.ports.QueueDepthPort
 import dev.hononeko.koshin.core.ports.ReleaseResult
+import dev.hononeko.koshin.core.ports.RepoCachePort
 import dev.hononeko.koshin.core.ports.RepoCoordinationPort
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -30,7 +32,10 @@ import org.junit.jupiter.api.Test
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
-/** How `processNext` picks among credential scopes (KSH-24), and the scope a job's run slot and follow-ups use. */
+/**
+ * How `processNext` picks among credential scopes (KSH-24), and the scope a job's run slot, follow-ups and repo cache
+ * (KSH-26) use.
+ */
 class ProcessRenovateJobScopesTest {
     private val github = CredentialScope.Token(Platform.GITHUB)
     private val depths = mutableMapOf<CredentialScope, QueueDepth>(github to QueueDepth(pending = 1, ackPending = 0))
@@ -54,14 +59,18 @@ class ProcessRenovateJobScopesTest {
     private val cliExecutor = mockk<CliExecutorPort> {
         coEvery { execute(any(), any(), any()) } returns JobExecutionResult.Success
     }
+    private val cachePort = mockk<RepoCachePort>(relaxed = true)
+    private val credentialsPort = mockk<PlatformCredentialsPort> {
+        coEvery { credentialsFor(any()) } returns PlatformCredentials("token")
+    }
     private val useCase = ProcessRenovateJobUseCase(
         queueConsumer = queueConsumer,
         queueDepth = queueDepth,
         queuePublisher = queuePublisher,
         coordinationPort = coordinationPort,
         throttlePort = throttlePort,
-        cachePort = mockk(relaxed = true),
-        credentialsPort = mockk { coEvery { credentialsFor(any()) } returns PlatformCredentials("token") },
+        cachePort = cachePort,
+        credentialsPort = credentialsPort,
         cliExecutor = cliExecutor,
         workspaceCleaner = mockk(relaxed = true),
         config = WorkerConfig(heartbeatInterval = 100.milliseconds),
@@ -70,6 +79,25 @@ class ProcessRenovateJobScopesTest {
     private val delivery = mockk<JobDelivery>(relaxed = true) {
         every { event } returns testEvent
         every { deliveryAttempt } returns 1
+    }
+
+    @Test
+    fun `the repo cache is the scope of the credential the run used, not the queue's (KSH-26)`() = runTest {
+        // Queued as github:pat (e.g. by a proxy without App auth), run with installation 42's token
+        val repo = testEvent.repo
+        val creds = PlatformCredentials("ghs_installation42", installationId = 42)
+        coEvery { credentialsPort.credentialsFor(repo) } returns creds
+
+        useCase.processDelivery(delivery, "token-1")
+
+        val installation = CredentialScope.Installation(42)
+        coVerifyOrder {
+            cachePort.restore(repo, installation)
+            cliExecutor.execute(repo, creds, any())
+            cachePort.persist(repo, installation)
+            throttlePort.releaseRunSlot(github, "token-1")
+        }
+        coVerify(exactly = 0) { cachePort.restore(any(), github) }
     }
 
     @Test

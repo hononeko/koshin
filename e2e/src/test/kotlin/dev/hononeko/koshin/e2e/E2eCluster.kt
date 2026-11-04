@@ -149,10 +149,10 @@ class E2eCluster(
         }
     }
 
-    /** The repo's cache as stored in the Object Store bucket, or `null` if none was persisted. */
-    fun storedCache(repo: RepoRef): String? {
+    /** The repo's cache as stored in the Object Store bucket for [scope], or `null` if none was persisted. */
+    fun storedCache(repo: RepoRef, scope: CredentialScope = CredentialScope.Token(repo.platform)): String? {
         val store = nats.objectStore(repoCacheConfig.bucket)
-        val name = "${repo.platform.name.lowercase()}/${repo.repository}.json"
+        val name = "${repo.platform.name.lowercase()}/${scope.token}/${repo.repository}.json"
         if (store.getInfo(name) == null) return null
         return ByteArrayOutputStream().also { store.get(name, it) }.toString(Charsets.UTF_8)
     }

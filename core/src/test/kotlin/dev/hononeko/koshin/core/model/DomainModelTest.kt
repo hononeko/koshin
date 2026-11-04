@@ -128,9 +128,22 @@ class DomainModelTest {
         assertThrows(IllegalArgumentException::class.java) {
             PlatformCredentials("token", endpoint = " ")
         }
+        assertThrows(IllegalArgumentException::class.java) {
+            PlatformCredentials("token", installationId = 0)
+        }
         val creds = PlatformCredentials("s3cr3t", "https://api.github.com")
         assertFalse(creds.toString().contains("s3cr3t"))
         assertTrue(creds.toString().contains("https://api.github.com"))
+    }
+
+    @Test
+    fun `PlatformCredentials scope is its installation, or the platform token`() {
+        val installation = PlatformCredentials("ghs_x", installationId = 42)
+        assertEquals(CredentialScope.Installation(42), installation.scope(Platform.GITHUB))
+        assertEquals(CredentialScope.Token(Platform.GITLAB), PlatformCredentials("glpat-x").scope(Platform.GITLAB))
+        assertThrows(IllegalArgumentException::class.java) {
+            PlatformCredentials("token", installationId = 42).scope(Platform.GITLAB)
+        }
     }
 
     @Test

@@ -131,8 +131,8 @@ class ProcessRenovateJobUseCaseTest {
         coEvery { coordinationPort.releaseLockAndTakeDirty(any(), any(), any()) } returns ReleaseResult.CLEAN
         coEvery { coordinationPort.releaseLock(any(), any(), any()) } returns true
 
-        coEvery { cachePort.restore(any()) } returns true
-        coEvery { cachePort.persist(any()) } returns Unit
+        coEvery { cachePort.restore(any(), any()) } returns true
+        coEvery { cachePort.persist(any(), any()) } returns Unit
 
         coEvery { credentialsPort.credentialsFor(any()) } returns testCreds
         coEvery { cliExecutor.execute(any(), any(), any()) } returns JobExecutionResult.Success
@@ -245,9 +245,9 @@ class ProcessRenovateJobUseCaseTest {
 
         coVerifyOrder {
             credentialsPort.credentialsFor(testRepo)
-            cachePort.restore(testRepo)
+            cachePort.restore(testRepo, github)
             cliExecutor.execute(testRepo, testCreds, testConfig.cliTimeout)
-            cachePort.persist(testRepo)
+            cachePort.persist(testRepo, github)
             coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1", queuedTtl)
             throttlePort.resetBackoff(github)
             delivery.ack()
@@ -267,9 +267,9 @@ class ProcessRenovateJobUseCaseTest {
 
         coVerifyOrder {
             credentialsPort.credentialsFor(testRepo)
-            cachePort.restore(testRepo)
+            cachePort.restore(testRepo, github)
             cliExecutor.execute(testRepo, testCreds, testConfig.cliTimeout)
-            cachePort.persist(testRepo)
+            cachePort.persist(testRepo, github)
             coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1", queuedTtl)
             queuePublisher.publish(any())
             throttlePort.resetBackoff(github)
@@ -297,7 +297,7 @@ class ProcessRenovateJobUseCaseTest {
             throttlePort.releaseRunSlot(github, "token-1")
             workspaceCleaner.cleanup(testRepo)
         }
-        coVerify(exactly = 0) { cachePort.restore(any()) }
+        coVerify(exactly = 0) { cachePort.restore(any(), any()) }
         coVerify(exactly = 0) { cliExecutor.execute(any(), any(), any()) }
         coVerify(exactly = 0) { queuePublisher.publish(any()) }
         coVerify(exactly = 0) { delivery.nack(any()) }
@@ -313,7 +313,7 @@ class ProcessRenovateJobUseCaseTest {
         useCase.processDelivery(delivery, "token-1")
 
         coVerify(exactly = 1) { delivery.nack(Duration.ZERO) }
-        coVerify(exactly = 0) { cachePort.persist(any()) }
+        coVerify(exactly = 0) { cachePort.persist(any(), any()) }
         coVerify(exactly = 0) { delivery.ack() }
         coVerify(exactly = 0) { throttlePort.resetBackoff(any()) }
     }
@@ -327,7 +327,7 @@ class ProcessRenovateJobUseCaseTest {
         useCase.processDelivery(delivery, "token-1")
 
         coVerifyOrder {
-            cachePort.persist(testRepo)
+            cachePort.persist(testRepo, github)
             coordinationPort.releaseLockAndTakeDirty(testRepo, "token-1", queuedTtl)
             delivery.nack(Duration.ZERO)
         }
@@ -342,7 +342,7 @@ class ProcessRenovateJobUseCaseTest {
         useCase.processDelivery(delivery, "token-1")
 
         coVerify(exactly = 1) { delivery.ack() }
-        coVerify(exactly = 0) { cachePort.persist(any()) }
+        coVerify(exactly = 0) { cachePort.persist(any(), any()) }
         coVerify(exactly = 0) { queuePublisher.publish(any()) }
     }
 
@@ -358,7 +358,7 @@ class ProcessRenovateJobUseCaseTest {
         coVerify(exactly = 1) { queuePublisher.publish(any()) }
         assertEquals(TriggerReason.DIRTY_FOLLOWUP, publishedSlot.captured.triggerReason)
         coVerify(exactly = 1) { delivery.ack() }
-        coVerify(exactly = 0) { cachePort.persist(any()) }
+        coVerify(exactly = 0) { cachePort.persist(any(), any()) }
     }
 
     @Test
@@ -391,7 +391,7 @@ class ProcessRenovateJobUseCaseTest {
         assertEquals(TriggerReason.RATE_LIMIT_REQUEUE, requeued.triggerReason)
         assertNotEquals(testEvent.deliveryId, requeued.deliveryId)
         coVerify(exactly = 1) { delivery.ack() }
-        coVerify(exactly = 0) { cachePort.persist(any()) }
+        coVerify(exactly = 0) { cachePort.persist(any(), any()) }
         coVerify(exactly = 0) { queuePublisher.publishToDeadLetter(any()) }
     }
 
@@ -448,7 +448,7 @@ class ProcessRenovateJobUseCaseTest {
         coVerify(exactly = 1) { coordinationPort.releaseLock(testRepo, "token-1", queuedTtl) }
         coVerify(exactly = 1) { delivery.nack(Duration.ZERO) }
         coVerify(exactly = 0) { delivery.ack() }
-        coVerify(exactly = 0) { cachePort.persist(any()) }
+        coVerify(exactly = 0) { cachePort.persist(any(), any()) }
         coVerify(exactly = 1) { workspaceCleaner.cleanup(testRepo) }
         coVerify(exactly = 1) { throttlePort.releaseRunSlot(github, "token-1") }
     }
@@ -724,7 +724,7 @@ class ProcessRenovateJobUseCaseTest {
 
     @Test
     fun `cache persist failure does not fail or rerun successful job`() = runTest {
-        coEvery { cachePort.persist(testRepo) } throws IllegalStateException("Object store write failure")
+        coEvery { cachePort.persist(testRepo, github) } throws IllegalStateException("Object store write failure")
 
         useCase.processDelivery(delivery, "token-1")
 
@@ -736,19 +736,19 @@ class ProcessRenovateJobUseCaseTest {
 
     @Test
     fun `cache restore failure runs the job cold`() = runTest {
-        coEvery { cachePort.restore(testRepo) } throws IllegalStateException("Object store unreachable")
+        coEvery { cachePort.restore(testRepo, github) } throws IllegalStateException("Object store unreachable")
 
         useCase.processDelivery(delivery, "token-1")
 
         coVerify(exactly = 1) { cliExecutor.execute(testRepo, any(), any()) }
-        coVerify(exactly = 1) { cachePort.persist(testRepo) }
+        coVerify(exactly = 1) { cachePort.persist(testRepo, github) }
         coVerify(exactly = 1) { delivery.ack() }
         coVerify(exactly = 0) { delivery.nack(any()) }
     }
 
     @Test
     fun `cancellation during cache persist is not swallowed`() = runTest {
-        coEvery { cachePort.persist(testRepo) } throws CancellationException("SIGTERM")
+        coEvery { cachePort.persist(testRepo, github) } throws CancellationException("SIGTERM")
 
         val thrown = runCatching { useCase.processDelivery(delivery, "token-1") }.exceptionOrNull()
 

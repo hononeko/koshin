@@ -36,6 +36,7 @@ class RenovateProcessExecutorTest {
     lateinit var baseDir: Path
 
     private val repo = RepoRef(Platform.GITHUB, "hononeko/koshin")
+    private val gitlabRepo = RepoRef(Platform.GITLAB, "group/project")
     private val creds = PlatformCredentials("ghp_secret", "https://ghe.example.com/api/v3")
     private val env = mapOf(
         "PATH" to System.getenv("PATH"),
@@ -52,13 +53,28 @@ class RenovateProcessExecutorTest {
         script: String,
         inheritedEnv: Map<String, String> = env,
         requestLimits: RenovateRequestLimits = RenovateRequestLimits(),
+        redactor: SecretRedactor = SecretRedactor(),
     ) = RenovateProcessExecutor(
         baseDir = baseDir,
         redisUrl = "redis://cache:6379",
         command = listOf("sh", "-c", script, "renovate"),
         inheritedEnv = inheritedEnv,
         requestLimits = requestLimits,
+        redactor = redactor,
     )
+
+    /** The WARN messages [block] logs from [RenovateProcessExecutor]. */
+    private fun <T> warnings(block: () -> T): Pair<T, List<String>> {
+        val logger = LoggerFactory.getLogger(RenovateProcessExecutor::class.java) as ch.qos.logback.classic.Logger
+        val appender = ListAppender<ILoggingEvent>().apply { start() }
+        logger.addAppender(appender)
+        val result = try {
+            block()
+        } finally {
+            logger.detachAppender(appender)
+        }
+        return result to appender.list.filter { it.level == Level.WARN }.map { it.formattedMessage }
+    }
 
     /** Spawns a child that spawns a grandchild, records both PIDs, then hangs. */
     private val hangingTree = """
@@ -413,5 +429,88 @@ class RenovateProcessExecutorTest {
 
         assertEquals("[\"^npm run .*\"]", built["RENOVATE_ALLOWED_COMMANDS"])
         assertFalse(built.containsKey("RENOVATE_ALLOW_SHELL_EXECUTOR_FOR_POST_UPGRADE_COMMANDS"))
+    }
+
+    @Test
+    fun `github_com runs never get an operator's github_com token, GitLab and GHES runs do (KSH-26)`() {
+        val inherited = env + mapOf("GITHUB_COM_TOKEN" to "ghp_operator", "RENOVATE_GITHUB_COM_TOKEN" to "ghp_other")
+        val executor = executor("true", inherited)
+
+        // No endpoint is github.com; so is one that can't be parsed, to be safe
+        listOf(null, "https://api.github.com", "https://API.github.com/", "not a uri").forEach { endpoint ->
+            val built = executor.buildEnvironment(repo, PlatformCredentials("ghs_run", endpoint, installationId = 7))
+            assertNull(built["GITHUB_COM_TOKEN"], "endpoint $endpoint")
+            assertNull(built["RENOVATE_GITHUB_COM_TOKEN"], "endpoint $endpoint")
+            assertEquals("ghs_run", built["RENOVATE_TOKEN"])
+        }
+        val gitlab = executor.buildEnvironment(gitlabRepo, PlatformCredentials("glpat-x"))
+        val ghes = executor.buildEnvironment(repo, creds)
+        listOf(gitlab, ghes).forEach { built ->
+            assertEquals("ghp_operator", built["GITHUB_COM_TOKEN"])
+            assertEquals("ghp_other", built["RENOVATE_GITHUB_COM_TOKEN"])
+        }
+    }
+
+    @Test
+    fun `nothing private goes into the package cache, which is keyed per credential scope (KSH-26)`() {
+        val inherited = env + mapOf(
+            "RENOVATE_CACHE_PRIVATE_PACKAGES" to "true",
+            "RENOVATE_PRESET_CACHE_PERSISTENCE" to "false",
+        )
+
+        val (executor, warned) = warnings { executor("true", inherited) }
+        val installation = executor.buildEnvironment(repo, PlatformCredentials("ghs_run", installationId = 42))
+        val gitlab = executor.buildEnvironment(gitlabRepo, PlatformCredentials("glpat-x"))
+
+        assertEquals("false", installation["RENOVATE_CACHE_PRIVATE_PACKAGES"])
+        assertEquals("false", installation["RENOVATE_PRESET_CACHE_PERSISTENCE"])
+        assertEquals("koshin:github:inst-42:", installation["RENOVATE_REDIS_PREFIX"])
+        assertEquals("koshin:github:pat:", executor.buildEnvironment(repo, creds)["RENOVATE_REDIS_PREFIX"])
+        assertEquals("koshin:gitlab:pat:", gitlab["RENOVATE_REDIS_PREFIX"])
+        assertEquals("false", gitlab["RENOVATE_CACHE_PRIVATE_PACKAGES"])
+        assertEquals(listOf("Ignoring RENOVATE_CACHE_PRIVATE_PACKAGES=true: koshin pins it to false (KSH-26)"), warned)
+    }
+
+    @Test
+    fun `an operator's RENOVATE_REDIS_PREFIX shares the package cache between scopes`() {
+        val (executor, warned) = warnings { executor("true", env + ("RENOVATE_REDIS_PREFIX" to "renovate:")) }
+
+        val built = executor.buildEnvironment(repo, PlatformCredentials("ghs_run", installationId = 42))
+
+        assertEquals("renovate:", built["RENOVATE_REDIS_PREFIX"])
+        assertEquals(
+            listOf("RENOVATE_REDIS_PREFIX=renovate:: every credential scope shares Renovate's package cache (KSH-26)"),
+            warned,
+        )
+    }
+
+    @Test
+    fun `the run's token is scrubbed from its output while it runs (KSH-26)`() = runBlocking {
+        val logger = LoggerFactory.getLogger(RenovateOutputLogger.LOGGER_NAME) as ch.qos.logback.classic.Logger
+        val appender = ListAppender<ILoggingEvent>().apply { start() }
+        logger.addAppender(appender)
+        logger.level = Level.TRACE
+        val redactor = SecretRedactor()
+        val token = "gitlab-group-token-1234"
+        val script = """
+            echo "fatal: remote oauth2:${'$'}RENOVATE_TOKEN@gitlab.example.com/group/project.git" >&2
+            echo '{"level":30,"msg":"token '"${'$'}RENOVATE_TOKEN"'"}'
+        """.trimIndent()
+        try {
+            executor(script, redactor = redactor)
+                .execute(RepoRef(Platform.GITLAB, "group/project"), PlatformCredentials(token), 1.minutes)
+        } finally {
+            logger.detachAppender(appender)
+            logger.level = null
+        }
+
+        assertEquals(
+            listOf(
+                "fatal: remote oauth2:**redacted**@gitlab.example.com/group/project.git",
+                "token **redacted**",
+            ),
+            appender.list.map { it.formattedMessage }.sorted(),
+        )
+        assertFalse(redactor.containsSecret(token), "only tracked while the run lasts")
     }
 }

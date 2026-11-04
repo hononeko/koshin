@@ -1,5 +1,6 @@
 package dev.hononeko.koshin.adapters.nats
 
+import dev.hononeko.koshin.core.model.CredentialScope
 import dev.hononeko.koshin.core.model.RepoRef
 import dev.hononeko.koshin.core.ports.RepoCachePort
 import io.nats.client.Connection
@@ -30,10 +31,12 @@ import kotlin.time.toJavaDuration
  * Keeps Renovate's local repository cache in a JetStream Object Store bucket, so it follows the repo across pods.
  *
  * Renovate (`repositoryCacheType=local`) reads and writes `<cacheDir>/renovate/repository/<platform>/<repo>.json`.
- * [restore] replaces that file with `<platform>/<repo>.json` before a run (or deletes it, so a leftover from an
+ * [restore] replaces that file with `<platform>/<scope>/<repo>.json` before a run (or deletes it, so a leftover from an
  * unpersisted run is never used), and [persist] uploads it after a successful one. Both run under the repo lock, so
- * there's a single writer. Cache errors never fail a run: they're logged and the run goes ahead cold, or the upload is
- * skipped. Renovate can run repo code, so no path below `cacheDir` may be a symlink.
+ * there's a single writer. Objects are kept per credential scope (KSH-26), so a repo name that passes to another
+ * account (a rename, a transfer) never gets the previous owner's cache. Cache errors never fail a run: they're logged
+ * and the run goes ahead cold, or the upload is skipped. Renovate can run repo code, so no path below `cacheDir` may be
+ * a symlink.
  */
 class NatsObjectStoreRepoCache(
     private val connection: Connection,
@@ -80,7 +83,10 @@ class NatsObjectStoreRepoCache(
         logger.info("Ensured repo cache bucket {} (replicas: {})", config.bucket, config.replicas)
     }
 
-    fun objectName(repo: RepoRef): String = "${repo.platform.name.lowercase()}/${repo.repository}.json"
+    fun objectName(repo: RepoRef, scope: CredentialScope): String {
+        require(scope.platform == repo.platform) { "Credential scope $scope doesn't cover $repo" }
+        return "${repo.platform.name.lowercase()}/${scope.token}/${repo.repository}.json"
+    }
 
     fun localFile(repo: RepoRef): Path {
         val file = repoCacheDir.resolve(repo.platform.name.lowercase()).resolve("${repo.repository}.json").normalize()
@@ -88,7 +94,7 @@ class NatsObjectStoreRepoCache(
         return file
     }
 
-    override suspend fun restore(repo: RepoRef): Boolean = withContext(ioDispatcher) {
+    override suspend fun restore(repo: RepoRef, scope: CredentialScope): Boolean = withContext(ioDispatcher) {
         val started = TimeSource.Monotonic.markNow()
         try {
             val target = localFile(repo)
@@ -96,7 +102,7 @@ class NatsObjectStoreRepoCache(
             // The bucket is the only source: never run on what a failed or timed-out run left behind.
             target.deleteIfExists()
             val store = connection.objectStore(config.bucket)
-            val name = objectName(repo)
+            val name = objectName(repo, scope)
             val info = store.getInfo(name)
             if (info == null) {
                 logger.atInfo().addKeyValue("repo", repo.toString()).addKeyValue("cache", "miss")
@@ -125,7 +131,7 @@ class NatsObjectStoreRepoCache(
         }
     }
 
-    override suspend fun persist(repo: RepoRef) = withContext(ioDispatcher) {
+    override suspend fun persist(repo: RepoRef, scope: CredentialScope) = withContext(ioDispatcher) {
         val started = TimeSource.Monotonic.markNow()
         try {
             val source = localFile(repo)
@@ -135,7 +141,8 @@ class NatsObjectStoreRepoCache(
                 return@withContext
             }
             val store = connection.objectStore(config.bucket)
-            val info = source.inputStream().use { store.put(ObjectMeta.objectName(objectName(repo)), it) }
+            val name = objectName(repo, scope)
+            val info = source.inputStream().use { store.put(ObjectMeta.objectName(name), it) }
             logger.atInfo().addKeyValue("repo", repo.toString()).addKeyValue("cache", "persisted")
                 .addKeyValue("bytes", info.size).addKeyValue("durationMs", started.elapsedNow().inWholeMilliseconds)
                 .log("Persisted repo cache for {} ({} bytes)", repo, info.size)
