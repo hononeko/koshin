@@ -208,7 +208,8 @@ both checked against the pinned version, so try a new major before rolling it ou
 
 `worker.repoCache.provider` picks where Renovate's repository cache lives between runs: `nats` (default, an Object Store
 bucket in the release's NATS, capped by `maxBytes` since it shares JetStream storage with the job streams), `s3`
-(Renovate reads and writes it itself, e.g. SeaweedFS) or `local` (pod only):
+(Renovate reads and writes it itself, e.g. SeaweedFS) or `local` (pod only). `s3` hands Renovate the bucket's
+credentials, so it's single-tenant: the chart refuses it with the GitHub App.
 
 ```yaml
 worker:
@@ -516,7 +517,7 @@ Kubernetes: `>=1.30.0-0`
 | worker.replicas | int | `1` | Worker replicas when `autoscaling.enabled` is false |
 | worker.repoCache.bucket | string | `"koshin-repo-cache"` | `REPO_CACHE_BUCKET`: Object Store bucket |
 | worker.repoCache.maxBytes | int | `536870912` | `REPO_CACHE_MAX_BYTES`: bucket size cap; it shares JetStream storage with the job streams |
-| worker.repoCache.provider | string | `"nats"` | `REPO_CACHE_PROVIDER`: `nats` (Object Store sync), `s3` (native Renovate S3) or `local` (pod only) |
+| worker.repoCache.provider | string | `"nats"` | `REPO_CACHE_PROVIDER`: `nats` (Object Store sync), `s3` (native Renovate S3; single-tenant, so not with the GitHub App) or `local` (pod only) |
 | worker.repoCache.s3.endpoint | string | `""` | `RENOVATE_S3_ENDPOINT`, e.g. `http://seaweedfs-s3:8333` |
 | worker.repoCache.s3.existingSecret | string | `""` | Existing Secret with `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (and optionally `AWS_REGION`) |
 | worker.repoCache.s3.pathStyle | bool | `true` | `RENOVATE_S3_PATH_STYLE` |

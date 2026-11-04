@@ -1,5 +1,6 @@
 package dev.hononeko.koshin.adapters.nats
 
+import dev.hononeko.koshin.core.model.CredentialScope
 import dev.hononeko.koshin.core.model.Platform
 import dev.hononeko.koshin.core.model.RepoRef
 import io.mockk.every
@@ -41,7 +42,8 @@ class NatsObjectStoreRepoCacheUnitTest {
     lateinit var cacheDir: Path
 
     private val repo = RepoRef(Platform.GITLAB, "group/sub/project")
-    private val objectName = "gitlab/group/sub/project.json"
+    private val scope = CredentialScope.Token(Platform.GITLAB)
+    private val objectName = "gitlab/pat/group/sub/project.json"
     private val store = mockk<ObjectStore>()
     private val jsm = mockk<JetStreamManagement>()
     private val connection = mockk<Connection> {
@@ -67,7 +69,7 @@ class NatsObjectStoreRepoCacheUnitTest {
             info(content.size.toLong())
         }
 
-        assertTrue(cache.restore(repo))
+        assertTrue(cache.restore(repo, scope))
 
         val file = cacheDir.resolve("renovate/repository/gitlab/group/sub/project.json")
         assertArrayEquals(content, file.readBytes())
@@ -80,7 +82,7 @@ class NatsObjectStoreRepoCacheUnitTest {
         val file = cache.localFile(repo).apply { parent.createDirectories() }
         file.writeText("left by a failed run")
 
-        assertFalse(cache.restore(repo))
+        assertFalse(cache.restore(repo, scope))
         assertFalse(file.exists())
     }
 
@@ -92,7 +94,7 @@ class NatsObjectStoreRepoCacheUnitTest {
             throw IOException("connection lost")
         }
 
-        assertFalse(cache.restore(repo))
+        assertFalse(cache.restore(repo, scope))
         assertEquals(emptyList<Path>(), cache.localFile(repo).parent.listDirectoryEntries())
     }
 
@@ -102,8 +104,8 @@ class NatsObjectStoreRepoCacheUnitTest {
         cacheDir.resolve("renovate/repository/gitlab").createDirectories()
         cacheDir.resolve("renovate/repository/gitlab/group").createSymbolicLinkPointingTo(outside)
 
-        assertFalse(cache.restore(repo))
-        cache.persist(repo)
+        assertFalse(cache.restore(repo, scope))
+        cache.persist(repo, scope)
 
         verify(exactly = 0) { store.getInfo(any()) }
         verify(exactly = 0) { store.put(any<ObjectMeta>(), any<InputStream>()) }
@@ -113,11 +115,11 @@ class NatsObjectStoreRepoCacheUnitTest {
     fun `restore rethrows cancellation`() {
         every { store.getInfo(objectName) } throws CancellationException("stopping")
 
-        assertThrows<CancellationException> { runBlocking { cache.restore(repo) } }
+        assertThrows<CancellationException> { runBlocking { cache.restore(repo, scope) } }
     }
 
     @Test
-    fun `persist uploads Renovate's cache file under the platform-prefixed name`() = runBlocking {
+    fun `persist uploads Renovate's cache file under the platform- and scope-prefixed name`() = runBlocking {
         cache.localFile(repo).apply { parent.createDirectories() }.writeText("cache")
         val meta = slot<ObjectMeta>()
         val uploaded = slot<String>()
@@ -126,20 +128,43 @@ class NatsObjectStoreRepoCacheUnitTest {
             info(5)
         }
 
-        cache.persist(repo)
+        cache.persist(repo, scope)
 
         assertEquals(objectName, meta.captured.objectName)
         assertEquals("cache", uploaded.captured)
     }
 
     @Test
+    fun `objects are named per credential scope, so installations never share one (KSH-26)`() {
+        val github = RepoRef(Platform.GITHUB, "hononeko/koshin")
+
+        assertEquals("github/inst-1/hononeko/koshin.json", cache.objectName(github, CredentialScope.Installation(1)))
+        assertEquals("github/inst-2/hononeko/koshin.json", cache.objectName(github, CredentialScope.Installation(2)))
+        val pat = CredentialScope.Token(Platform.GITHUB)
+        assertEquals("github/pat/hononeko/koshin.json", cache.objectName(github, pat))
+        assertThrows<IllegalArgumentException> { cache.objectName(github, scope) }
+    }
+
+    @Test
+    fun `restore and persist fail closed on a scope of another platform`() = runBlocking {
+        val github = RepoRef(Platform.GITHUB, "hononeko/koshin")
+        cache.localFile(github).apply { parent.createDirectories() }.writeText("cache")
+
+        assertFalse(cache.restore(github, scope))
+        cache.persist(github, scope)
+
+        verify(exactly = 0) { store.getInfo(any()) }
+        verify(exactly = 0) { store.put(any<ObjectMeta>(), any<InputStream>()) }
+    }
+
+    @Test
     fun `persist skips a missing file and swallows upload errors`() = runBlocking {
-        cache.persist(repo)
+        cache.persist(repo, scope)
         verify(exactly = 0) { store.put(any<ObjectMeta>(), any<InputStream>()) }
 
         cache.localFile(repo).apply { parent.createDirectories() }.writeText("cache")
         every { store.put(any<ObjectMeta>(), any<InputStream>()) } throws IOException("bucket full")
-        cache.persist(repo)
+        cache.persist(repo, scope)
         verify(exactly = 1) { store.put(any<ObjectMeta>(), any<InputStream>()) }
     }
 
@@ -148,7 +173,7 @@ class NatsObjectStoreRepoCacheUnitTest {
         cache.localFile(repo).apply { parent.createDirectories() }.writeText("cache")
         every { store.put(any<ObjectMeta>(), any<InputStream>()) } throws CancellationException("stopping")
 
-        assertThrows<CancellationException> { runBlocking { cache.persist(repo) } }
+        assertThrows<CancellationException> { runBlocking { cache.persist(repo, scope) } }
     }
 
     @Test

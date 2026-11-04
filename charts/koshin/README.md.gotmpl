@@ -208,7 +208,8 @@ both checked against the pinned version, so try a new major before rolling it ou
 
 `worker.repoCache.provider` picks where Renovate's repository cache lives between runs: `nats` (default, an Object Store
 bucket in the release's NATS, capped by `maxBytes` since it shares JetStream storage with the job streams), `s3`
-(Renovate reads and writes it itself, e.g. SeaweedFS) or `local` (pod only):
+(Renovate reads and writes it itself, e.g. SeaweedFS) or `local` (pod only). `s3` hands Renovate the bucket's
+credentials, so it's single-tenant: the chart refuses it with the GitHub App.
 
 ```yaml
 worker:

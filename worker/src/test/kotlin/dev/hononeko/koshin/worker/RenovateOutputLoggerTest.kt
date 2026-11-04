@@ -12,6 +12,7 @@ import net.logstash.logback.encoder.LogstashEncoder
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.slf4j.LoggerFactory
@@ -20,7 +21,16 @@ import org.slf4j.event.Level as Slf4jLevel
 class RenovateOutputLoggerTest {
     private val logger = LoggerFactory.getLogger("test.renovate.output") as Logger
     private val appender = ListAppender<ILoggingEvent>()
-    private val output = RenovateOutputLogger(logger)
+    private val redactor = SecretRedactor()
+    private val output = RenovateOutputLogger(logger, redactor)
+
+    private fun encodeRaw(event: ILoggingEvent) = LogstashEncoder().run {
+        context = LoggerFactory.getILoggerFactory() as LoggerContext
+        start()
+        encode(event).decodeToString()
+    }
+
+    private fun encode(event: ILoggingEvent) = Json.parseToJsonElement(encodeRaw(event)).jsonObject
 
     private val warnLine =
         """{"name":"renovate","level":40,"logContext":"c1","repository":"hononeko/koshin",""" +
@@ -99,5 +109,53 @@ class RenovateOutputLoggerTest {
             ),
             listOf(10, 20, 30, 40, 50, 60, null).map(RenovateOutputLogger::levelOf),
         )
+    }
+
+    @Test
+    fun `tokens in raw lines from child tools are scrubbed before they reach SLF4J (KSH-26)`() {
+        redactor.track("gitlab-run-token-1234").use {
+            output.log("fatal: remote x-access-token:ghs_fake1234@github.com/o/r.git", "stderr")
+            output.log("npm ERR! //npm.pkg.github.com/:_authToken=ghp_abcDEF123", "stderr")
+            output.log("token github_pat_11ABC_def and glpat-x-Y_z9 for oauth2:gitlab-run-token-1234@", "stdout")
+            output.log("nothing to hide", "stdout")
+        }
+
+        assertEquals(
+            listOf(
+                "fatal: remote x-access-token:**redacted**@github.com/o/r.git",
+                "npm ERR! //npm.pkg.github.com/:_authToken=**redacted**",
+                "token **redacted** and **redacted** for oauth2:**redacted**@",
+                "nothing to hide",
+            ),
+            appender.list.map { it.formattedMessage },
+        )
+    }
+
+    @Test
+    fun `tokens in JSON lines are scrubbed field by field, keeping the line valid JSON (KSH-26)`() {
+        // The token pattern ends at the escaped quote's backslash: a raw replace would break the JSON
+        val line = """{"level":50,"msg":"push failed for ghs_abc123","err":{"cmd":"git push""" +
+            """ x-access-token:abc\\\"x@github.com","args":["the-run-token-1234"]},"n":7}"""
+
+        redactor.track("the-run-token-1234").use { output.log(line, "stdout") }
+
+        val event = appender.list.single()
+        assertEquals(Level.ERROR, event.level)
+        assertEquals("push failed for **redacted**", event.formattedMessage)
+        val renovate = encode(event)["renovate"]!!.jsonObject
+        assertEquals(
+            """{"level":50,"msg":"push failed for **redacted**","err":{"cmd":"git push""" +
+                """ x-access-token:**redacted**\"x@github.com","args":["**redacted**"]},"n":7}""",
+            renovate.toString(),
+        )
+    }
+
+    @Test
+    fun `lines without a token are embedded as they are`() {
+        val spaced = """{ "level": 30, "msg": "spaced" }"""
+
+        output.log(spaced, "stdout")
+
+        assertTrue(encodeRaw(appender.list.single()).contains(""""renovate":$spaced"""))
     }
 }

@@ -167,6 +167,22 @@ class RenovateRunnerTest {
     }
 
     @Test
+    fun `a github_com token comes from the worker's request only, never the runner's own environment (KSH-26)`() {
+        val ownEnv = mapOf(
+            "HOME" to "/home/ubuntu",
+            "GITHUB_COM_TOKEN" to "ghp_x",
+            "RENOVATE_GITHUB_COM_TOKEN" to "ghp_y",
+        )
+        val runner = RenovateRunner(socket, LocalRenovateLauncher(), ownEnv = ownEnv)
+
+        assertEquals(mapOf("HOME" to "/home/ubuntu"), runner.runEnvironment(emptyMap()))
+        assertEquals(
+            mapOf("HOME" to "/home/ubuntu", "GITHUB_COM_TOKEN" to "ghp_gitlab_run"),
+            runner.runEnvironment(mapOf("GITHUB_COM_TOKEN" to "ghp_gitlab_run")),
+        )
+    }
+
+    @Test
     fun `output reaches the worker's log with the job's MDC before the exit code`() = runBlocking {
         startRunner()
         val logger = LoggerFactory.getLogger(RenovateOutputLogger.LOGGER_NAME) as ch.qos.logback.classic.Logger

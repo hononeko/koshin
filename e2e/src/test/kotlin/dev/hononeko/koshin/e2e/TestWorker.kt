@@ -64,7 +64,7 @@ class TestWorker(
             Platform.entries.associateWith { PlatformCredentials("e2e-token") },
         ),
         cliExecutor = cli,
-        workspaceCleaner = WorkspaceCleaner(baseDir),
+        workspaceCleaner = WorkspaceCleaner(baseDir, cacheDir),
         config = cluster.jobConfig,
     )
     private val presence = if (idleTimeout.isPositive()) {

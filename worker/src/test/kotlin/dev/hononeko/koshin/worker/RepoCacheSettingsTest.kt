@@ -9,7 +9,9 @@ import io.nats.client.api.StorageType
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 import kotlin.io.path.Path
 import kotlin.time.Duration.Companion.days
 
@@ -80,5 +82,17 @@ class RepoCacheSettingsTest {
         assertFalse(env.containsKey("RENOVATE_X_S3_ENDPOINT"))
         assertFalse(env.containsKey("RENOVATE_X_S3_PATH_STYLE"))
         assertFalse(env.containsKey("RENOVATE_CACHE_DIR"))
+    }
+
+    @Test
+    fun `s3 is refused with the GitHub App, which serves many tenants (KSH-26)`() {
+        val s3 = RepoCacheSettings(provider = RepoCacheProvider.S3, s3Url = "s3://renovate/cache/")
+
+        val error = assertThrows<IllegalArgumentException> { s3.requireSingleTenant(multiTenant = true) }
+        assertTrue(error.message!!.startsWith("REPO_CACHE_PROVIDER=s3 is single-tenant"))
+        s3.requireSingleTenant(multiTenant = false)
+        RepoCacheProvider.entries.filter { it != RepoCacheProvider.S3 }.forEach { provider ->
+            RepoCacheSettings(provider = provider).requireSingleTenant(multiTenant = true)
+        }
     }
 }

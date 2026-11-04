@@ -54,6 +54,9 @@
 {{- if and (eq .provider "s3") (not (hasPrefix "s3://" .s3.url)) }}
 {{- fail "worker.repoCache.provider=s3 needs worker.repoCache.s3.url=s3://<bucket>/<prefix>/" }}
 {{- end }}
+{{- if and (eq .provider "s3") $.Values.github.app.id }}
+{{- fail "worker.repoCache.provider=s3 is single-tenant (Renovate would hold credentials for every tenant's caches): use nats or local with the GitHub App" }}
+{{- end }}
 {{- end }}
 {{- with .Values.github.app }}
 {{- $key := include "koshin.githubAppSecretName" $ }}

@@ -29,53 +29,67 @@ class RenovateProcessExecutor(
     private val rateLimitPattern: Regex = Regex(RateLimitDetector.DEFAULT_ABORT_PATTERN),
     private val repoCache: RepoCacheSettings = RepoCacheSettings(),
     private val cacheDir: Path = baseDir.resolve(WorkerSettings.RENOVATE_CACHE_SUBDIR),
+    private val redactor: SecretRedactor = SecretRedactor.shared,
 ) : CliExecutorPort {
 
     private val logger = LoggerFactory.getLogger(RenovateProcessExecutor::class.java)
-    private val outputLogger = RenovateOutputLogger()
+    private val outputLogger = RenovateOutputLogger(redactor = redactor)
 
     // With a private key, not even the commands an operator allows for `postUpgradeTasks` run next to it
-    private val guardrails = UNTRUSTED_CODE_GUARDRAILS +
+    private val guardrails = UNTRUSTED_CODE_GUARDRAILS + CACHE_ISOLATION_GUARDRAILS +
         if (PRIVATE_KEY_PATH_ENV.any { !inheritedEnv[it].isNullOrBlank() }) KEY_HOLDER_GUARDRAILS else emptyMap()
+
+    /** An operator's `RENOVATE_REDIS_PREFIX` shares the package cache between credential scopes. */
+    private val sharedRedisPrefix = inheritedEnv[REDIS_PREFIX_ENV]?.takeIf { it.isNotBlank() }
 
     init {
         require(command.isNotEmpty()) { "command cannot be empty" }
         guardrails.forEach { (key, pinned) ->
             inheritedEnv[key]?.takeIf { it != pinned }?.let { value ->
                 val reason = if (key in KEY_HOLDER_GUARDRAILS) " while Renovate has a private key" else ""
-                logger.warn("Ignoring {}={}: koshin pins it to {}{} (KSH-25)", key, value, pinned, reason)
+                val ticket = if (key in CACHE_ISOLATION_GUARDRAILS) "KSH-26" else "KSH-25"
+                logger.warn("Ignoring {}={}: koshin pins it to {}{} ({})", key, value, pinned, reason, ticket)
             }
+        }
+        sharedRedisPrefix?.let {
+            logger.warn("{}={}: every credential scope shares Renovate's package cache (KSH-26)", REDIS_PREFIX_ENV, it)
         }
     }
 
     override suspend fun execute(repo: RepoRef, creds: PlatformCredentials, timeout: Duration): JobExecutionResult {
         require(!repo.repository.startsWith("-")) { "Repository cannot start with '-': ${repo.repository}" }
 
-        val rateLimit = RateLimitDetector(repo.platform, rateLimitPattern)
-        val run = launcher.launch(command + repo.repository, buildEnvironment(repo, creds), baseDir) { stream, line ->
-            if (stream == OutputStreamName.STDOUT) rateLimit.inspect(line)
-            outputLogger.log(line, stream.label)
-        }
-        logger.info("Started renovate for {}", repo)
-
-        try {
-            // Returns once the output has been read too: the rate-limit verdict is in the last lines.
-            val exitCode = withTimeoutOrNull(timeout) { run.awaitExit() }
-            if (exitCode == null) {
-                logger.warn("Renovate for {} exceeded {}; killing process tree", repo, timeout)
-                return JobExecutionResult.TimedOut
+        // The run's token is scrubbed from its output and every other log line while it runs (KSH-26)
+        redactor.track(creds.token).use { _ ->
+            val rateLimit = RateLimitDetector(repo.platform, rateLimitPattern)
+            val env = buildEnvironment(repo, creds)
+            val run = launcher.launch(command + repo.repository, env, baseDir) { stream, line ->
+                if (stream == OutputStreamName.STDOUT) rateLimit.inspect(line)
+                outputLogger.log(line, stream.label)
             }
-            logger.info("Renovate for {} exited with code {}", repo, exitCode)
-            return rateLimit.result()
-                ?.also { logger.warn("Renovate for {} was rate-limited (retry after {})", repo, it.retryAfter) }
-                ?: if (exitCode == 0) JobExecutionResult.Success else JobExecutionResult.Failed(exitCode)
-        } finally {
-            withContext(NonCancellable) { run.destroy() }
+            logger.info("Started renovate for {}", repo)
+
+            try {
+                // Returns once the output has been read too: the rate-limit verdict is in the last lines.
+                val exitCode = withTimeoutOrNull(timeout) { run.awaitExit() }
+                if (exitCode == null) {
+                    logger.warn("Renovate for {} exceeded {}; killing process tree", repo, timeout)
+                    return JobExecutionResult.TimedOut
+                }
+                logger.info("Renovate for {} exited with code {}", repo, exitCode)
+                return rateLimit.result()
+                    ?.also { logger.warn("Renovate for {} was rate-limited (retry after {})", repo, it.retryAfter) }
+                    ?: if (exitCode == 0) JobExecutionResult.Success else JobExecutionResult.Failed(exitCode)
+            } finally {
+                withContext(NonCancellable) { run.destroy() }
+            }
         }
     }
 
     fun buildEnvironment(repo: RepoRef, creds: PlatformCredentials): Map<String, String> = buildMap {
-        putAll(inheritedEnv.filterKeys { !isStripped(it) })
+        // On github.com, lookups there use the run's own token, never an operator's (KSH-26)
+        val gitHubCom = isGitHubCom(repo, creds)
+        putAll(inheritedEnv.filterKeys { !isStripped(it) && !(gitHubCom && it in GITHUB_COM_TOKEN_ENV) })
         put("LOG_FORMAT", "json")
         put("RENOVATE_PLATFORM", repo.platform.name.lowercase())
         put("RENOVATE_TOKEN", creds.token)
@@ -85,6 +99,7 @@ class RenovateProcessExecutor(
         put("RENOVATE_BASE_DIR", baseDir.toString())
         put("RENOVATE_BINARY_SOURCE", binarySource)
         redisUrl?.let { put("RENOVATE_REDIS_URL", it) }
+        put(REDIS_PREFIX_ENV, sharedRedisPrefix ?: "koshin:${creds.scope(repo.platform)}:")
         putAll(repoCache.renovateEnv(cacheDir))
         hostRules(repo, creds, inheritedEnv["RENOVATE_HOST_RULES"])?.let { put("RENOVATE_HOST_RULES", it) }
         // Last: nothing inherited turns them back on
@@ -116,6 +131,27 @@ class RenovateProcessExecutor(
     }
 
     companion object {
+        /**
+         * Renovate turns either into a `github.com` host rule, which would take lookups there off a github.com run's
+         * own installation token. Passed on to GitLab and GHES runs only (KSH-26).
+         */
+        val GITHUB_COM_TOKEN_ENV = setOf("GITHUB_COM_TOKEN", "RENOVATE_GITHUB_COM_TOKEN")
+
+        /**
+         * The package cache (Valkey, or files under `cacheDir`) outlives a run and is shared by every tenant: nothing
+         * private goes in, neither packages from private registries nor resolved presets such as an org's
+         * `renovate-config` (KSH-26).
+         */
+        val CACHE_ISOLATION_GUARDRAILS = mapOf(
+            "RENOVATE_CACHE_PRIVATE_PACKAGES" to "false",
+            "RENOVATE_PRESET_CACHE_PERSISTENCE" to "false",
+        )
+
+        /** Renovate's package cache keys start with it: `koshin:<scope>:` unless an operator sets one to share. */
+        private const val REDIS_PREFIX_ENV = "RENOVATE_REDIS_PREFIX"
+
+        private const val GITHUB_COM_API_HOST = "api.github.com"
+
         /**
          * The OpenPGP private keys themselves, which would sit in the environment of Renovate and everything it starts
          * (and take precedence over `RENOVATE_PRIVATE_KEY_PATH`): Renovate reads them from the files instead (KSH-25).
@@ -163,6 +199,12 @@ class RenovateProcessExecutor(
         ) + RAW_PRIVATE_KEY_ENV
         private val STRIPPED_PREFIXES = listOf("NATS_", "VALKEY_", "GITHUB_APP_")
         private const val STRIPPED_SUFFIX = "_WEBHOOK_SECRET"
+
+        /** GitHub itself, not GHES; an endpoint without a host it can parse counts as github.com, so nothing leaks. */
+        private fun isGitHubCom(repo: RepoRef, creds: PlatformCredentials): Boolean {
+            val host = creds.endpoint?.let { endpoint -> runCatching { URI(endpoint).host }.getOrNull() }
+            return repo.platform == Platform.GITHUB && (host == null || host.equals(GITHUB_COM_API_HOST, true))
+        }
 
         private fun defaultEndpoint(platform: Platform): String = when (platform) {
             Platform.GITHUB -> "https://api.github.com/"

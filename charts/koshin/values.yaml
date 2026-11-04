@@ -270,7 +270,8 @@ worker:
     # -- `RATE_LIMIT_LOG_PATTERN`: regex for Renovate's rate-limit abort message (default `^Rate limit exceeded - aborting$`)
     logPattern: ""
   repoCache:
-    # -- `REPO_CACHE_PROVIDER`: `nats` (Object Store sync), `s3` (native Renovate S3) or `local` (pod only)
+    # -- `REPO_CACHE_PROVIDER`: `nats` (Object Store sync), `s3` (native Renovate S3; single-tenant, so not with the
+    # GitHub App) or `local` (pod only)
     provider: nats
     # -- `REPO_CACHE_BUCKET`: Object Store bucket
     bucket: koshin-repo-cache

@@ -43,6 +43,17 @@ data class RepoCacheSettings(
         }
     }
 
+    /**
+     * Fails with [RepoCacheProvider.S3] when [multiTenant] (the GitHub App): Renovate gets the bucket's credentials and
+     * reads and writes every tenant's caches there itself (KSH-26).
+     */
+    fun requireSingleTenant(multiTenant: Boolean) {
+        require(!multiTenant || provider != RepoCacheProvider.S3) {
+            "REPO_CACHE_PROVIDER=s3 is single-tenant: Renovate would hold credentials for every tenant's caches. " +
+                "Use nats or local with the GitHub App"
+        }
+    }
+
     /** Object Store settings when koshin syncs the cache through NATS, else `null` (nothing to sync). */
     fun natsConfig(nats: NatsConfig): NatsRepoCacheConfig? = if (provider == RepoCacheProvider.NATS) {
         NatsRepoCacheConfig(bucket, nats.replicas, nats.storageType, maxBytes, ttl)
