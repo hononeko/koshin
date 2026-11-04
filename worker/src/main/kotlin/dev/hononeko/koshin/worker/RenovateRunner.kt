@@ -126,10 +126,11 @@ class RenovateRunner(
         replies.send(RunnerMessage.Exited(code))
     }
 
+    // Never a raw private key, from either side: Renovate reads the keys from files (KSH-25)
     internal fun runEnvironment(requested: Map<String, String>): Map<String, String> = buildMap {
         putAll(ownEnv - RUNNER_ENV)
         putAll(requested - WORKER_LOCAL_ENV)
-    }
+    } - RenovateProcessExecutor.RAW_PRIVATE_KEY_ENV
 
     private fun readRequest(input: BufferedReader, replies: Replies): RunRequest? {
         val line = try {

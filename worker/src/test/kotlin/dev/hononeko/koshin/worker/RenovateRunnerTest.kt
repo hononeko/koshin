@@ -107,6 +107,8 @@ class RenovateRunnerTest {
                     "HOME" to "/home/ubuntu",
                     "RENOVATE_BINARY_SOURCE" to "install",
                     "RUNNER_SOCKET" to socket.toString(),
+                    "RENOVATE_PRIVATE_KEY" to "-----BEGIN PGP PRIVATE KEY BLOCK-----",
+                    "RENOVATE_PRIVATE_KEY_OLD" to "-----BEGIN PGP PRIVATE KEY BLOCK-----",
                 ),
             )
             val script = """
@@ -135,8 +137,34 @@ class RenovateRunnerTest {
             assertEquals("/home/ubuntu", seen["HOME"])
             assertNull(seen["JAVA_HOME"])
             assertNull(seen["RUNNER_SOCKET"])
+            // Renovate reads the private keys from files (KSH-25)
+            assertNull(seen["RENOVATE_PRIVATE_KEY"])
+            assertNull(seen["RENOVATE_PRIVATE_KEY_OLD"])
             assertEquals("hononeko/koshin", workDir.resolve("arg.txt").readText().trim())
         }
+
+    @Test
+    fun `a raw private key in the request doesn't reach Renovate either`() {
+        val runner = RenovateRunner(socket, LocalRenovateLauncher(), ownEnv = mapOf("HOME" to "/home/ubuntu"))
+
+        val env = runner.runEnvironment(
+            mapOf(
+                "RENOVATE_TOKEN" to "ghs_run",
+                "RENOVATE_PRIVATE_KEY" to "-----BEGIN PGP PRIVATE KEY BLOCK-----",
+                "RENOVATE_PRIVATE_KEY_OLD" to "-----BEGIN PGP PRIVATE KEY BLOCK-----",
+                "RENOVATE_PRIVATE_KEY_PATH" to "/etc/renovate-encryption/private.asc",
+            ),
+        )
+
+        assertEquals(
+            mapOf(
+                "HOME" to "/home/ubuntu",
+                "RENOVATE_TOKEN" to "ghs_run",
+                "RENOVATE_PRIVATE_KEY_PATH" to "/etc/renovate-encryption/private.asc",
+            ),
+            env,
+        )
+    }
 
     @Test
     fun `output reaches the worker's log with the job's MDC before the exit code`() = runBlocking {

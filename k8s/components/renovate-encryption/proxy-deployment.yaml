@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: koshin-proxy
+spec:
+  template:
+    spec:
+      containers:
+        - name: proxy
+          env:
+            # Served at GET /api/v1/encryption-key
+            - name: RENOVATE_PUBLIC_KEY_PATH
+              value: /etc/renovate-encryption/public.asc
+          volumeMounts:
+            - name: renovate-encryption
+              mountPath: /etc/renovate-encryption
+              readOnly: true
+      volumes:
+        # The public key only
+        - name: renovate-encryption
+          secret:
+            secretName: koshin-renovate-encryption
+            items:
+              - key: public.asc
+                path: public.asc

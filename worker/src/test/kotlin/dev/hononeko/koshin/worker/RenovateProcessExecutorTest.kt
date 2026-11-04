@@ -321,4 +321,97 @@ class RenovateProcessExecutorTest {
         assertFalse(built.containsKey("LOG_LEVEL"))
         assertEquals("warn", built["RENOVATE_LOG_LEVEL"])
     }
+
+    @Test
+    fun `the private key paths reach Renovate, the raw private keys don't`() {
+        val inherited = env + mapOf(
+            "RENOVATE_PRIVATE_KEY_PATH" to "/etc/renovate-encryption/private.asc",
+            "RENOVATE_PRIVATE_KEY_PATH_OLD" to "/etc/renovate-encryption/private-old.asc",
+            "RENOVATE_PRIVATE_KEY" to "-----BEGIN PGP PRIVATE KEY BLOCK-----",
+            "RENOVATE_PRIVATE_KEY_OLD" to "-----BEGIN PGP PRIVATE KEY BLOCK-----",
+        )
+
+        val built = executor("true", inherited).buildEnvironment(repo, creds)
+
+        assertEquals("/etc/renovate-encryption/private.asc", built["RENOVATE_PRIVATE_KEY_PATH"])
+        assertEquals("/etc/renovate-encryption/private-old.asc", built["RENOVATE_PRIVATE_KEY_PATH_OLD"])
+        assertFalse(built.containsKey("RENOVATE_PRIVATE_KEY"))
+        assertFalse(built.containsKey("RENOVATE_PRIVATE_KEY_OLD"))
+    }
+
+    @Test
+    fun `repositories can't run code in Renovate, whatever the worker's environment says`() {
+        val logger = LoggerFactory.getLogger(RenovateProcessExecutor::class.java) as ch.qos.logback.classic.Logger
+        val appender = ListAppender<ILoggingEvent>().apply { start() }
+        logger.addAppender(appender)
+        val inherited = env + mapOf(
+            "RENOVATE_ALLOW_SCRIPTS" to "true",
+            "RENOVATE_ALLOWED_UNSAFE_EXECUTIONS" to "[\"gradleWrapper\"]",
+            "RENOVATE_ALLOW_PLUGINS" to "false",
+        )
+
+        val built = try {
+            executor("true", inherited).buildEnvironment(repo, creds)
+        } finally {
+            logger.detachAppender(appender)
+        }
+
+        assertEquals("false", built["RENOVATE_ALLOW_SCRIPTS"])
+        assertEquals("[]", built["RENOVATE_ALLOWED_UNSAFE_EXECUTIONS"])
+        assertEquals("false", built["RENOVATE_ALLOW_PLUGINS"])
+        assertEquals("false", built["RENOVATE_ALLOW_CUSTOM_CRATE_GIT_REGISTRIES"])
+        assertEquals(
+            listOf(
+                "Ignoring RENOVATE_ALLOW_SCRIPTS=true: koshin pins it to false (KSH-25)",
+                "Ignoring RENOVATE_ALLOWED_UNSAFE_EXECUTIONS=[\"gradleWrapper\"]: koshin pins it to [] (KSH-25)",
+            ),
+            appender.list.filter { it.level == Level.WARN }.map { it.formattedMessage },
+        )
+    }
+
+    @Test
+    fun `with a private key, postUpgradeTasks run nothing`() {
+        val logger = LoggerFactory.getLogger(RenovateProcessExecutor::class.java) as ch.qos.logback.classic.Logger
+        val appender = ListAppender<ILoggingEvent>().apply { start() }
+        logger.addAppender(appender)
+        val allowed = env + mapOf(
+            "RENOVATE_ALLOWED_COMMANDS" to "[\"^npm run .*\"]",
+            "RENOVATE_ALLOW_SHELL_EXECUTOR_FOR_POST_UPGRADE_COMMANDS" to "true",
+        )
+
+        val keys = listOf(
+            "RENOVATE_PRIVATE_KEY_PATH" to "/k/private.asc",
+            "RENOVATE_PRIVATE_KEY_PATH_OLD" to "/k/old.asc",
+        )
+        val built = try {
+            keys.map { key -> executor("true", allowed + key).buildEnvironment(repo, creds) }
+        } finally {
+            logger.detachAppender(appender)
+        }
+
+        built.forEach { renovateEnv ->
+            assertEquals("[]", renovateEnv["RENOVATE_ALLOWED_COMMANDS"])
+            assertEquals("false", renovateEnv["RENOVATE_ALLOW_SHELL_EXECUTOR_FOR_POST_UPGRADE_COMMANDS"])
+        }
+        assertEquals(
+            2,
+            appender.list.count {
+                it.formattedMessage == "Ignoring RENOVATE_ALLOWED_COMMANDS=[\"^npm run .*\"]: koshin pins it to [] " +
+                    "while Renovate has a private key (KSH-25)"
+            },
+        )
+    }
+
+    @Test
+    fun `without a private key, the commands an operator allows for postUpgradeTasks are passed on`() {
+        val inherited = env + mapOf(
+            "RENOVATE_ALLOWED_COMMANDS" to "[\"^npm run .*\"]",
+            "RENOVATE_PRIVATE_KEY_PATH" to " ",
+        )
+
+        val built = executor("true", inherited).buildEnvironment(repo, creds)
+
+        assertEquals("[\"^npm run .*\"]", built["RENOVATE_ALLOWED_COMMANDS"])
+        assertFalse(built.containsKey("RENOVATE_ALLOW_SHELL_EXECUTOR_FOR_POST_UPGRADE_COMMANDS"))
+    }
 }

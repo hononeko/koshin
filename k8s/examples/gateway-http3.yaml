@@ -1,6 +1,7 @@
 # Example, not part of any kustomization: Envoy Gateway terminates TLS and HTTP/3 (QUIC) at the edge and
-# forwards to koshin-proxy over h2c (the Service's `appProtocol: kubernetes.io/h2c`). Only the webhook paths
-# are exposed; /api/v1/trigger stays cluster-internal for the sweeper.
+# forwards to koshin-proxy over h2c (the Service's `appProtocol: kubernetes.io/h2c`). Only the webhook paths and the
+# public key tenants encrypt registry credentials with are exposed; /api/v1/trigger stays cluster-internal for the
+# sweeper.
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
@@ -33,6 +34,9 @@ spec:
         - path:
             type: PathPrefix
             value: /webhooks/
+        - path:
+            type: Exact
+            value: /api/v1/encryption-key
       backendRefs:
         - name: koshin-proxy
           port: 80

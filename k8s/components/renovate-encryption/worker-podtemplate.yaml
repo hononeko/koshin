@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: PodTemplate
+metadata:
+  name: koshin-worker
+template:
+  spec:
+    initContainers:
+      # Renovate reads the private keys here; the worker container doesn't get them
+      - name: renovate
+        volumeMounts:
+          - name: renovate-encryption
+            mountPath: /etc/renovate-encryption
+            readOnly: true
+    containers:
+      - name: worker
+        env:
+          # Passed on to Renovate in the `renovate` container
+          - name: RENOVATE_PRIVATE_KEY_PATH
+            value: /etc/renovate-encryption/private.asc
+    volumes:
+      - name: renovate-encryption
+        secret:
+          secretName: koshin-renovate-encryption
+          items:
+            - key: private.asc
+              path: private.asc

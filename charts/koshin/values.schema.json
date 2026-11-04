@@ -119,6 +119,26 @@
       },
       "additionalProperties": false
     },
+    "renovateEncryption": {
+      "type": "object",
+      "properties": {
+        "existingSecret": {
+          "type": "string"
+        },
+        "privateKeyKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "privateKeyOldKey": {
+          "type": "string"
+        },
+        "publicKeyKey": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
     "renovateBotLogins": {
       "type": "array",
       "items": {

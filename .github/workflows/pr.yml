@@ -94,6 +94,15 @@ jobs:
             echo "Validating k8s/overlays/ha..."
             kubectl kustomize k8s/overlays/ha | docker run --rm -i ghcr.io/yannh/kubeconform:v0.8.0@sha256:faffaf43f95aa6425306e1ab8d6fcad72acb9049158f38e574c085ea1ec0f64e -summary -ignore-missing-schemas -strict
           fi
+          for component in k8s/components/*/; do
+            [ -d "$component" ] || continue
+            name="$(basename "$component")"
+            echo "Validating k8s/overlays/minimal with the $name component..."
+            overlay="k8s/overlays/ci-$name"
+            mkdir -p "$overlay"
+            printf 'resources:\n  - ../minimal\ncomponents:\n  - ../../components/%s\n' "$name" > "$overlay/kustomization.yaml"
+            kubectl kustomize "$overlay" | docker run --rm -i ghcr.io/yannh/kubeconform:v0.8.0@sha256:faffaf43f95aa6425306e1ab8d6fcad72acb9049158f38e574c085ea1ec0f64e -summary -ignore-missing-schemas -strict
+          done
 
   chart:
     name: Helm Chart

@@ -110,6 +110,11 @@ spec:
               value: {{ .jobTtlSecondsAfterFinished | quote }}
             {{- end }}
             {{- end }}
+            {{- if include "koshin.encryptionEnabled" . }}
+            # Served at GET /api/v1/encryption-key (KSH-25)
+            - name: RENOVATE_PUBLIC_KEY_PATH
+              value: {{ include "koshin.encryptionKeyDir" . }}/public.asc
+            {{- end }}
             {{- with .Values.proxy.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -140,6 +145,10 @@ spec:
               readOnly: true
             {{- end }}
             {{- with include "koshin.githubAppVolumeMount" . }}{{ . | nindent 12 }}{{- end }}
+            {{- if include "koshin.encryptionEnabled" . }}
+            # The public key only
+            {{- include "koshin.encryptionVolumeMount" . | nindent 12 }}
+            {{- end }}
       volumes:
         - name: repositories
           configMap:
@@ -150,3 +159,6 @@ spec:
         {{- include "koshin.kubeApiAccessVolume" . | nindent 8 }}
         {{- end }}
         {{- with include "koshin.githubAppVolume" . }}{{ . | nindent 8 }}{{- end }}
+        {{- if include "koshin.encryptionEnabled" . }}
+        {{- include "koshin.encryptionVolume" (dict "ctx" . "private" false) | nindent 8 }}
+        {{- end }}

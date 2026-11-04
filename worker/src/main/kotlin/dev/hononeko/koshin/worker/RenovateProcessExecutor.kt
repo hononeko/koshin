@@ -34,8 +34,18 @@ class RenovateProcessExecutor(
     private val logger = LoggerFactory.getLogger(RenovateProcessExecutor::class.java)
     private val outputLogger = RenovateOutputLogger()
 
+    // With a private key, not even the commands an operator allows for `postUpgradeTasks` run next to it
+    private val guardrails = UNTRUSTED_CODE_GUARDRAILS +
+        if (PRIVATE_KEY_PATH_ENV.any { !inheritedEnv[it].isNullOrBlank() }) KEY_HOLDER_GUARDRAILS else emptyMap()
+
     init {
         require(command.isNotEmpty()) { "command cannot be empty" }
+        guardrails.forEach { (key, pinned) ->
+            inheritedEnv[key]?.takeIf { it != pinned }?.let { value ->
+                val reason = if (key in KEY_HOLDER_GUARDRAILS) " while Renovate has a private key" else ""
+                logger.warn("Ignoring {}={}: koshin pins it to {}{} (KSH-25)", key, value, pinned, reason)
+            }
+        }
     }
 
     override suspend fun execute(repo: RepoRef, creds: PlatformCredentials, timeout: Duration): JobExecutionResult {
@@ -77,6 +87,8 @@ class RenovateProcessExecutor(
         redisUrl?.let { put("RENOVATE_REDIS_URL", it) }
         putAll(repoCache.renovateEnv(cacheDir))
         hostRules(repo, creds, inheritedEnv["RENOVATE_HOST_RULES"])?.let { put("RENOVATE_HOST_RULES", it) }
+        // Last: nothing inherited turns them back on
+        putAll(guardrails)
     }
 
     /** Appends a rule with the request limits for the platform's API host to any inherited `RENOVATE_HOST_RULES`. */
@@ -104,6 +116,34 @@ class RenovateProcessExecutor(
     }
 
     companion object {
+        /**
+         * The OpenPGP private keys themselves, which would sit in the environment of Renovate and everything it starts
+         * (and take precedence over `RENOVATE_PRIVATE_KEY_PATH`): Renovate reads them from the files instead (KSH-25).
+         */
+        val RAW_PRIVATE_KEY_ENV = setOf("RENOVATE_PRIVATE_KEY", "RENOVATE_PRIVATE_KEY_OLD")
+
+        /**
+         * Renovate holds the private key while it runs, so no repository gets to run code in it: no install scripts or
+         * plugins, none of the commands Renovate would run implicitly, no custom Cargo `git` registries (KSH-25).
+         */
+        val UNTRUSTED_CODE_GUARDRAILS = mapOf(
+            "RENOVATE_ALLOW_SCRIPTS" to "false",
+            "RENOVATE_ALLOWED_UNSAFE_EXECUTIONS" to "[]",
+            "RENOVATE_ALLOW_PLUGINS" to "false",
+            "RENOVATE_ALLOW_CUSTOM_CRATE_GIT_REGISTRIES" to "false",
+        )
+
+        private val PRIVATE_KEY_PATH_ENV = listOf("RENOVATE_PRIVATE_KEY_PATH", "RENOVATE_PRIVATE_KEY_PATH_OLD")
+
+        /**
+         * With a private key, `postUpgradeTasks` are off too: whatever an operator's `allowedCommands` let a repository
+         * run would run where it could read the key, and decrypt every tenant's secrets (KSH-25).
+         */
+        val KEY_HOLDER_GUARDRAILS = mapOf(
+            "RENOVATE_ALLOWED_COMMANDS" to "[]",
+            "RENOVATE_ALLOW_SHELL_EXECUTOR_FOR_POST_UPGRADE_COMMANDS" to "false",
+        )
+
         /** Worker settings and secrets that must not leak into Renovate (or repo code it runs). */
         private val STRIPPED_ENV = setOf(
             "GITHUB_TOKEN",
@@ -120,7 +160,7 @@ class RenovateProcessExecutor(
             // Legacy aliases of RENOVATE_S3_*, which koshin sets itself; Renovate lets an alias override them.
             "RENOVATE_X_S3_ENDPOINT",
             "RENOVATE_X_S3_PATH_STYLE",
-        )
+        ) + RAW_PRIVATE_KEY_ENV
         private val STRIPPED_PREFIXES = listOf("NATS_", "VALKEY_", "GITHUB_APP_")
         private const val STRIPPED_SUFFIX = "_WEBHOOK_SECRET"
 
