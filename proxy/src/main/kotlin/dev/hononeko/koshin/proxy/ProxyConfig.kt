@@ -22,6 +22,8 @@ data class ProxyConfig(
     val requestReadTimeoutSeconds: Int = DEFAULT_REQUEST_READ_TIMEOUT_SECONDS,
     val ingest: IngestConfig = IngestConfig(),
     val dispatcher: DispatcherConfig = DispatcherConfig(),
+    /** `RENOVATE_PUBLIC_KEY_PATH`: the OpenPGP public key served at `GET /api/v1/encryption-key` (KSH-25). */
+    val publicKeyPath: String? = null,
 ) {
     init {
         require(port in 0..MAX_PORT) { "port must be in 0..$MAX_PORT: $port" }
@@ -84,6 +86,7 @@ data class ProxyConfig(
                 botLogins = botLogins,
                 ingest = ingestFromEnv(env),
                 dispatcher = dispatcherFromEnv(env),
+                publicKeyPath = env["RENOVATE_PUBLIC_KEY_PATH"]?.trim()?.takeIf { it.isNotEmpty() },
             )
         }
 

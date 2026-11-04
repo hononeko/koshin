@@ -23,6 +23,11 @@ spec:
             type: PathPrefix
             value: {{ . }}
         {{- end }}
+        {{- if include "koshin.encryptionEnabled" . }}
+        - path:
+            type: Exact
+            value: /api/v1/encryption-key
+        {{- end }}
       backendRefs:
         - name: {{ include "koshin.fullname" . }}-proxy
           port: {{ .Values.proxy.service.port }}

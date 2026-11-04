@@ -225,6 +225,42 @@ Image reference; pass (dict "ctx" $ "image" .Values.proxy.image). Without a `reg
 {{- end }}
 {{- end }}
 
+{{/* Renovate's encrypted config (KSH-25): koshin's OpenPGP keypair, from renovateEncryption.existingSecret */}}
+{{- define "koshin.encryptionEnabled" -}}
+{{- if .Values.renovateEncryption.existingSecret }}true{{ end }}
+{{- end }}
+
+{{- define "koshin.encryptionKeyDir" -}}
+/etc/renovate-encryption
+{{- end }}
+
+{{/* The keypair Secret, with only the keys the container needs: (dict "ctx" $ "private" true|false) */}}
+{{- define "koshin.encryptionVolume" -}}
+{{- with .ctx.Values.renovateEncryption -}}
+- name: renovate-encryption
+  secret:
+    secretName: {{ .existingSecret }}
+    items:
+      {{- if $.private }}
+      - key: {{ .privateKeyKey }}
+        path: private.asc
+      {{- with .privateKeyOldKey }}
+      - key: {{ . }}
+        path: private-old.asc
+      {{- end }}
+      {{- else }}
+      - key: {{ .publicKeyKey }}
+        path: public.asc
+      {{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "koshin.encryptionVolumeMount" -}}
+- name: renovate-encryption
+  mountPath: {{ include "koshin.encryptionKeyDir" . }}
+  readOnly: true
+{{- end }}
+
 {{/* Unix socket the worker hands Renovate runs over, in the `runner` emptyDir */}}
 {{- define "koshin.runnerSocket" -}}
 /run/koshin/runner.sock

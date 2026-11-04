@@ -27,6 +27,7 @@ import io.ktor.server.netty.NettyApplicationEngine
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.request.receiveChannel
 import io.ktor.server.response.respond
+import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
@@ -40,6 +41,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import org.slf4j.bridge.SLF4JBridgeHandler
+import java.io.IOException
 
 private val logger = LoggerFactory.getLogger("dev.hononeko.koshin.proxy.Application")
 
@@ -82,6 +84,7 @@ fun Application.proxyModule(
     gitHubApp: ProxyGitHubApp = ProxyGitHubApp(),
     coordination: RepoCoordinationPort? = null,
     ingestObserver: IngestObserver = LoggingIngestObserver(),
+    encryptionKey: EncryptionKey? = null,
 ) {
     val ingestUseCase = IngestWebhookUseCase(
         publisher = RetryingJobQueuePublisher(
@@ -124,6 +127,29 @@ fun Application.proxyModule(
         post("/api/v1/trigger") {
             routeHandler.handleTriggerRequest(call)
         }
+
+        // Unauthenticated: it's a public key (KSH-25)
+        get("/api/v1/encryption-key") {
+            respondEncryptionKey(call, encryptionKey)
+        }
+    }
+}
+
+private suspend fun respondEncryptionKey(call: ApplicationCall, key: EncryptionKey?) {
+    if (key == null) {
+        call.respond(HttpStatusCode.NotFound, ErrorResponse("No encryption key is configured"))
+        return
+    }
+    val armored = try {
+        key.armored()
+    } catch (e: IOException) {
+        logger.warn("Cannot read the encryption key", e)
+        null
+    }
+    if (armored == null) {
+        call.respond(HttpStatusCode.ServiceUnavailable, ErrorResponse("The encryption key is unavailable"))
+    } else {
+        call.respondText(armored, EncryptionKey.CONTENT_TYPE)
     }
 }
 
@@ -172,6 +198,7 @@ fun createProxyServer(
     onStop: () -> Unit = {},
     gitHubApp: ProxyGitHubApp = ProxyGitHubApp(),
     coordination: RepoCoordinationPort? = null,
+    encryptionKey: EncryptionKey? = null,
 ): EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> = embeddedServer(
     factory = Netty,
     configure = {
@@ -193,6 +220,7 @@ fun createProxyServer(
             readinessCheck = readinessCheck,
             gitHubApp = gitHubApp,
             coordination = coordination,
+            encryptionKey = encryptionKey,
         )
     },
 )
@@ -204,6 +232,8 @@ fun main() {
     checkLogLevels()
     val proxyConfig = ProxyConfig.fromEnv()
     val natsConfig = NatsConfig.fromEnv()
+    // Checked before anything starts: a key that can't be read is a configuration error
+    val encryptionKey = proxyConfig.publicKeyPath?.let(EncryptionKey::load)
 
     logger.info(
         "Starting koshin-proxy on port {} (http2Enabled={}, platforms={})",
@@ -259,6 +289,7 @@ fun main() {
             usesInstallations = gitHubApp != null,
         ),
         coordination = valkey.coordination,
+        encryptionKey = encryptionKey,
     ).start(wait = true)
 }
 

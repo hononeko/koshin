@@ -95,6 +95,10 @@ spec:
         - name: runner-bin
           mountPath: /opt/koshin
           readOnly: true
+        {{- if include "koshin.encryptionEnabled" $ctx }}
+        # The OpenPGP private keys for Renovate's encrypted config (KSH-25); the worker container doesn't get them
+        {{- include "koshin.encryptionVolumeMount" $ctx | nindent 8 }}
+        {{- end }}
   containers:
     - name: worker
       image: {{ include "koshin.image" (dict "ctx" $ctx "image" $ctx.Values.worker.image) }}
@@ -125,6 +129,15 @@ spec:
           value: {{ .idleTimeoutSeconds | quote }}
         - name: WORKER_MAX_LIFETIME_SECONDS
           value: {{ .maxLifetimeSeconds | quote }}
+        {{- if include "koshin.encryptionEnabled" $ctx }}
+        # Passed on to Renovate, which reads the keys in the `renovate` container (KSH-25)
+        - name: RENOVATE_PRIVATE_KEY_PATH
+          value: {{ include "koshin.encryptionKeyDir" $ctx }}/private.asc
+        {{- if $ctx.Values.renovateEncryption.privateKeyOldKey }}
+        - name: RENOVATE_PRIVATE_KEY_PATH_OLD
+          value: {{ include "koshin.encryptionKeyDir" $ctx }}/private-old.asc
+        {{- end }}
+        {{- end }}
         {{- with include "koshin.sentinelPasswordEnv" $ctx }}{{ . | nindent 8 }}{{- end }}
         {{- with $ctx.Values.worker.extraEnv }}
         {{- toYaml . | nindent 8 }}
@@ -166,4 +179,7 @@ spec:
       emptyDir:
         sizeLimit: 512Mi
     {{- with include "koshin.githubAppVolume" $ctx }}{{ . | nindent 4 }}{{- end }}
+    {{- if include "koshin.encryptionEnabled" $ctx }}
+    {{- include "koshin.encryptionVolume" (dict "ctx" $ctx "private" true) | nindent 4 }}
+    {{- end }}
 {{- end }}

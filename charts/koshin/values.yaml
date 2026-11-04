@@ -55,6 +55,21 @@ gitlab:
   # -- `GITLAB_BOT_LOGIN`: webhooks sent by this login are ignored
   botLogin: ""
 
+# Renovate's `encrypted` config (KSH-25): tenants encrypt their private registry credentials against koshin's OpenPGP
+# public key, served by the proxy at `GET /api/v1/encryption-key`, and Renovate decrypts them for the repositories they
+# are scoped to. See "Encrypted registry credentials" in the repository README.
+renovateEncryption:
+  # -- Existing Secret holding koshin's armored OpenPGP keypair; empty disables encrypted config
+  existingSecret: ""
+  # -- Key of the private key in `existingSecret`, mounted into the worker's `renovate` container only
+  # (`RENOVATE_PRIVATE_KEY_PATH`)
+  privateKeyKey: private.asc
+  # -- Key of the previous private key while rotating keys (`RENOVATE_PRIVATE_KEY_PATH_OLD`); empty: none
+  privateKeyOldKey: ""
+  # -- Key of the public key in `existingSecret`, mounted into the proxy only (`RENOVATE_PUBLIC_KEY_PATH`). The ingress
+  # and the HTTPRoute route `/api/v1/encryption-key` to it.
+  publicKeyKey: public.asc
+
 # -- `RENOVATE_BOT_LOGINS`: more bot logins whose webhooks are ignored
 renovateBotLogins: []
 
@@ -138,7 +153,8 @@ proxy:
     className: ""
     # -- Ingress annotations
     annotations: {}
-    # -- Hosts and paths. Only `/webhooks/` is exposed by default: `/api/v1/trigger` stays cluster-internal.
+    # -- Hosts and paths. Only `/webhooks/` is exposed by default (and `/api/v1/encryption-key` with
+    # `renovateEncryption.existingSecret`): `/api/v1/trigger` stays cluster-internal.
     hosts:
       - host: koshin.example.com
         paths:
@@ -155,7 +171,7 @@ proxy:
     parentRefs: []
     # -- Hostnames of the route
     hostnames: []
-    # -- Path prefixes routed to the proxy
+    # -- Path prefixes routed to the proxy (and `/api/v1/encryption-key` with `renovateEncryption.existingSecret`)
     pathPrefixes:
       - /webhooks/
   podDisruptionBudget:

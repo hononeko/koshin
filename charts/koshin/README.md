@@ -118,6 +118,7 @@ publishing for a few seconds; the proxy retries, so webhooks are still accepted.
 | Proxy | `GITHUB_WEBHOOK_SECRET`, `GITLAB_WEBHOOK_SECRET`, `INTERNAL_TRIGGER_TOKEN` | `proxy.existingSecret` |
 | Worker | `GITHUB_TOKEN`, `GITLAB_TOKEN` | `worker.existingSecret` |
 | GitHub App | the private key (PEM) under `github.app.privateKeyKey` | `github.app.existingSecret` |
+| Encrypted config | koshin's OpenPGP keypair: `private.asc`, `public.asc` (and `private-old.asc` while rotating) | `renovateEncryption.existingSecret` |
 | S3 repo cache | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` | `worker.repoCache.s3.existingSecret` |
 | Sentinel (`ha`) | `sentinel` | `valkey.sentinel.existingSecret` (`<release>-valkey-sentinel`) |
 
@@ -163,6 +164,30 @@ read-only at `/opt/koshin`, so a run can't change it.
   next one.
 * No worker container mounts a ServiceAccount token: workers never call the Kubernetes API (KSH-31), and the chart
   installs no RBAC or cluster-scoped resources for them.
+
+## Encrypted registry credentials
+
+Tenants can encrypt their private registry credentials (GitHub Packages PATs included, which installation tokens can't
+replace) against koshin's OpenPGP public key, for Renovate's `encrypted` config (KSH-25). Create the keypair Secret as
+the [repository README](https://github.com/hononeko/koshin#encrypted-registry-credentials-ksh-25) shows, then:
+
+```yaml
+renovateEncryption:
+  existingSecret: koshin-renovate-encryption
+```
+
+* The private key is mounted into each worker pod's `renovate` container only, at
+  `/etc/renovate-encryption/private.asc`, and the worker passes `RENOVATE_PRIVATE_KEY_PATH` on to Renovate. Renovate
+  reads it at the start of every run, so it holds the key while it runs: the worker pins
+  `RENOVATE_ALLOW_SCRIPTS=false`, `RENOVATE_ALLOWED_UNSAFE_EXECUTIONS=[]`, `RENOVATE_ALLOW_PLUGINS=false` and
+  `RENOVATE_ALLOW_CUSTOM_CRATE_GIT_REGISTRIES=false`, and with the key also `RENOVATE_ALLOWED_COMMANDS=[]` and
+  `RENOVATE_ALLOW_SHELL_EXECUTOR_FOR_POST_UPGRADE_COMMANDS=false` (no `postUpgradeTasks`), so no repository runs code
+  next to it.
+* The proxy gets the public key only, and serves it, unauthenticated, at `GET /api/v1/encryption-key`. The ingress and
+  the HTTPRoute route that path (`Exact`) along with `/webhooks/`.
+* **Rotating:** put the new keypair in the Secret as `private.asc` / `public.asc`, the previous private key as
+  `private-old.asc`, and set `renovateEncryption.privateKeyOldKey: private-old.asc`. Renovate tries both, and the proxy
+  serves the new public key once the Secret update reaches its pod. Unset it once tenants have re-encrypted.
 
 ## Renovate version
 
@@ -382,14 +407,14 @@ Kubernetes: `>=1.30.0-0`
 | proxy.httpRoute.enabled | bool | `false` | Expose the webhook endpoints through a Gateway API HTTPRoute |
 | proxy.httpRoute.hostnames | list | `[]` | Hostnames of the route |
 | proxy.httpRoute.parentRefs | list | `[]` | Gateways to attach to |
-| proxy.httpRoute.pathPrefixes | list | `["/webhooks/"]` | Path prefixes routed to the proxy |
+| proxy.httpRoute.pathPrefixes | list | `["/webhooks/"]` | Path prefixes routed to the proxy (and `/api/v1/encryption-key` with `renovateEncryption.existingSecret`) |
 | proxy.image.digest | string | `""` | Proxy image digest; takes precedence over the tag |
 | proxy.image.repository | string | `"hononeko/koshin-proxy"` | Proxy image repository |
 | proxy.image.tag | string | `""` | Proxy image tag (default: the chart's `appVersion`) |
 | proxy.ingress.annotations | object | `{}` | Ingress annotations |
 | proxy.ingress.className | string | `""` | Ingress class |
 | proxy.ingress.enabled | bool | `false` | Expose the webhook endpoints through an Ingress |
-| proxy.ingress.hosts | list | `[{"host":"koshin.example.com","paths":[{"path":"/webhooks/","pathType":"Prefix"}]}]` | Hosts and paths. Only `/webhooks/` is exposed by default: `/api/v1/trigger` stays cluster-internal. |
+| proxy.ingress.hosts | list | `[{"host":"koshin.example.com","paths":[{"path":"/webhooks/","pathType":"Prefix"}]}]` | Hosts and paths. Only `/webhooks/` is exposed by default (and `/api/v1/encryption-key` with `renovateEncryption.existingSecret`): `/api/v1/trigger` stays cluster-internal. |
 | proxy.ingress.tls | list | `[]` | Ingress TLS |
 | proxy.nodeSelector | object | `{}` | Proxy node selector |
 | proxy.podAnnotations | object | `{}` | Proxy pod annotations |
@@ -412,6 +437,10 @@ Kubernetes: `>=1.30.0-0`
 | proxy.tolerations | list | `[]` | Proxy tolerations |
 | proxy.topologySpreadConstraints | list | `[]` | Proxy topology spread constraints (default: spread across nodes) |
 | renovateBotLogins | list | `[]` | `RENOVATE_BOT_LOGINS`: more bot logins whose webhooks are ignored |
+| renovateEncryption.existingSecret | string | `""` | Existing Secret holding koshin's armored OpenPGP keypair; empty disables encrypted config |
+| renovateEncryption.privateKeyKey | string | `"private.asc"` | Key of the private key in `existingSecret`, mounted into the worker's `renovate` container only (`RENOVATE_PRIVATE_KEY_PATH`) |
+| renovateEncryption.privateKeyOldKey | string | `""` | Key of the previous private key while rotating keys (`RENOVATE_PRIVATE_KEY_PATH_OLD`); empty: none |
+| renovateEncryption.publicKeyKey | string | `"public.asc"` | Key of the public key in `existingSecret`, mounted into the proxy only (`RENOVATE_PUBLIC_KEY_PATH`). The ingress and the HTTPRoute route `/api/v1/encryption-key` to it. |
 | sweeper.enabled | bool | `true` | Schedule a run of every discovered repository on `schedule`. Needs `INTERNAL_TRIGGER_TOKEN`; without one the CronJob isn't rendered. |
 | sweeper.image.repository | string | `"docker.io/curlimages/curl"` | Sweeper image (any image with curl) |
 | sweeper.image.tag | string | `"8.23.0"` | Sweeper image tag |
