@@ -55,6 +55,8 @@ class WorkerDaemon(
         if (job == null) {
             job = scope.launch {
                 loop()
+                // The loop also returns once stop() cancels it between suspension points; that isn't finishing
+                ensureActive()
                 onFinished()
             }
         }
