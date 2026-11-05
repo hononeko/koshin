@@ -673,6 +673,15 @@
           },
           "additionalProperties": false
         },
+        "runnerInit": {
+          "type": "object",
+          "properties": {
+            "resources": {
+              "type": "object"
+            }
+          },
+          "additionalProperties": false
+        },
         "podSecurityContext": {
           "type": "object"
         },

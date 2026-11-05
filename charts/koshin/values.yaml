@@ -345,6 +345,15 @@ worker:
         memory: 1Gi
       limits:
         memory: 4Gi
+  runnerInit:
+    # -- Resources of the `koshin-runner-init` init container, which copies the Renovate runner for the `renovate`
+    # container at pod start
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        memory: 256Mi
   # -- Worker pod security context (both images run as Renovate's uid 12021)
   podSecurityContext:
     runAsNonRoot: true

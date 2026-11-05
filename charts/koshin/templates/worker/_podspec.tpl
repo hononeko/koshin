@@ -53,11 +53,7 @@ spec:
       imagePullPolicy: {{ $ctx.Values.image.pullPolicy }}
       command: ["/opt/koshin/bin/koshin-runner-init", "/opt/koshin-dist"]
       resources:
-        requests:
-          cpu: 50m
-          memory: 32Mi
-        limits:
-          memory: 256Mi
+        {{- toYaml $ctx.Values.worker.runnerInit.resources | nindent 8 }}
       securityContext:
         {{- toYaml $ctx.Values.worker.securityContext | nindent 8 }}
       volumeMounts:
