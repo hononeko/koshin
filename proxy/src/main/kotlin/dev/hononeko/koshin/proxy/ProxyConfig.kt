@@ -22,7 +22,7 @@ data class ProxyConfig(
     val requestReadTimeoutSeconds: Int = DEFAULT_REQUEST_READ_TIMEOUT_SECONDS,
     val ingest: IngestConfig = IngestConfig(),
     val dispatcher: DispatcherConfig = DispatcherConfig(),
-    /** `RENOVATE_PUBLIC_KEY_PATH`: the OpenPGP public key served at `GET /api/v1/encryption-key` (KSH-25). */
+    /** `RENOVATE_PUBLIC_KEY_PATH`: the OpenPGP public key served at `GET /api/v1/encryption-key`. */
     val publicKeyPath: String? = null,
 ) {
     init {
@@ -104,7 +104,7 @@ data class ProxyConfig(
                 namespace = env["POD_NAMESPACE"]?.takeIf { it.isNotBlank() },
                 // More workers than run slots would only wait for one
                 maxWorkers = env.long("WORKER_MAX_REPLICAS")?.toInt() ?: runsGlobal,
-                // The per-platform cap of earlier versions is the per-credential one now (KSH-24)
+                // The per-platform cap of earlier versions is the per-credential one now
                 maxRunsPerCredential = (
                     env.long("MAX_CONCURRENT_RUNS_PER_CREDENTIAL") ?: env.long("MAX_CONCURRENT_RUNS_PER_PLATFORM")
                     )?.toInt() ?: defaults.maxRunsPerCredential,

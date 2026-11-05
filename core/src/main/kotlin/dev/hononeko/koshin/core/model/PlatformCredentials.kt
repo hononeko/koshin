@@ -18,7 +18,7 @@ data class PlatformCredentials(
         require(installationId == null || installationId > 0) { "installationId must be positive: $installationId" }
     }
 
-    /** The scope of [token] on [platform]: whose caches a run with it may read and write (KSH-26). */
+    /** The scope of [token] on [platform]: whose caches a run with it may read and write. */
     fun scope(platform: Platform): CredentialScope = CredentialScope.of(platform, installationId)
 
     override fun toString(): String = "PlatformCredentials(token=***, endpoint=$endpoint, username=$username, " +

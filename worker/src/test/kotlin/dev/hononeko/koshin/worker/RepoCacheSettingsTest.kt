@@ -85,7 +85,7 @@ class RepoCacheSettingsTest {
     }
 
     @Test
-    fun `s3 is refused with the GitHub App, which serves many tenants (KSH-26)`() {
+    fun `s3 is refused with the GitHub App, which serves many tenants`() {
         val s3 = RepoCacheSettings(provider = RepoCacheProvider.S3, s3Url = "s3://renovate/cache/")
 
         val error = assertThrows<IllegalArgumentException> { s3.requireSingleTenant(multiTenant = true) }

@@ -23,7 +23,7 @@ enum class RepoCacheProvider {
     }
 }
 
-/** Renovate repository cache (KSH-10). */
+/** Renovate repository cache. */
 data class RepoCacheSettings(
     val provider: RepoCacheProvider = RepoCacheProvider.NATS,
     val bucket: String = NatsRepoCacheConfig.DEFAULT_BUCKET,
@@ -45,7 +45,7 @@ data class RepoCacheSettings(
 
     /**
      * Fails with [RepoCacheProvider.S3] when [multiTenant] (the GitHub App): Renovate gets the bucket's credentials and
-     * reads and writes every tenant's caches there itself (KSH-26).
+     * reads and writes every tenant's caches there itself.
      */
     fun requireSingleTenant(multiTenant: Boolean) {
         require(!multiTenant || provider != RepoCacheProvider.S3) {

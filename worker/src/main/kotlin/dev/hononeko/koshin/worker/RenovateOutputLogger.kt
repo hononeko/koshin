@@ -17,7 +17,7 @@ import org.slf4j.event.Level
  * line, without one) as the message and the line embedded as the `renovate` field, so its fields (`level`, `msg`,
  * `repository`, `err`, ...) stay queryable. Other lines are logged as they are.
  *
- * Tokens are scrubbed from both first (KSH-26): Renovate's sanitizer misses what child tools (`git`, `npm`, `gpg`)
+ * Tokens are scrubbed from both first: Renovate's sanitizer misses what child tools (`git`, `npm`, `gpg`)
  * print, and the embedded line bypasses the masking in `logback.xml`.
  */
 class RenovateOutputLogger(

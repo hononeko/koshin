@@ -38,9 +38,9 @@ import java.util.concurrent.TimeUnit
 import kotlin.io.path.readText
 
 /**
- * Renovate's encrypted config as koshin runs it (KSH-25): the Renovate version the chart pins, with the environment
+ * Renovate's encrypted config as koshin runs it: the Renovate version the chart pins, with the environment
  * [RenovateProcessExecutor] builds, against a real Git platform (Gitea). The keypairs are made, and the secrets
- * encrypted, with the README's `gpg` and `jq` commands.
+ * encrypted, with the `gpg` and `jq` commands of `docs/registry-credentials.md`.
  */
 @Timeout(value = 10, unit = TimeUnit.MINUTES)
 class RenovateDecryptionIntegrationTest {

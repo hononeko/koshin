@@ -17,7 +17,7 @@ import kotlin.io.path.exists
 import kotlin.io.path.readText
 import kotlin.io.path.writeText
 
-/** Renovate's repository cache (KSH-10) following a repo across workers through the NATS Object Store. */
+/** Renovate's repository cache following a repo across workers through the NATS Object Store. */
 class RepoCacheIntegrationTest {
     private val cluster = E2eCluster()
     private val repo = RepoRef(Platform.GITHUB, "hononeko/koshin")
@@ -71,7 +71,7 @@ class RepoCacheIntegrationTest {
         worker.renovate("from-failed-run", JobExecutionResult.Failed(1))
         run()
         assertEquals("cache-v1", cluster.storedCache(repo))
-        assertFalse(worker.cacheFile(repo).exists(), "the cache dir is wiped after every run (KSH-26)")
+        assertFalse(worker.cacheFile(repo).exists(), "the cache dir is wiped after every run")
         worker.renovate("from-timed-out-run", JobExecutionResult.TimedOut)
         run()
         assertEquals("cache-v1", cluster.storedCache(repo))

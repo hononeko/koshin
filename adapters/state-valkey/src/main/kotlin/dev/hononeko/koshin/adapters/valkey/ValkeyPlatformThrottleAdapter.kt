@@ -14,7 +14,7 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Run-slot caps (KSH-24): [maxRunsPerCredential] runs per credential scope (`MAX_CONCURRENT_RUNS_PER_CREDENTIAL`) and
+ * Run-slot caps: [maxRunsPerCredential] runs per credential scope (`MAX_CONCURRENT_RUNS_PER_CREDENTIAL`) and
  * [maxRunsGlobal] across them all (`MAX_CONCURRENT_RUNS_GLOBAL`), plus the rate-limit cooldown's backoff.
  */
 data class PlatformThrottleConfig(
@@ -41,7 +41,7 @@ data class PlatformThrottleConfig(
 }
 
 /**
- * Run slots and rate-limit cooldowns per credential scope (KSH-24). A run slot is a lease in two ZSETs of
+ * Run slots and rate-limit cooldowns per credential scope. A run slot is a lease in two ZSETs of
  * `token → lease expiry`: the scope's (`koshin:{throttle:<scope>}:slots`) and the global one
  * (`koshin:{throttle:global}:slots`). They're in different hash slots, so they're leased one after the other and the
  * first given back if the second fails. Lease expiry is computed from Valkey's own clock (`TIME`) inside the scripts,

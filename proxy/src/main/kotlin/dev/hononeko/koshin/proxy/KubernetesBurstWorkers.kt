@@ -17,7 +17,7 @@ import kotlin.time.Duration
 
 /**
  * Burst workers as Kubernetes `batch/v1` `Job`s cloned from the chart-rendered `v1/PodTemplate` [podTemplateName], so
- * every pod setting stays in Helm or Kustomize (KSH-32). Each `Job` runs one pod once (`backoffLimit: 0`), is deleted
+ * every pod setting stays in Helm or Kustomize. Each `Job` runs one pod once (`backoffLimit: 0`), is deleted
  * [ttlAfterFinished] after it finishes, and belongs to the `PodTemplate`, so uninstalling removes it.
  */
 class KubernetesBurstWorkers(

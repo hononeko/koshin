@@ -26,8 +26,8 @@ kubectl -n koshin create secret generic koshin-proxy \
 kubectl -n koshin create secret generic koshin-worker --from-literal=GITHUB_TOKEN=...
 ```
 
-To run as a GitHub App instead of with a PAT, register one from
-[`github-app/manifest.json`](https://github.com/hononeko/koshin/tree/main/github-app) and set `github.app.id` and
+To run as a GitHub App instead of with a PAT, register one as the
+[GitHub App guide](https://github.com/hononeko/koshin/blob/main/docs/github-app.md) shows and set `github.app.id` and
 `github.app.existingSecret` (no `worker.existingSecret` needed for GitHub).
 
 ### `minimal` profile
@@ -128,8 +128,8 @@ the sweeper CronJob isn't installed.
 ## Workers
 
 With `worker.autoscaling.enabled` (the default), no autoscaler is involved: the proxy starts burst workers as Kubernetes
-`Job`s, cloned from the `<release>-worker` `PodTemplate` the chart renders, so every pod setting stays in your values
-(KSH-32). It reconciles right after it publishes a job and every `autoscaling.dispatchIntervalSeconds`, and only the
+`Job`s, cloned from the `<release>-worker` `PodTemplate` the chart renders, so every pod setting stays in your values.
+It reconciles right after it publishes a job and every `autoscaling.dispatchIntervalSeconds`, and only the
 proxy replica holding a Valkey lease does, so replicas never double up.
 
 * **Demand:** jobs it can run now, per credential scope (a GitHub App installation, or a platform's token), up to
@@ -162,14 +162,15 @@ read-only at `/opt/koshin`, so a run can't change it.
   that run and the non-secret settings.
 * After each run, every process left in the `renovate` container is killed, so no process a run starts can watch the
   next one.
-* No worker container mounts a ServiceAccount token: workers never call the Kubernetes API (KSH-31), and the chart
+* No worker container mounts a ServiceAccount token: workers never call the Kubernetes API, and the chart
   installs no RBAC or cluster-scoped resources for them.
 
 ## Encrypted registry credentials
 
 Tenants can encrypt their private registry credentials (GitHub Packages PATs included, which installation tokens can't
-replace) against koshin's OpenPGP public key, for Renovate's `encrypted` config (KSH-25). Create the keypair Secret as
-the [repository README](https://github.com/hononeko/koshin#encrypted-registry-credentials-ksh-25) shows, then:
+replace) against koshin's OpenPGP public key, for Renovate's `encrypted` config. Create the keypair Secret as
+the [registry credentials guide](https://github.com/hononeko/koshin/blob/main/docs/registry-credentials.md#operators)
+shows, then:
 
 ```yaml
 renovateEncryption:
@@ -476,7 +477,7 @@ Kubernetes: `>=1.30.0-0`
 | valkeySettings.queuedTtlSeconds | int | `86400` | `QUEUED_TTL_SECONDS`: how long a repo stays marked queued, so its webhooks are coalesced instead of published. Bounds how long a lost job (e.g. NATS restarting on `emptyDir`) blocks the repo's webhooks. |
 | worker.affinity | object | `{}` | Worker affinity |
 | worker.autoscaling.dispatchIntervalSeconds | int | `5` | How often the proxy reconciles burst workers when it publishes nothing (it also does after every publish) |
-| worker.autoscaling.enabled | bool | `true` | The proxy starts burst worker `Job`s from the worker `PodTemplate` as jobs queue up, and they exit once the queue is drained (KSH-32). No KEDA: the proxy gets a namespaced Role on Jobs. Off: `worker.replicas` static workers. |
+| worker.autoscaling.enabled | bool | `true` | The proxy starts burst worker `Job`s from the worker `PodTemplate` as jobs queue up, and they exit once the queue is drained. No KEDA: the proxy gets a namespaced Role on Jobs. Off: `worker.replicas` static workers. |
 | worker.autoscaling.idleTimeoutSeconds | int | `10` | `WORKER_IDLE_TIMEOUT_SECONDS` of burst workers: exit once no job was runnable for this long |
 | worker.autoscaling.jobActiveDeadlineSeconds | int | `21600` | `activeDeadlineSeconds` of burst worker Jobs |
 | worker.autoscaling.jobTtlSecondsAfterFinished | int | `60` | `ttlSecondsAfterFinished` of burst worker Jobs |
@@ -512,7 +513,7 @@ Kubernetes: `>=1.30.0-0`
 | worker.renovate.image.registry | string | `"ghcr.io"` | Registry of the Renovate image (empty: Docker Hub, e.g. with `repository: renovate/renovate`) |
 | worker.renovate.image.repository | string | `"renovatebot/renovate"` | Renovate image repository. Use a `-full` image: it ships the tools Renovate runs (`binarySource=global`). |
 | worker.renovate.image.tag | string | `"44.178.3-full"` | Renovate version, upgradable without a koshin release |
-| worker.renovate.resources | object | `{"limits":{"memory":"4Gi"},"requests":{"cpu":"500m","memory":"1Gi"}}` | Resources of the `renovate` container, where Renovate runs (KSH-21) |
+| worker.renovate.resources | object | `{"limits":{"memory":"4Gi"},"requests":{"cpu":"500m","memory":"1Gi"}}` | Resources of the `renovate` container, where Renovate runs |
 | worker.renovateRedisUrl | string | `""` | `RENOVATE_REDIS_URL`: Renovate's package cache. Default: the `valkey-cache` subchart, else the coordination Valkey when it's a plain `redis://` URL. |
 | worker.replicas | int | `1` | Worker replicas when `autoscaling.enabled` is false |
 | worker.repoCache.bucket | string | `"koshin-repo-cache"` | `REPO_CACHE_BUCKET`: Object Store bucket |

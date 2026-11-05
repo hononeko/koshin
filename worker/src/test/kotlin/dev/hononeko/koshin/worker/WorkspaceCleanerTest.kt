@@ -129,7 +129,7 @@ class WorkspaceCleanerTest {
     }
 
     @Test
-    fun `cleanup empties the cache dir and keeps it (KSH-26)`() = runTest {
+    fun `cleanup empties the cache dir and keeps it`() = runTest {
         val cleaner = WorkspaceCleaner(baseDir)
         val cacheDir = baseDir.resolve("cache")
         fillCache(cacheDir)

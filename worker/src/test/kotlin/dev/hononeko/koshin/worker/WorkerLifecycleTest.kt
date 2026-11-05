@@ -17,7 +17,7 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
-/** Drain-then-exit and the warm-worker lease (KSH-31). */
+/** Drain-then-exit and the warm-worker lease. */
 class WorkerLifecycleTest {
     private val platforms = setOf(Platform.GITHUB)
 

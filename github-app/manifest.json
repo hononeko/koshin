@@ -6,7 +6,7 @@
     "url": "https://koshin.example.com/webhooks/github",
     "active": true
   },
-  "redirect_url": "https://github.com/hononeko/koshin/blob/main/github-app/README.md",
+  "redirect_url": "https://github.com/hononeko/koshin/blob/main/docs/github-app.md",
   "public": false,
   "default_permissions": {
     "administration": "read",

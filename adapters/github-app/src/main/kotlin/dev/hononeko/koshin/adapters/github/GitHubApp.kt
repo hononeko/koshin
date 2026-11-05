@@ -21,7 +21,7 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Instant
 
-/** koshin as a GitHub App (KSH-14): installation tokens for Renovate runs, and the repositories to sweep. */
+/** koshin as a GitHub App: installation tokens for Renovate runs, and the repositories to sweep. */
 class GitHubApp internal constructor(
     private val config: GitHubAppConfig,
     internal val api: GitHubAppApi,
@@ -46,7 +46,7 @@ class GitHubApp internal constructor(
     /** Installation tokens, shared by everything this process does as the App. */
     val tokens = InstallationTokens(api, clock)
 
-    /** Which accounts may use the App (KSH-17); call [AccountAllowList.resolveLogins] at startup. */
+    /** Which accounts may use the App; call [AccountAllowList.resolveLogins] at startup. */
     val allowList = AccountAllowList(config.allowedAccounts) { login -> api.user(login) }
 
     /** The App's bot login, `<slug>[bot]`: the author of everything Renovate pushes. */
@@ -74,8 +74,8 @@ class GitHubApp internal constructor(
     }
 
     /**
-     * [targets] with the App installation covering each GitHub repository (KSH-24), so its job is queued in that
-     * installation's scope, and without those whose installation belongs to an account that isn't allowed (KSH-17).
+     * [targets] with the App installation covering each GitHub repository, so its job is queued in that
+     * installation's scope, and without those whose installation belongs to an account that isn't allowed.
      * One lookup per owner, cached for an hour. A target that names its installation already (from discovery, which
      * checks the account) is kept as it is; one the App isn't installed on, or whose lookup fails, is kept without
      * one: the worker checks again.
@@ -147,7 +147,7 @@ class GitHubApp internal constructor(
 }
 
 /**
- * `GITHUB_APP_ALLOWED_ACCOUNTS` (KSH-17): the accounts whose installations koshin serves, as numeric IDs or logins.
+ * `GITHUB_APP_ALLOWED_ACCOUNTS`: the accounts whose installations koshin serves, as numeric IDs or logins.
  * Logins are resolved to IDs at startup ([resolveLogins]) and matched by ID from then on, since a login can be renamed
  * and a freed one registered by someone else. A login that couldn't be resolved is matched by login, ignoring case.
  * An empty list allows every account.
@@ -217,7 +217,7 @@ class InstallationTokens internal constructor(private val api: GitHubAppApi, pri
 
 /**
  * Credentials for GitHub runs as the App: an installation token for the repo's installation, with its ID (whose caches
- * the run gets, KSH-26), plus the bot identity (`RENOVATE_USERNAME`, `RENOVATE_GIT_AUTHOR`). Installation tokens last
+ * the run gets), plus the bot identity (`RENOVATE_USERNAME`, `RENOVATE_GIT_AUTHOR`). Installation tokens last
  * 60 minutes, so one is handed to a run only while it has at least `CLI_TIMEOUT_MINUTES + 5` minutes left, and can't
  * expire mid-run.
  */
@@ -317,7 +317,7 @@ class GitHubAppCredentialsProvider internal constructor(
 }
 
 /**
- * Every repository the App is installed on, with its installation (KSH-24), skipping archived and disabled ones and
+ * Every repository the App is installed on, with its installation, skipping archived and disabled ones and
  * suspended installations.
  */
 class GitHubAppRepositoryDiscovery internal constructor(

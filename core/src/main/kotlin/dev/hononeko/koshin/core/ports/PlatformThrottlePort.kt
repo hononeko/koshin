@@ -4,7 +4,7 @@ import dev.hononeko.koshin.core.model.CredentialScope
 import kotlin.time.Duration
 
 /**
- * Run slots and rate-limit cooldowns per credential scope (KSH-24). A run slot is two leases taken together: one of
+ * Run slots and rate-limit cooldowns per credential scope. A run slot is two leases taken together: one of
  * the global cap on runs, and one of its scope's cap.
  */
 interface PlatformThrottlePort {

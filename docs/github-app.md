@@ -1,10 +1,10 @@
 # The koshin GitHub App
 
-koshin runs Renovate as a GitHub App (KSH-14) rather than with a personal access token. The App gets rate limits that
+koshin runs Renovate as a GitHub App rather than with a personal access token. The App gets rate limits that
 grow with each installation, one webhook for every repository it's installed on, its own bot identity, and the list of
 repositories for the sweeper to scan. Without an App, koshin falls back to `GITHUB_TOKEN`.
 
-[`manifest.json`](manifest.json) registers the App through GitHub's
+[`github-app/manifest.json`](../github-app/manifest.json) registers the App through GitHub's
 [manifest flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest). Its
 permissions are the ones [Renovate asks for](https://docs.renovatebot.com/modules/platform/github/#running-as-a-github-app):
 
@@ -24,7 +24,7 @@ It subscribes to `push`, `pull_request` and `issues`. GitHub always sends an App
 
 ## Register the App
 
-1. Edit `manifest.json`:
+1. Edit `github-app/manifest.json`:
    * `name`: unique on GitHub, e.g. `koshin-<your-org>`.
    * `hook_attributes.url`: the proxy's GitHub webhook, `https://<proxy host>/webhooks/github`.
    * Keep `public: false` unless the App must be installed on other accounts too; then set the allow-list first
@@ -74,7 +74,7 @@ On GitHub Enterprise Server, use `https://<ghes>/settings/apps/new` and
 A private App can only be installed on the account that owns it. To install it on another user or organization too
 (e.g. your own account and your organization), the App must be **public**, and then anyone who finds it can install it
 and point your workers, API budget and registry credentials at their repositories. GitHub can't restrict who installs a
-public App, so koshin does (KSH-17):
+public App, so koshin does:
 
 * `GITHUB_APP_ALLOWED_ACCOUNTS` (chart: `github.app.allowedAccounts`) lists the users and organizations koshin serves.
   Use numeric account IDs, since a login can be renamed and a freed login registered by someone else:
@@ -102,3 +102,8 @@ Set the allow-list, then make the App public (App settings → Advanced → Make
   bot's noreply email), and the proxy ignores that bot's webhooks, so Renovate's own pushes don't trigger runs.
 * **Sweeper:** `POST /api/v1/trigger {"discover": true}` runs every repository of every installation, except archived
   and disabled ones and suspended installations, plus any listed in `SWEEP_REPOSITORIES_FILE`.
+* **`github.com` lookups:** on github.com runs the worker drops `GITHUB_COM_TOKEN` and `RENOVATE_GITHUB_COM_TOKEN`, so
+  changelog, release-note and datasource lookups on github.com use the installation's own token and rate limit, never
+  an operator's. GitLab and GHES runs still get them.
+* **Rate limits:** each installation is its own credential scope, with its own run slots and cooldown (see
+  [Rate limiting](rate-limiting.md)).

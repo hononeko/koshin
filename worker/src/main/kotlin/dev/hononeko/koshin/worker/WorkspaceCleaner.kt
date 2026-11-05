@@ -19,7 +19,7 @@ import kotlin.io.path.listDirectoryEntries
 
 /**
  * Deletes Renovate clones under `<baseDir>/repos/<platform>/<repository>` (Renovate's default `localDir` layout), and
- * empties Renovate's `cacheDir` after every run (KSH-26): the repository cache file, cached HTTP bodies of private
+ * empties Renovate's `cacheDir` after every run: the repository cache file, cached HTTP bodies of private
  * presets and the file package cache would otherwise be there for the next run on the pod, maybe another tenant's.
  * Recursive deletes never follow symlinks.
  */

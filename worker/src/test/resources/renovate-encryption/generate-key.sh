@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Makes a koshin OpenPGP keypair the way the README tells operators to: generate-key.sh <name> writes
+# Makes a koshin OpenPGP keypair the way docs/registry-credentials.md tells operators to: generate-key.sh <name> writes
 # /tmp/keys/<name>-private.asc and /tmp/keys/<name>-public.asc.
 set -euo pipefail
 name="$1"

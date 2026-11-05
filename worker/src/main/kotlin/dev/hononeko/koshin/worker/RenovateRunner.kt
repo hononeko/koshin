@@ -24,7 +24,7 @@ import kotlin.io.path.createDirectories
 import kotlin.io.path.deleteIfExists
 
 /**
- * Runs Renovate for the worker in a container of its own (KSH-21), so neither Renovate nor the repo code it may run can
+ * Runs Renovate for the worker in a container of its own, so neither Renovate nor the repo code it may run can
  * read the worker's secrets (its environment, through `/proc`) or its ServiceAccount token. That container runs the
  * upstream Renovate image, so Renovate's environment is this container's ([ownEnv]: the image's `PATH`, `HOME` and
  * toolchain settings) plus what each [RunRequest] carries, minus the worker container's own basics
@@ -126,8 +126,8 @@ class RenovateRunner(
         replies.send(RunnerMessage.Exited(code))
     }
 
-    // Never a raw private key, from either side: Renovate reads the keys from files (KSH-25). A `github.com` token only
-    // from the worker, which passes it on to GitLab and GHES runs only (KSH-26).
+    // Never a raw private key, from either side: Renovate reads the keys from files. A `github.com` token only
+    // from the worker, which passes it on to GitLab and GHES runs only.
     internal fun runEnvironment(requested: Map<String, String>): Map<String, String> = buildMap {
         putAll(ownEnv - RUNNER_ENV - RenovateProcessExecutor.GITHUB_COM_TOKEN_ENV)
         putAll(requested - WORKER_LOCAL_ENV)

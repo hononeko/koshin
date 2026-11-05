@@ -77,7 +77,7 @@ class NatsObjectStoreRepoCacheIntegrationTest {
     }
 
     @Test
-    fun `two installations with the same owner and repo never read each other's cache (KSH-26)`() = runBlocking {
+    fun `two installations with the same owner and repo never read each other's cache`() = runBlocking {
         val a = cache(workerA)
         val b = cache(workerB)
         val other = CredentialScope.Installation(43)

@@ -17,9 +17,9 @@ import kotlin.random.Random
 import kotlin.time.Duration
 
 /**
- * The work queue's upkeep, run by the always-on proxy (KSH-30) so it works with no worker running: MaxDeliver
- * exhaustion → DLQ, through the advisory forwarder plus the sweeper for advisories nobody handled (KSH-18), and the
- * per-scope consumers (KSH-24): moving jobs off the legacy per-platform queue, deleting idle consumers and creating
+ * The work queue's upkeep, run by the always-on proxy so it works with no worker running: MaxDeliver
+ * exhaustion → DLQ, through the advisory forwarder plus the sweeper for advisories nobody handled, and the
+ * per-scope consumers: moving jobs off the legacy per-platform queue, deleting idle consumers and creating
  * missing ones.
  */
 object NatsHousekeeping {

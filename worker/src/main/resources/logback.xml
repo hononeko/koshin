@@ -15,7 +15,7 @@
                 <maxDepthPerThrowable>30</maxDepthPerThrowable>
                 <rootCauseFirst>true</rootCauseFirst>
             </throwableConverter>
-            <!-- Tokens are scrubbed from every logged string: messages, stack traces, fields (KSH-26) -->
+            <!-- Tokens are scrubbed from every logged string: messages, stack traces, fields -->
             <decorator class="net.logstash.logback.mask.MaskingJsonGeneratorDecorator">
                 <valueMasker class="dev.hononeko.koshin.worker.SecretValueMasker" />
             </decorator>

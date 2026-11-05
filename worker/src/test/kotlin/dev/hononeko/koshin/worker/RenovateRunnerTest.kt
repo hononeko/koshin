@@ -137,7 +137,7 @@ class RenovateRunnerTest {
             assertEquals("/home/ubuntu", seen["HOME"])
             assertNull(seen["JAVA_HOME"])
             assertNull(seen["RUNNER_SOCKET"])
-            // Renovate reads the private keys from files (KSH-25)
+            // Renovate reads the private keys from files
             assertNull(seen["RENOVATE_PRIVATE_KEY"])
             assertNull(seen["RENOVATE_PRIVATE_KEY_OLD"])
             assertEquals("hononeko/koshin", workDir.resolve("arg.txt").readText().trim())
@@ -167,7 +167,7 @@ class RenovateRunnerTest {
     }
 
     @Test
-    fun `a github_com token comes from the worker's request only, never the runner's own environment (KSH-26)`() {
+    fun `a github_com token comes from the worker's request only, never the runner's own environment`() {
         val ownEnv = mapOf(
             "HOME" to "/home/ubuntu",
             "GITHUB_COM_TOKEN" to "ghp_x",

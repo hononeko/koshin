@@ -112,7 +112,7 @@ class RenovateOutputLoggerTest {
     }
 
     @Test
-    fun `tokens in raw lines from child tools are scrubbed before they reach SLF4J (KSH-26)`() {
+    fun `tokens in raw lines from child tools are scrubbed before they reach SLF4J`() {
         redactor.track("gitlab-run-token-1234").use {
             output.log("fatal: remote x-access-token:ghs_fake1234@github.com/o/r.git", "stderr")
             output.log("npm ERR! //npm.pkg.github.com/:_authToken=ghp_abcDEF123", "stderr")
@@ -132,7 +132,7 @@ class RenovateOutputLoggerTest {
     }
 
     @Test
-    fun `tokens in JSON lines are scrubbed field by field, keeping the line valid JSON (KSH-26)`() {
+    fun `tokens in JSON lines are scrubbed field by field, keeping the line valid JSON`() {
         // The token pattern ends at the escaped quote's backslash: a raw replace would break the JSON
         val line = """{"level":50,"msg":"push failed for ghs_abc123","err":{"cmd":"git push""" +
             """ x-access-token:abc\\\"x@github.com","args":["the-run-token-1234"]},"n":7}"""

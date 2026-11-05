@@ -25,7 +25,7 @@ LABEL org.opencontainers.image.title="koshin-worker" \
       org.opencontainers.image.version="${VERSION}"
 
 # No Renovate here: the pod's `renovate` container runs the upstream image, with the runner koshin-runner-init copies
-# from this one (KSH-27).
+# from this one.
 COPY --from=build /src/worker/build/install/worker/lib/ /opt/koshin/lib/
 COPY --chmod=755 docker/koshin-runner docker/koshin-runner-init /opt/koshin/bin/
 # koshin-runner-init's default destination, owned by the runtime user so a new Compose volume mounted there is too

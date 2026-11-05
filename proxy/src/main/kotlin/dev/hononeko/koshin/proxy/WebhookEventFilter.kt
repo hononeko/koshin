@@ -17,7 +17,7 @@ data class WebhookAccount(val id: Long, val login: String) {
 sealed interface WebhookDecision {
     /**
      * [account] is the GitHub repository owner, checked against `GITHUB_APP_ALLOWED_ACCOUNTS`; [installationId] the
-     * GitHub App installation that sent the webhook, whose scope the job is queued in (KSH-24).
+     * GitHub App installation that sent the webhook, whose scope the job is queued in.
      */
     data class Enqueue(val repository: String, val account: WebhookAccount? = null, val installationId: Long? = null) :
         WebhookDecision

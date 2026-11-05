@@ -11,7 +11,7 @@ import java.nio.file.Path
 
 /**
  * koshin's armored OpenPGP public key (`RENOVATE_PUBLIC_KEY_PATH`), served at `GET /api/v1/encryption-key` so tenants
- * can encrypt their registry credentials for Renovate's `encrypted` config (KSH-25). Read on each request, so a key
+ * can encrypt their registry credentials for Renovate's `encrypted` config. Read on each request, so a key
  * rotated in a mounted Secret is served without a restart; [load] checks the file once at startup.
  */
 class EncryptionKey(private val path: Path, private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO) {

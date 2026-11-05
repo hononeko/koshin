@@ -9,13 +9,13 @@ data class WorkerConfig(
     val natsAckWait: Duration = 60.seconds,
     val lockTtl: Duration = 45.seconds,
     val dirtyTtl: Duration = 3600.seconds,
-    /** How long a repo stays marked queued for a job a worker publishes or NAKs back to the queue (KSH-30). */
+    /** How long a repo stays marked queued for a job a worker publishes or NAKs back to the queue. */
     val queuedTtl: Duration = 24.hours,
     val cliTimeout: Duration = 45.minutes,
     val heartbeatInterval: Duration = 15.seconds,
     val lockCollisionRetryDelay: Duration = 30.seconds,
     val maxRateLimitRequeues: Int = 5,
-    /** How long a fetch waits on a scope's queue: it's only tried while the scope has jobs (KSH-24). */
+    /** How long a fetch waits on a scope's queue: it's only tried while the scope has jobs. */
     val fetchTimeout: Duration = 1.seconds,
     val infraErrorBackoffBase: Duration = 1.seconds,
     val infraErrorBackoffMax: Duration = 30.seconds,

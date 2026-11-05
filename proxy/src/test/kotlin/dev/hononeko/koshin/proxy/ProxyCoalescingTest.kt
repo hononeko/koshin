@@ -38,7 +38,7 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
-/** Pre-queue coalescing at the proxy (KSH-30), and failing open when Valkey is down or slow. */
+/** Pre-queue coalescing at the proxy, and failing open when Valkey is down or slow. */
 class ProxyCoalescingTest {
     private val ghSecret = "gh-secret"
     private val glSecret = "gl-secret"

@@ -14,6 +14,6 @@ data class QueueDepth(val pending: Long, val ackPending: Long) {
 }
 
 interface QueueDepthPort {
-    /** The depth of every credential scope of [platforms] that has a queue, empty ones included (KSH-24). */
+    /** The depth of every credential scope of [platforms] that has a queue, empty ones included. */
     suspend fun depths(platforms: Collection<Platform>): Map<CredentialScope, QueueDepth>
 }

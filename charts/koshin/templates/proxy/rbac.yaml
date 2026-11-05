@@ -1,5 +1,5 @@
 {{- if .Values.worker.autoscaling.enabled }}
-# The proxy's worker dispatcher (KSH-32): reads the worker PodTemplate and starts burst worker Jobs, in this namespace
+# The proxy's worker dispatcher: reads the worker PodTemplate and starts burst worker Jobs, in this namespace
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

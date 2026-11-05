@@ -18,7 +18,7 @@ class NatsJetStreamBootstrap(private val jsm: JetStreamManagement, private val c
     private val logger = LoggerFactory.getLogger(NatsJetStreamBootstrap::class.java)
 
     /**
-     * Ensures the streams. The consumers are per credential scope (KSH-24): publishers create them as they publish,
+     * Ensures the streams. The consumers are per credential scope: publishers create them as they publish,
      * and the proxy's housekeeping tidies them ([NatsScopeConsumers]).
      */
     fun bootstrap() {

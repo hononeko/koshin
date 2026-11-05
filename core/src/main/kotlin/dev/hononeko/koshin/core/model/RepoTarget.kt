@@ -1,6 +1,6 @@
 package dev.hononeko.koshin.core.model
 
-/** A repository to run, and the GitHub App installation covering it when that's known (KSH-24). */
+/** A repository to run, and the GitHub App installation covering it when that's known. */
 data class RepoTarget(val repo: RepoRef, val installationId: Long? = null) {
     init {
         require(installationId == null || (installationId > 0 && repo.platform == Platform.GITHUB)) {

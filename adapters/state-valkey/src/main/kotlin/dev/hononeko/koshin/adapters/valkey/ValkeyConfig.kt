@@ -60,16 +60,16 @@ data class ValkeyConfig(
 
     fun queuedKeyFor(repo: RepoRef): String = "$keyPrefix:{${repo.platform.name.lowercase()}:${repo.repository}}:queued"
 
-    /** A credential scope's run slots, cooldown or backoff counter (KSH-24): `koshin:{throttle:github:pat}:slots`. */
+    /** A credential scope's run slots, cooldown or backoff counter: `koshin:{throttle:github:pat}:slots`. */
     fun throttleKeyFor(scope: CredentialScope, name: String): String = "$keyPrefix:{throttle:$scope}:$name"
 
-    /** The run slots of all scopes together (`MAX_CONCURRENT_RUNS_GLOBAL`, KSH-24). */
+    /** The run slots of all scopes together (`MAX_CONCURRENT_RUNS_GLOBAL`). */
     fun globalSlotsKey(): String = "$keyPrefix:{throttle:global}:slots"
 
-    /** Leases of live warm workers (KSH-31). */
+    /** Leases of live warm workers. */
     fun warmWorkersKey(): String = "$keyPrefix:{workers}:warm"
 
-    /** Lease of the proxy replica dispatching workers (KSH-32). */
+    /** Lease of the proxy replica dispatching workers. */
     fun dispatcherLeaderKey(): String = "$keyPrefix:{dispatcher}:leader"
 
     companion object {

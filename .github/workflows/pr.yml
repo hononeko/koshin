@@ -155,7 +155,7 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
           df -h /
 
-      # The chart and koshin's images can change together (e.g. the worker's Renovate runner, KSH-21), so this tests
+      # The chart and koshin's images can change together (e.g. the worker's Renovate runner), so this tests
       # the chart with the branch's images, tagged `ci`, not the released ones of its appVersion
       - name: Set up Docker Buildx
         if: steps.changed.outputs.changed == 'true'

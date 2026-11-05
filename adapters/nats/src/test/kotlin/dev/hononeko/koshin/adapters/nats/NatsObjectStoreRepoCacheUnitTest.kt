@@ -135,7 +135,7 @@ class NatsObjectStoreRepoCacheUnitTest {
     }
 
     @Test
-    fun `objects are named per credential scope, so installations never share one (KSH-26)`() {
+    fun `objects are named per credential scope, so installations never share one`() {
         val github = RepoRef(Platform.GITHUB, "hononeko/koshin")
 
         assertEquals("github/inst-1/hononeko/koshin.json", cache.objectName(github, CredentialScope.Installation(1)))

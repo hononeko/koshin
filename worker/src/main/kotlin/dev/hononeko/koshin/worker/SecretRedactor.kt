@@ -6,7 +6,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Scrubs credentials from what the worker logs (KSH-26). Renovate redacts its own log fields, but not what child tools
+ * Scrubs credentials from what the worker logs. Renovate redacts its own log fields, but not what child tools
  * (`git`, `npm`, `gpg`) print, and koshin's own error messages could carry a token too. Replaces the tokens of the runs
  * in progress ([track]) and anything shaped like a GitHub or GitLab token.
  */

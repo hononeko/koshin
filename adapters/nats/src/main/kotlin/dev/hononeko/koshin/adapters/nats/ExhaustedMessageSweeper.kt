@@ -18,7 +18,7 @@ import kotlin.time.Duration.Companion.seconds
  * once, so it's lost if no forwarder is subscribed (e.g. during a rolling deployment) or the forwarder keeps failing.
  *
  * NATS keeps an exhausted job in the work queue (it only deletes on ACK), neither pending nor ACK-pending. So it goes
- * over every consumer of the work queue (one per credential scope, KSH-24) whose filter subject stores more jobs than
+ * over every consumer of the work queue (one per credential scope) whose filter subject stores more jobs than
  * the consumer has pending and ACK-pending. Running jobs and jobs waiting for redelivery are ACK-pending and hold the
  * consumer's ack floor back, while exhausted ones aren't and don't. So a job still stored is exhausted if it's at or
  * below the ack floor, or, when nothing is ACK-pending, at or below the last delivered sequence (an exhausted job at

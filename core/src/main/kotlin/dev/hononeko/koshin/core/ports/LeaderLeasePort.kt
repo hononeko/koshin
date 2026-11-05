@@ -2,7 +2,7 @@ package dev.hononeko.koshin.core.ports
 
 import kotlin.time.Duration
 
-/** A single-holder lease, e.g. so one proxy replica at a time dispatches workers (KSH-32). */
+/** A single-holder lease, e.g. so one proxy replica at a time dispatches workers. */
 interface LeaderLeasePort {
     /** Takes the lease if it's free, or extends it if [holderId] holds it; false if someone else holds it. */
     suspend fun acquireOrRenew(holderId: String, ttl: Duration): Boolean

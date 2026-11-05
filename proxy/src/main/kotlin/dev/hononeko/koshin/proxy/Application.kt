@@ -67,14 +67,14 @@ data class TriggerRepositoryItem(val platform: String = "github", val repository
 @Serializable
 data class TriggerRequest(val repositories: List<TriggerRepositoryItem> = emptyList(), val discover: Boolean = false)
 
-/** [enqueued] jobs published, [coalesced] repos already queued or running (KSH-30). */
+/** [enqueued] jobs published, [coalesced] repos already queued or running. */
 @Serializable
 data class TriggerResponse(val status: String, val enqueued: Int, val coalesced: Int = 0)
 
 @Serializable
 data class ErrorResponse(val error: String)
 
-/** With a [coordination] port, webhooks and triggers are coalesced before publishing (KSH-30). */
+/** With a [coordination] port, webhooks and triggers are coalesced before publishing. */
 @Suppress("LongParameterList") // All but the first two have defaults
 fun Application.proxyModule(
     config: ProxyConfig,
@@ -128,7 +128,7 @@ fun Application.proxyModule(
             routeHandler.handleTriggerRequest(call)
         }
 
-        // Unauthenticated: it's a public key (KSH-25)
+        // Unauthenticated: it's a public key
         get("/api/v1/encryption-key") {
             respondEncryptionKey(call, encryptionKey)
         }
@@ -175,9 +175,9 @@ suspend fun ApplicationCall.receiveBoundedBytes(maxBytes: Int): ByteArray? {
 
 /**
  * What the proxy does as a GitHub App: ignore its bot's webhooks, forget a gone installation's tokens, and serve only
- * accounts the [policy] allows (KSH-17): [onDisallowedInstallation] applies `GITHUB_APP_DISALLOWED_ACTION` to a new
+ * accounts the [policy] allows: [onDisallowedInstallation] applies `GITHUB_APP_DISALLOWED_ACTION` to a new
  * installation by another account, and [resolveTargets] drops such accounts' repositories from triggers. With
- * [usesInstallations], GitHub jobs run as the App's installations and are queued in their scopes (KSH-24):
+ * [usesInstallations], GitHub jobs run as the App's installations and are queued in their scopes:
  * [resolveTargets] fills in the installation of a triggered repository.
  */
 class ProxyGitHubApp(
@@ -293,7 +293,7 @@ fun main() {
     ).start(wait = true)
 }
 
-/** The burst-worker dispatcher when `WORKER_DISPATCHER_ENABLED` (KSH-32), talking to this pod's Kubernetes API. */
+/** The burst-worker dispatcher when `WORKER_DISPATCHER_ENABLED`, talking to this pod's Kubernetes API. */
 private fun workerDispatcher(config: ProxyConfig, valkey: ProxyValkey, nats: ProxyNatsLifecycle): WorkerDispatcher? {
     val dispatch = config.dispatcher.takeIf { it.enabled } ?: return null
     val burstWorkers = KubernetesBurstWorkers(

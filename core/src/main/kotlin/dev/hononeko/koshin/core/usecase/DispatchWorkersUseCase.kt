@@ -11,9 +11,9 @@ import kotlinx.coroutines.CancellationException
 import kotlin.time.Duration
 
 /**
- * How many workers the queue needs (KSH-32). [maxWorkers] caps them all, [maxRunsGlobal] the runs across scopes
+ * How many workers the queue needs. [maxWorkers] caps them all, [maxRunsGlobal] the runs across scopes
  * (`MAX_CONCURRENT_RUNS_GLOBAL`), [maxRunsPerScope] the runs of one credential scope
- * (`MAX_CONCURRENT_RUNS_PER_CREDENTIAL`, KSH-24), and [minWarmWorkers] stands in for the warm-worker count when it
+ * (`MAX_CONCURRENT_RUNS_PER_CREDENTIAL`), and [minWarmWorkers] stands in for the warm-worker count when it
  * can't be read.
  */
 data class DispatchConfig(
@@ -48,8 +48,8 @@ data class ScopeLoad(val pending: Long, val ackPending: Long, val runSlots: Int,
 data class DispatchResult(val desiredWorkers: Int, val warmWorkers: Int, val desiredBurst: Int, val started: Int)
 
 /**
- * Starts the burst workers the runnable jobs need (KSH-32), on top of the warm workers, summing over the credential
- * scopes with queued jobs (KSH-24): `desiredWorkers = min(maxWorkers, maxRunsGlobal, running +
+ * Starts the burst workers the runnable jobs need, on top of the warm workers, summing over the credential
+ * scopes with queued jobs: `desiredWorkers = min(maxWorkers, maxRunsGlobal, running +
  * Σ_{scope not cooling down} min(runnable, maxRunsPerScope - running))` and
  * `desiredBurst = max(0, min(maxWorkers - warm, desiredWorkers - warm))`. A cooling-down scope's backlog starts no
  * worker until its cooldown ends. Never stops a worker: burst workers drain and exit on their own.

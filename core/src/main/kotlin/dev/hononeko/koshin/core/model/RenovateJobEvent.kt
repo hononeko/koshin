@@ -2,7 +2,7 @@ package dev.hononeko.koshin.core.model
 
 import kotlinx.serialization.Serializable
 
-/** [installationId] is the GitHub App installation the job runs as, when it's known (KSH-24). */
+/** [installationId] is the GitHub App installation the job runs as, when it's known. */
 @Serializable
 data class RenovateJobEvent(
     val repo: RepoRef,

@@ -24,7 +24,7 @@ import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * A worker wired like `worker/Application.kt`, with a fake CLI and recording decorators around its ports. A positive
- * [idleTimeout] makes it a burst worker that drains and exits (KSH-31); otherwise it keeps a warm-worker lease.
+ * [idleTimeout] makes it a burst worker that drains and exits; otherwise it keeps a warm-worker lease.
  */
 @Suppress("LongParameterList") // Mirrors the worker's settings
 class TestWorker(

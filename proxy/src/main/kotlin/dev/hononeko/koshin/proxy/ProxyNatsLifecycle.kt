@@ -41,7 +41,7 @@ import kotlin.time.Duration.Companion.seconds
 
 /**
  * The proxy's NATS connection: publishes jobs, keeps the streams and consumers in place (re-creating them after a
- * reconnect) and runs the DLQ housekeeping (KSH-30), so all of it works with no worker running.
+ * reconnect) and runs the DLQ housekeeping, so all of it works with no worker running.
  */
 @Suppress("LongParameterList") // All but the first two have defaults
 class ProxyNatsLifecycle(
@@ -57,7 +57,7 @@ class ProxyNatsLifecycle(
             .build()
         Nats.connect(options)
     },
-    /** The streams, then the scope consumers' upkeep (KSH-24), every platform's whichever are enabled. */
+    /** The streams, then the scope consumers' upkeep, every platform's whichever are enabled. */
     private val bootstrap: (Connection, NatsConfig) -> Unit = { conn, cfg ->
         NatsJetStreamBootstrap(conn, cfg).bootstrap()
         NatsHousekeeping.tidy(NatsScopeConsumers(conn.jetStreamManagement(), cfg, conn.jetStream()), Platform.entries)
