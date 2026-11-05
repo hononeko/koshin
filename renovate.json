@@ -23,6 +23,20 @@
   "automergeType": "pr",
   "platformAutomerge": true,
   "prHeader": "## 🤖 Renovate: Dependency Maintenance",
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Keep worker.renovate.image.tag in charts/koshin/README.md in sync with values.yaml",
+      "managerFilePatterns": [
+        "/^charts/koshin/README\\.md$/"
+      ],
+      "matchStrings": [
+        "\\| worker\\.renovate\\.image\\.tag \\| string \\| `\"(?<currentValue>[^\"]+)\"` \\|"
+      ],
+      "depNameTemplate": "ghcr.io/renovatebot/renovate",
+      "datasourceTemplate": "docker"
+    }
+  ],
   "packageRules": [
     {
       "description": "Group Kotlin compiler, plugins, and official libraries",
@@ -112,7 +126,7 @@
       "groupName": "GitHub Actions"
     },
     {
-      "description": "Renovate CLI in the worker's `renovate` container (chart, Kustomize, Compose): one weekly PR, automerged",
+      "description": "Renovate CLI in the worker's `renovate` container (chart, README, Kustomize, Compose): one weekly PR, automerged",
       "matchPackageNames": [
         "ghcr.io/renovatebot/renovate"
       ],

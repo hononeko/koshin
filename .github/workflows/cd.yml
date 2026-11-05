@@ -1,14 +1,13 @@
 name: Continuous Delivery & Release
 
-# On every push to main that warrants a new version:
+# Dispatched on demand to release a new version from main:
 # 1. Runs full verification (Detekt + Kover gates, unit tests, integration tests)
 # 2. Uploads Detekt SARIF to GitHub Code Scanning to track the default branch
 # 3. Builds and smoke-tests proxy and worker images (amd64 and arm64)
 # 4. Publishes multi-arch images with release candidate, commit, version, and latest tags
 # 5. Generates grouped release notes and publishes a GitHub release
+# 6. Packages and publishes the Helm chart to GHCR
 on:
-  push:
-    branches: ["main"]
   workflow_dispatch:
     inputs:
       dry_run:
