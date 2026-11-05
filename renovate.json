@@ -1,13 +1,9 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "config:recommended",
-    ":semanticCommits",
-    ":semanticCommitTypeAll(chore)",
-    ":semanticCommitScope(deps)",
-    "mergeConfidence:all-badges",
-    "helpers:pinGitHubActionDigests",
-    "github>hononeko/actions//renovate/downstream"
+    "github>hononeko/renovate-config",
+    "github>hononeko/renovate-config:hononeko-actions",
+    ":semanticCommitScope(deps)"
   ],
   "minimumReleaseAge": "3 days",
   "semanticCommits": "enabled",
