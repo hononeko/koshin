@@ -525,6 +525,7 @@ Kubernetes: `>=1.30.0-0`
 | worker.repoCache.s3.url | string | `""` | `RENOVATE_REPOSITORY_CACHE_TYPE`, e.g. `s3://renovate/repo-cache/` |
 | worker.repoCache.ttlDays | int | `30` | `REPO_CACHE_TTL_DAYS`: drops caches of repos without a successful run for this long |
 | worker.resources | object | `{"limits":{"memory":"768Mi"},"requests":{"cpu":"100m","memory":"256Mi"}}` | Resources of the `worker` container (koshin itself) |
+| worker.runnerInit.resources | object | `{"limits":{"memory":"256Mi"},"requests":{"cpu":"50m","memory":"32Mi"}}` | Resources of the `koshin-runner-init` init container, which copies the Renovate runner for the `renovate` container at pod start |
 | worker.secrets.githubToken | string | `""` | `GITHUB_TOKEN` |
 | worker.secrets.gitlabToken | string | `""` | `GITLAB_TOKEN` |
 | worker.securityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}` | Security context of the `worker` and `renovate` containers |
