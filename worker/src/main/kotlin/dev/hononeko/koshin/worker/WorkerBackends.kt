@@ -152,7 +152,7 @@ class WorkerBackends(
         /**
          * With [repoCache] set, Renovate's repository caches under [cacheDir] are synced with that bucket. The streams
          * are ensured here too; the scope consumers are created by publishers, and their upkeep and the DLQ
-         * housekeeping run in the proxy (KSH-24, KSH-30).
+         * housekeeping run in the proxy.
          */
         fun connectNats(
             url: String,

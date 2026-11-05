@@ -1,6 +1,6 @@
 package dev.hononeko.koshin.core.ports
 
-/** What ingest does with an event (KSH-30): publish it, or coalesce it into a queued or running job. */
+/** What ingest does with an event: publish it, or coalesce it into a queued or running job. */
 enum class EnqueueDecision {
     /** The repo was idle and is now marked queued: publish the event. */
     ENQUEUE,

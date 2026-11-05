@@ -82,7 +82,7 @@ fun createWorkerServer(
 
 /**
  * Serves the health endpoints and runs the daemon [newDaemon] makes, keeping [presence]'s lease, until SIGTERM or until
- * the daemon finishes on its own (drain-then-exit or max lifetime, KSH-31). Returns true in the second case, for the
+ * the daemon finishes on its own (drain-then-exit or max lifetime). Returns true in the second case, for the
  * process to exit 0. Either way the server's stop hooks stop the daemon and then run [onStopped].
  */
 internal fun serveWorker(
@@ -211,7 +211,7 @@ fun main() {
     }
 }
 
-/** A daemon-mode worker tells the Job dispatcher it's ready (KSH-31); a burst Job pod drains and exits instead. */
+/** A daemon-mode worker tells the Job dispatcher it's ready; a burst Job pod drains and exits instead. */
 internal fun warmPresence(settings: WorkerSettings, backends: WorkerBackends): WarmPresence? =
     if (settings.idleTimeout.isPositive()) {
         null

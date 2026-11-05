@@ -17,7 +17,7 @@ import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
-/** Pre-queue coalescing (KSH-30): how long marks last, and how long ingest waits for Valkey before failing open. */
+/** Pre-queue coalescing: how long marks last, and how long ingest waits for Valkey before failing open. */
 data class IngestConfig(
     val queuedTtl: Duration = DEFAULT_QUEUED_TTL,
     val dirtyTtl: Duration = DEFAULT_DIRTY_TTL,
@@ -75,7 +75,7 @@ class IngestWebhookUseCase(
         repository: String,
         deliveryId: String? = null,
         triggerReason: TriggerReason = TriggerReason.WEBHOOK,
-        /** The GitHub App installation the job runs as, routing it to that installation's queue (KSH-24). */
+        /** The GitHub App installation the job runs as, routing it to that installation's queue. */
         installationId: Long? = null,
     ): IngestResult {
         val repo = RepoRef(platform, repository.trim())

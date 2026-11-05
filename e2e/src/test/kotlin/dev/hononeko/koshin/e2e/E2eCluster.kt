@@ -114,7 +114,7 @@ class E2eCluster(
             it.start()
         }
 
-    /** With a positive [idleTimeout], a burst worker that drains and exits (KSH-31). */
+    /** With a positive [idleTimeout], a burst worker that drains and exits. */
     fun startWorker(
         name: String,
         runTime: Duration = DEFAULT_RUN_TIME,

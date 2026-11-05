@@ -1,5 +1,5 @@
 {{- if and .Values.tests.jobProcessing.enabled (include "koshin.triggerToken" .) .Values.nats.enabled .Values.worker.autoscaling.enabled }}
-# After test-job-processing (KSH-32): with minReplicas 0, the proxy started a burst worker Job for the run and the Job
+# After test-job-processing: with minReplicas 0, the proxy started a burst worker Job for the run and the Job
 # exits once the queue is drained (0 → 1 → 0); with minReplicas 1, the warm worker took the run and no Job started.
 # Uses the proxy's ServiceAccount, whose Role lists Jobs.
 apiVersion: v1

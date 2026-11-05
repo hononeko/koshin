@@ -20,8 +20,8 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * A daemon-mode worker's warm-worker lease (KSH-31): renewed every [interval] for [ttl], and dropped on [stop], so the
- * Job dispatcher (KSH-32) counts this worker as ready for a single job while it runs.
+ * A daemon-mode worker's warm-worker lease: renewed every [interval] for [ttl], and dropped on [stop], so the
+ * Job dispatcher counts this worker as ready for a single job while it runs.
  */
 class WarmPresence(
     private val interval: Duration,

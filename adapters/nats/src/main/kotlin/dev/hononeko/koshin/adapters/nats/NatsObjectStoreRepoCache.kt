@@ -33,7 +33,7 @@ import kotlin.time.toJavaDuration
  * Renovate (`repositoryCacheType=local`) reads and writes `<cacheDir>/renovate/repository/<platform>/<repo>.json`.
  * [restore] replaces that file with `<platform>/<scope>/<repo>.json` before a run (or deletes it, so a leftover from an
  * unpersisted run is never used), and [persist] uploads it after a successful one. Both run under the repo lock, so
- * there's a single writer. Objects are kept per credential scope (KSH-26), so a repo name that passes to another
+ * there's a single writer. Objects are kept per credential scope, so a repo name that passes to another
  * account (a rename, a transfer) never gets the previous owner's cache. Cache errors never fail a run: they're logged
  * and the run goes ahead cold, or the upload is skipped. Renovate can run repo code, so no path below `cacheDir` may be
  * a symlink.

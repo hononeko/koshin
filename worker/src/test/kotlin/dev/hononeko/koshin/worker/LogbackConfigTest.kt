@@ -72,7 +72,7 @@ class LogbackConfigTest {
     }
 
     @Test
-    fun `tokens are scrubbed from messages, fields and stack traces (KSH-26)`() {
+    fun `tokens are scrubbed from messages, fields and stack traces`() {
         val context = configure()
         val logger = context.getLogger("dev.hononeko.koshin.worker.Test")
 

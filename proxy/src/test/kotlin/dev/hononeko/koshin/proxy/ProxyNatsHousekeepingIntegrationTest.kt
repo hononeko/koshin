@@ -26,7 +26,7 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
 
-/** The proxy alone, no worker: it creates the consumers and moves exhausted jobs to the DLQ (KSH-30). */
+/** The proxy alone, no worker: it creates the consumers and moves exhausted jobs to the DLQ. */
 class ProxyNatsHousekeepingIntegrationTest {
     private companion object {
         val nats: GenericContainer<*> by lazy {
@@ -67,7 +67,7 @@ class ProxyNatsHousekeepingIntegrationTest {
             await("the proxy to bootstrap NATS") { it.isReady() }
         }
 
-    /** An installation's job, queued in its credential scope (KSH-24). */
+    /** An installation's job, queued in its credential scope. */
     private fun job(repo: String) = RenovateJobEvent(
         RepoRef(Platform.GITHUB, "hononeko/$repo"),
         "delivery-$repo",

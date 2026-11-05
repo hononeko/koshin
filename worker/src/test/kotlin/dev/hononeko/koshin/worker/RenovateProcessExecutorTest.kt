@@ -170,7 +170,7 @@ class RenovateProcessExecutorTest {
         $then
     """.trimIndent()
 
-    /** Neither running nor a zombie: no `/proc` entry left (KSH-23). */
+    /** Neither running nor a zombie: no `/proc` entry left. */
     private fun assertReaped(pid: Long) {
         val deadline = System.nanoTime() + 10.seconds.inWholeNanoseconds
         while (Path.of("/proc/$pid").exists()) {
@@ -378,8 +378,8 @@ class RenovateProcessExecutorTest {
         assertEquals("false", built["RENOVATE_ALLOW_CUSTOM_CRATE_GIT_REGISTRIES"])
         assertEquals(
             listOf(
-                "Ignoring RENOVATE_ALLOW_SCRIPTS=true: koshin pins it to false (KSH-25)",
-                "Ignoring RENOVATE_ALLOWED_UNSAFE_EXECUTIONS=[\"gradleWrapper\"]: koshin pins it to [] (KSH-25)",
+                "Ignoring RENOVATE_ALLOW_SCRIPTS=true: koshin pins it to false",
+                "Ignoring RENOVATE_ALLOWED_UNSAFE_EXECUTIONS=[\"gradleWrapper\"]: koshin pins it to []",
             ),
             appender.list.filter { it.level == Level.WARN }.map { it.formattedMessage },
         )
@@ -413,7 +413,7 @@ class RenovateProcessExecutorTest {
             2,
             appender.list.count {
                 it.formattedMessage == "Ignoring RENOVATE_ALLOWED_COMMANDS=[\"^npm run .*\"]: koshin pins it to [] " +
-                    "while Renovate has a private key (KSH-25)"
+                    "while Renovate has a private key"
             },
         )
     }
@@ -432,7 +432,7 @@ class RenovateProcessExecutorTest {
     }
 
     @Test
-    fun `github_com runs never get an operator's github_com token, GitLab and GHES runs do (KSH-26)`() {
+    fun `github_com runs never get an operator's github_com token, GitLab and GHES runs do`() {
         val inherited = env + mapOf("GITHUB_COM_TOKEN" to "ghp_operator", "RENOVATE_GITHUB_COM_TOKEN" to "ghp_other")
         val executor = executor("true", inherited)
 
@@ -452,7 +452,7 @@ class RenovateProcessExecutorTest {
     }
 
     @Test
-    fun `nothing private goes into the package cache, which is keyed per credential scope (KSH-26)`() {
+    fun `nothing private goes into the package cache, which is keyed per credential scope`() {
         val inherited = env + mapOf(
             "RENOVATE_CACHE_PRIVATE_PACKAGES" to "true",
             "RENOVATE_PRESET_CACHE_PERSISTENCE" to "false",
@@ -468,7 +468,7 @@ class RenovateProcessExecutorTest {
         assertEquals("koshin:github:pat:", executor.buildEnvironment(repo, creds)["RENOVATE_REDIS_PREFIX"])
         assertEquals("koshin:gitlab:pat:", gitlab["RENOVATE_REDIS_PREFIX"])
         assertEquals("false", gitlab["RENOVATE_CACHE_PRIVATE_PACKAGES"])
-        assertEquals(listOf("Ignoring RENOVATE_CACHE_PRIVATE_PACKAGES=true: koshin pins it to false (KSH-26)"), warned)
+        assertEquals(listOf("Ignoring RENOVATE_CACHE_PRIVATE_PACKAGES=true: koshin pins it to false"), warned)
     }
 
     @Test
@@ -479,13 +479,13 @@ class RenovateProcessExecutorTest {
 
         assertEquals("renovate:", built["RENOVATE_REDIS_PREFIX"])
         assertEquals(
-            listOf("RENOVATE_REDIS_PREFIX=renovate:: every credential scope shares Renovate's package cache (KSH-26)"),
+            listOf("RENOVATE_REDIS_PREFIX=renovate:: every credential scope shares Renovate's package cache"),
             warned,
         )
     }
 
     @Test
-    fun `the run's token is scrubbed from its output while it runs (KSH-26)`() = runBlocking {
+    fun `the run's token is scrubbed from its output while it runs`() = runBlocking {
         val logger = LoggerFactory.getLogger(RenovateOutputLogger.LOGGER_NAME) as ch.qos.logback.classic.Logger
         val appender = ListAppender<ILoggingEvent>().apply { start() }
         logger.addAppender(appender)

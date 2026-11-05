@@ -1,5 +1,5 @@
 {{- if .Values.worker.autoscaling.enabled }}
-# The burst worker the proxy clones into Kubernetes Jobs on demand (KSH-32): it drains the queue, then exits 0
+# The burst worker the proxy clones into Kubernetes Jobs on demand: it drains the queue, then exits 0
 apiVersion: v1
 kind: PodTemplate
 metadata:

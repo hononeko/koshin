@@ -85,10 +85,10 @@ spec:
           env:
             - name: SWEEP_REPOSITORIES_FILE
               value: /etc/koshin/repositories/repositories.txt
-            # VALKEY_URL comes from the ConfigMap: the proxy coalesces webhooks before publishing (KSH-30)
+            # VALKEY_URL comes from the ConfigMap: the proxy coalesces webhooks before publishing
             {{- with include "koshin.sentinelPasswordEnv" . }}{{ . | nindent 12 }}{{- end }}
             {{- with .Values.worker.autoscaling }}
-            # Burst worker Jobs from the worker PodTemplate (KSH-32)
+            # Burst worker Jobs from the worker PodTemplate
             - name: WORKER_DISPATCHER_ENABLED
               value: {{ .enabled | quote }}
             {{- if .enabled }}
@@ -111,7 +111,7 @@ spec:
             {{- end }}
             {{- end }}
             {{- if include "koshin.encryptionEnabled" . }}
-            # Served at GET /api/v1/encryption-key (KSH-25)
+            # Served at GET /api/v1/encryption-key
             - name: RENOVATE_PUBLIC_KEY_PATH
               value: {{ include "koshin.encryptionKeyDir" . }}/public.asc
             {{- end }}

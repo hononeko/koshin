@@ -1,8 +1,8 @@
 #!/bin/sh
-# Entry point of the worker pod's `renovate` container (KSH-21): runs each Renovate run the worker hands over on
+# Entry point of the worker pod's `renovate` container: runs each Renovate run the worker hands over on
 # $RUNNER_SOCKET, away from the worker's secrets and ServiceAccount token. Runs from /opt/koshin, which
 # koshin-runner-init fills from the koshin-worker image.
-# Native access: reaping the processes a run leaves behind when there's no init to do it (KSH-23).
+# Native access: reaping the processes a run leaves behind when there's no init to do it.
 # shellcheck disable=SC2086 # KOSHIN_RUNNER_JAVA_OPTS is a list of flags
 exec /opt/koshin/jre/bin/java --enable-native-access=ALL-UNNAMED \
   ${KOSHIN_RUNNER_JAVA_OPTS:--Xmx128m -XX:+UseSerialGC -XX:+ExitOnOutOfMemoryError} \

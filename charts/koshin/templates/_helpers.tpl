@@ -225,7 +225,7 @@ Image reference; pass (dict "ctx" $ "image" .Values.proxy.image). Without a `reg
 {{- end }}
 {{- end }}
 
-{{/* Renovate's encrypted config (KSH-25): koshin's OpenPGP keypair, from renovateEncryption.existingSecret */}}
+{{/* Renovate's encrypted config: koshin's OpenPGP keypair, from renovateEncryption.existingSecret */}}
 {{- define "koshin.encryptionEnabled" -}}
 {{- if .Values.renovateEncryption.existingSecret }}true{{ end }}
 {{- end }}

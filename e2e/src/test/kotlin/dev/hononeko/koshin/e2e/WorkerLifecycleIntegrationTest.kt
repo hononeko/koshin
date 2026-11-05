@@ -15,7 +15,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
-/** Burst workers that drain and exit, and the warm worker's lease (KSH-31), against real NATS and Valkey. */
+/** Burst workers that drain and exit, and the warm worker's lease, against real NATS and Valkey. */
 class WorkerLifecycleIntegrationTest {
     private val cluster = E2eCluster()
 

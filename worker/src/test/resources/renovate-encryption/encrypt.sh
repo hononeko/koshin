@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Encrypts a secret the way the README tells tenants to: encrypt.sh <key name> <org> <repo, or "" for the whole org>
-# <secret> prints the value for Renovate's `encrypted` config.
+# Encrypts a secret the way docs/registry-credentials.md tells tenants to:
+# encrypt.sh <key name> <org> <repo, or "" for the whole org> <secret> prints the value for Renovate's `encrypted`
+# config.
 set -euo pipefail
 key="$1" org="$2" repo="$3" secret="$4"
 GNUPGHOME="$(mktemp -d)"

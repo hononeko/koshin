@@ -47,19 +47,18 @@ class RenovateProcessExecutor(
         guardrails.forEach { (key, pinned) ->
             inheritedEnv[key]?.takeIf { it != pinned }?.let { value ->
                 val reason = if (key in KEY_HOLDER_GUARDRAILS) " while Renovate has a private key" else ""
-                val ticket = if (key in CACHE_ISOLATION_GUARDRAILS) "KSH-26" else "KSH-25"
-                logger.warn("Ignoring {}={}: koshin pins it to {}{} ({})", key, value, pinned, reason, ticket)
+                logger.warn("Ignoring {}={}: koshin pins it to {}{}", key, value, pinned, reason)
             }
         }
         sharedRedisPrefix?.let {
-            logger.warn("{}={}: every credential scope shares Renovate's package cache (KSH-26)", REDIS_PREFIX_ENV, it)
+            logger.warn("{}={}: every credential scope shares Renovate's package cache", REDIS_PREFIX_ENV, it)
         }
     }
 
     override suspend fun execute(repo: RepoRef, creds: PlatformCredentials, timeout: Duration): JobExecutionResult {
         require(!repo.repository.startsWith("-")) { "Repository cannot start with '-': ${repo.repository}" }
 
-        // The run's token is scrubbed from its output and every other log line while it runs (KSH-26)
+        // The run's token is scrubbed from its output and every other log line while it runs
         redactor.track(creds.token).use { _ ->
             val rateLimit = RateLimitDetector(repo.platform, rateLimitPattern)
             val env = buildEnvironment(repo, creds)
@@ -87,7 +86,7 @@ class RenovateProcessExecutor(
     }
 
     fun buildEnvironment(repo: RepoRef, creds: PlatformCredentials): Map<String, String> = buildMap {
-        // On github.com, lookups there use the run's own token, never an operator's (KSH-26)
+        // On github.com, lookups there use the run's own token, never an operator's
         val gitHubCom = isGitHubCom(repo, creds)
         putAll(inheritedEnv.filterKeys { !isStripped(it) && !(gitHubCom && it in GITHUB_COM_TOKEN_ENV) })
         put("LOG_FORMAT", "json")
@@ -133,14 +132,14 @@ class RenovateProcessExecutor(
     companion object {
         /**
          * Renovate turns either into a `github.com` host rule, which would take lookups there off a github.com run's
-         * own installation token. Passed on to GitLab and GHES runs only (KSH-26).
+         * own installation token. Passed on to GitLab and GHES runs only.
          */
         val GITHUB_COM_TOKEN_ENV = setOf("GITHUB_COM_TOKEN", "RENOVATE_GITHUB_COM_TOKEN")
 
         /**
          * The package cache (Valkey, or files under `cacheDir`) outlives a run and is shared by every tenant: nothing
          * private goes in, neither packages from private registries nor resolved presets such as an org's
-         * `renovate-config` (KSH-26).
+         * `renovate-config`.
          */
         val CACHE_ISOLATION_GUARDRAILS = mapOf(
             "RENOVATE_CACHE_PRIVATE_PACKAGES" to "false",
@@ -154,13 +153,13 @@ class RenovateProcessExecutor(
 
         /**
          * The OpenPGP private keys themselves, which would sit in the environment of Renovate and everything it starts
-         * (and take precedence over `RENOVATE_PRIVATE_KEY_PATH`): Renovate reads them from the files instead (KSH-25).
+         * (and take precedence over `RENOVATE_PRIVATE_KEY_PATH`): Renovate reads them from the files instead.
          */
         val RAW_PRIVATE_KEY_ENV = setOf("RENOVATE_PRIVATE_KEY", "RENOVATE_PRIVATE_KEY_OLD")
 
         /**
          * Renovate holds the private key while it runs, so no repository gets to run code in it: no install scripts or
-         * plugins, none of the commands Renovate would run implicitly, no custom Cargo `git` registries (KSH-25).
+         * plugins, none of the commands Renovate would run implicitly, no custom Cargo `git` registries.
          */
         val UNTRUSTED_CODE_GUARDRAILS = mapOf(
             "RENOVATE_ALLOW_SCRIPTS" to "false",
@@ -173,7 +172,7 @@ class RenovateProcessExecutor(
 
         /**
          * With a private key, `postUpgradeTasks` are off too: whatever an operator's `allowedCommands` let a repository
-         * run would run where it could read the key, and decrypt every tenant's secrets (KSH-25).
+         * run would run where it could read the key, and decrypt every tenant's secrets.
          */
         val KEY_HOLDER_GUARDRAILS = mapOf(
             "RENOVATE_ALLOWED_COMMANDS" to "[]",

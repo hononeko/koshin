@@ -35,7 +35,7 @@ import kotlin.time.Duration
 import kotlin.time.TimeSource
 
 /**
- * Runs one queued job (`processNext`). Jobs are queued per credential scope (KSH-24): it goes round-robin over the
+ * Runs one queued job (`processNext`). Jobs are queued per credential scope: it goes round-robin over the
  * scopes with queued jobs, so a tenant with hundreds of them can't starve the others, and skips a scope in a
  * rate-limit cooldown or without a free run slot before fetching, so its jobs wait in the queue without spending
  * delivery attempts.
@@ -237,7 +237,7 @@ class ProcessRenovateJobUseCase(
             handleRejected(delivery, lockToken, heartbeatJob)
             return
         }
-        // The cache is the credential's (KSH-26), which needn't be the scope the job was queued in: a proxy without
+        // The cache is the credential's, which needn't be the scope the job was queued in: a proxy without
         // GitHub App auth queues every GitHub job as `github:pat`.
         val cacheScope = creds.scope(repo.platform)
         restoreCache(repo, cacheScope)

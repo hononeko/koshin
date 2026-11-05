@@ -26,7 +26,7 @@ import kotlin.time.TimeSource
 /**
  * Runs one job at a time (1 job per pod). With a zero [idleTimeout] it runs until stopped (a warm or static worker);
  * otherwise it drains runnable jobs back to back and finishes once it found none for [idleTimeout] (a burst `Job`
- * pod, KSH-31). A positive [maxLifetime] finishes it after the job in flight once it's that old. Either way it then
+ * pod). A positive [maxLifetime] finishes it after the job in flight once it's that old. Either way it then
  * calls [onFinished], for the process to exit 0.
  */
 @Suppress("LongParameterList") // All but the platforms and the use case have defaults

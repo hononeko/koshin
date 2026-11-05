@@ -26,7 +26,7 @@ data class WorkerSettings(
     val gitlabToken: String? = null,
     val gitlabEndpoint: String? = null,
     /**
-     * `WORKER_IDLE_TIMEOUT_SECONDS` (KSH-31): zero runs as a daemon until stopped, keeping a warm-worker lease;
+     * `WORKER_IDLE_TIMEOUT_SECONDS`: zero runs as a daemon until stopped, keeping a warm-worker lease;
      * positive drains runnable jobs back to back and exits 0 once none was found for this long (a burst `Job` pod).
      */
     val idleTimeout: Duration = Duration.ZERO,
@@ -111,7 +111,7 @@ data class WorkerSettings(
         private fun throttleFromEnv(env: Map<String, String>): PlatformThrottleConfig {
             val defaults = PlatformThrottleConfig()
             return PlatformThrottleConfig(
-                // The per-platform cap of earlier versions is the per-credential one now (KSH-24)
+                // The per-platform cap of earlier versions is the per-credential one now
                 maxRunsPerCredential = (
                     env.long("MAX_CONCURRENT_RUNS_PER_CREDENTIAL") ?: env.long("MAX_CONCURRENT_RUNS_PER_PLATFORM")
                     )?.toInt() ?: defaults.maxRunsPerCredential,

@@ -20,7 +20,7 @@ import kotlin.time.Duration
 import kotlin.time.toJavaDuration
 
 /**
- * The work queue's consumers, one per credential scope (KSH-24): `koshin-workers-<platform>-<scope>`, filtering
+ * The work queue's consumers, one per credential scope: `koshin-workers-<platform>-<scope>`, filtering
  * `renovate.jobs.<platform>.<scope>`. Publishers create their scope's consumer as they publish ([ensure]); the proxy's
  * housekeeping creates any still missing for stored jobs ([ensureForStoredJobs]), deletes idle ones ([collectIdle])
  * and moves jobs off the per-platform queue of earlier versions ([migrateLegacy]).

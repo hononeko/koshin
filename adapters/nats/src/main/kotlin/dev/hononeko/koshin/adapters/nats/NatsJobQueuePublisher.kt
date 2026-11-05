@@ -18,7 +18,7 @@ import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 
 /**
- * Publishes each job to its credential scope's subject (KSH-24), creating the scope's consumer first so workers see
+ * Publishes each job to its credential scope's subject, creating the scope's consumer first so workers see
  * the job. A consumer it created is taken to exist for [ensuredFor]; one deleted meanwhile is created again by the
  * proxy's housekeeping.
  */

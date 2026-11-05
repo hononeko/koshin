@@ -24,7 +24,7 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.seconds
 
-/** The proxy's worker dispatcher (KSH-32); off outside Kubernetes (`WORKER_DISPATCHER_ENABLED`). */
+/** The proxy's worker dispatcher; off outside Kubernetes (`WORKER_DISPATCHER_ENABLED`). */
 data class DispatcherConfig(
     val enabled: Boolean = false,
     val podTemplateName: String = DEFAULT_POD_TEMPLATE_NAME,
@@ -32,9 +32,9 @@ data class DispatcherConfig(
     val namespace: String? = null,
     /** `WORKER_MAX_REPLICAS`: more workers than global run slots would only wait for one. */
     val maxWorkers: Int = PlatformThrottleConfig.DEFAULT_MAX_RUNS_GLOBAL,
-    /** `MAX_CONCURRENT_RUNS_PER_CREDENTIAL` (KSH-24). */
+    /** `MAX_CONCURRENT_RUNS_PER_CREDENTIAL`. */
     val maxRunsPerCredential: Int = PlatformThrottleConfig.DEFAULT_MAX_RUNS_PER_CREDENTIAL,
-    /** `MAX_CONCURRENT_RUNS_GLOBAL` (KSH-24). */
+    /** `MAX_CONCURRENT_RUNS_GLOBAL`. */
     val maxRunsGlobal: Int = PlatformThrottleConfig.DEFAULT_MAX_RUNS_GLOBAL,
     val minWarmWorkers: Int = 0,
     /** Between reconciliations when nothing is published; also how often the leader renews its lease. */
@@ -73,7 +73,7 @@ data class DispatcherConfig(
 }
 
 /**
- * Keeps enough burst workers for the queue (KSH-32): reconciles right after the proxy publishes a job and every
+ * Keeps enough burst workers for the queue: reconciles right after the proxy publishes a job and every
  * [DispatcherConfig.interval] otherwise (cooldowns ending, a warm worker gone, a crashed `Job` to replace). Only the
  * replica holding the Valkey leader lease reconciles; the others take over within the lease TTL if it stops renewing.
  */

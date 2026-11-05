@@ -10,7 +10,7 @@ import kotlin.time.Duration
  */
 interface RepoCoordinationPort {
     /**
-     * Pre-queue coalescing (KSH-30): marks the repo dirty if it's running ([EnqueueDecision.MARKED_DIRTY]), does
+     * Pre-queue coalescing: marks the repo dirty if it's running ([EnqueueDecision.MARKED_DIRTY]), does
      * nothing if it's queued ([EnqueueDecision.ALREADY_QUEUED]), and otherwise marks it queued
      * ([EnqueueDecision.ENQUEUE]), for the caller to publish its event.
      */

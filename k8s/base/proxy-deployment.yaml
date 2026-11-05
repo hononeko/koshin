@@ -55,7 +55,7 @@ spec:
           env:
             - name: SWEEP_REPOSITORIES_FILE
               value: /etc/koshin/repositories.txt
-            # Burst worker Jobs from the koshin-worker PodTemplate (KSH-32)
+            # Burst worker Jobs from the koshin-worker PodTemplate
             - name: WORKER_DISPATCHER_ENABLED
               value: "true"
             - name: WORKER_POD_TEMPLATE_NAME

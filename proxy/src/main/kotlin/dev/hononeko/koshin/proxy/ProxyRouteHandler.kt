@@ -86,7 +86,7 @@ internal class ProxyRouteHandler(
         val rawBody = bodyBytes.toString(Charsets.UTF_8)
         val targets = resolveTriggerRepositories(call, rawBody)
         if (targets != null) {
-            // Accounts that may not use the GitHub App (KSH-17) get no runs, whoever asks
+            // Accounts that may not use the GitHub App get no runs, whoever asks
             enqueueScheduledRepositories(call, gitHubApp.resolveTargets(targets))
         }
     }
@@ -147,7 +147,7 @@ internal class ProxyRouteHandler(
         }
     }
 
-    /** The installation a webhook names, if jobs run as the App's installations; else the token's scope (KSH-24). */
+    /** The installation a webhook names, if jobs run as the App's installations; else the token's scope. */
     private fun scoped(installationId: Long?): Long? = installationId?.takeIf { gitHubApp.usesInstallations }
 
     @Suppress("TooGenericExceptionCaught")
@@ -198,7 +198,7 @@ internal class ProxyRouteHandler(
         WebhookResponse(status = "coalesced", enqueued = false, deliveryId = deliveryId, reason = reason)
 
     /**
-     * Whether the account a webhook is about may use the GitHub App (`GITHUB_APP_ALLOWED_ACCOUNTS`, KSH-17). Fails
+     * Whether the account a webhook is about may use the GitHub App (`GITHUB_APP_ALLOWED_ACCOUNTS`). Fails
      * closed: with an allow-list, a GitHub webhook that names no account isn't allowed. GitLab's never name one.
      */
     private suspend fun isAllowed(platform: Platform, account: WebhookAccount?): Boolean {

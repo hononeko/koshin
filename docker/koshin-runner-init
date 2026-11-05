@@ -1,5 +1,5 @@
 #!/bin/sh
-# Init container of the worker pod (KSH-27): copies the Renovate runner (this image's JRE, koshin's jars and the runner
+# Init container of the worker pod: copies the Renovate runner (this image's JRE, koshin's jars and the runner
 # script) into the volume the `renovate` container, running the upstream Renovate image, mounts read-only at /opt/koshin.
 set -eu
 dest=${1:-/opt/koshin-dist}

@@ -28,7 +28,7 @@ data class NatsConfig(
      * consumers; zero turns it off.
      */
     val exhaustedSweepInterval: Duration = DEFAULT_EXHAUSTED_SWEEP_SECONDS.seconds,
-    /** A scope's consumer is deleted once it's had no job for this long (KSH-24); zero keeps them all. */
+    /** A scope's consumer is deleted once it's had no job for this long; zero keeps them all. */
     val consumerIdleTtl: Duration = DEFAULT_CONSUMER_IDLE_TTL_DAYS.days,
 ) {
     val jobsSubject: String
@@ -37,7 +37,7 @@ data class NatsConfig(
     val dlqSubject: String
         get() = "$dlqSubjectPrefix.>"
 
-    /** A credential scope's jobs (KSH-24): `renovate.jobs.<platform>.<scope>`, e.g. `renovate.jobs.github.inst-42`. */
+    /** A credential scope's jobs: `renovate.jobs.<platform>.<scope>`, e.g. `renovate.jobs.github.inst-42`. */
     fun jobsSubjectFor(scope: CredentialScope): String = "${legacyJobsSubjectFor(scope.platform)}.${scope.token}"
 
     fun dlqSubjectFor(platform: Platform): String = "$dlqSubjectPrefix.${platform.name.lowercase()}"
@@ -53,7 +53,7 @@ data class NatsConfig(
         return if (tokens?.size == 2 && platform != null) CredentialScope.parse(platform, tokens[1]) else null
     }
 
-    /** Where a platform's jobs went before they were partitioned by credential scope (KSH-24). */
+    /** Where a platform's jobs went before they were partitioned by credential scope. */
     fun legacyJobsSubjectFor(platform: Platform): String = "$jobsSubjectPrefix.${platform.name.lowercase()}"
 
     fun legacyConsumerNameFor(platform: Platform): String = "$consumerPrefix${platform.name.lowercase()}"

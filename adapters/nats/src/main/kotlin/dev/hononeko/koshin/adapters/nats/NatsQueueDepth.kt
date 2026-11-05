@@ -10,7 +10,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** Each scope consumer's `num_pending` and `num_ack_pending` (KSH-24), in one listing; none while there's no stream. */
+/** Each scope consumer's `num_pending` and `num_ack_pending`, in one listing; none while there's no stream. */
 class NatsQueueDepth(
     private val jsm: JetStreamManagement,
     private val config: NatsConfig = NatsConfig(),

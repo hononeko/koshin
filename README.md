@@ -5,286 +5,55 @@
 [![JDK](https://img.shields.io/badge/JDK-25-orange.svg)](https://adoptium.net)
 [![Gradle](https://img.shields.io/badge/Gradle-9.4+-green.svg)](https://gradle.org)
 
-Stateless, scale-to-zero Renovate CLI orchestrator built with Kotlin, Ktor, NATS JetStream and Valkey: a proxy coalesces webhooks and starts worker Jobs on demand, without an autoscaler.
+Stateless, scale-to-zero Renovate CLI orchestrator built with Kotlin, Ktor, NATS JetStream and Valkey: a proxy coalesces
+webhooks and starts worker Jobs on demand, without an autoscaler.
 
----
+## How it works
 
-## Architecture & Modules
+1. **The proxy** receives GitHub and GitLab webhooks and sweeper triggers. It drops duplicates for a repository that's
+   already queued, and marks one that's running for a single follow-up run, before publishing to NATS JetStream.
+2. **It starts workers on demand** as Kubernetes `Job`s from a `PodTemplate`. With an empty queue no worker runs.
+3. **Workers** take a per-repository lock in Valkey, restore Renovate's repository cache and run Renovate in a separate,
+   secret-free `renovate` container (the upstream Renovate image). They run jobs back to back and exit once idle.
 
-`koshin` is structured following Hexagonal Architecture (Ports and Adapters) with clean module boundaries:
+Along the way koshin:
 
-* **`:core`**: Pure Kotlin domain models, use cases, and hexagonal ports (zero dependency on infrastructure frameworks).
-* **`:adapters:nats`**: NATS JetStream `WorkQueue` publisher/consumer adapter and Object Store repository cache.
-* **`:adapters:state-valkey`**: Valkey/Redis adapter for per-repository distributed mutexes and atomic dirty-flag coalescing via Lettuce.
-* **`:adapters:github-app`**: GitHub App authentication (JWT signing, installation tokens), bot identity and repository discovery.
-* **`:proxy`**: Stateless Ktor HTTP server receiving webhooks (GitHub/GitLab) and internal cron trigger schedules.
-* **`:worker`**: Autonomous coroutine daemon that pulls jobs from NATS, acquires repo mutexes, runs Renovate CLI subprocesses, deletes each repo workspace after the run, and handles heartbeats & dirty catch-ups.
-* **`charts/koshin`**: Helm chart with the `minimal` and `ha` profiles, the primary install path.
+* serves many tenants from one public **GitHub App**, with an allow-list of accounts;
+* caps runs **per credential** (each App installation, or a platform token) and backs off only the scope that hit a
+  rate limit;
+* keeps **encrypted registry credentials** in tenants' own Renovate configs, decryptable only for their repositories;
+* empties caches and kills leftover processes after every run, and scrubs tokens from its logs.
 
----
+## Quick start
 
-## Prerequisites & Tech Stack
-
-* **Java Development Kit (JDK):** JDK 25 (`jvmToolchain(25)`)
-* **Build Tool:** Gradle 9.4+ (Wrapper provided)
-* **Kotlin:** 2.3+
-* **Framework:** Ktor 3.x
-* **Static Analysis & Formatting:** Detekt 2.0 with ktlint-wrapper rules
-* **Code Coverage:** Kotlinx Kover 0.9+
-
----
-
-## Build & Test Commands
-
-Build the entire multi-module project:
-```bash
-./gradlew build
-```
-
-Run static analysis (Detekt with type resolution & ktlint formatting rules), test suites, and Kover verification across all modules:
-```bash
-./gradlew check
-```
-
-Run the integration tests (Testcontainers, needs Docker), including the end-to-end suite in `e2e/` that drives the proxy and two workers against real NATS and Valkey:
-```bash
-./gradlew integrationTest
-```
-
-Generate Kover code coverage reports (XML & HTML):
-```bash
-./gradlew koverHtmlReport koverXmlReport
-```
-HTML report will be generated at `build/reports/kover/html/index.html`.
-
-Run Detekt directly:
-```bash
-./gradlew detekt
-```
-
----
-
-## Valkey Coordination Requirements
-
-The coordination Valkey instance (`VALKEY_URL`, supporting both standalone `redis://` and Sentinel `redis-sentinel://` URIs) stores per-repository queued marks (`koshin:{<platform>:<repo>}:queued`), mutexes (`koshin:{<platform>:<repo>}:lock`) and dirty flags (`koshin:{<platform>:<repo>}:dirty`) with explicit TTLs (`EX`).
-
-* **Pre-queue coalescing (KSH-30):** the proxy publishes a webhook or trigger only for a repo that is neither queued nor running: a duplicate for a queued repo is dropped, and one for a running repo sets its dirty flag for a single follow-up run. If Valkey fails or doesn't answer within `COALESCE_TIMEOUT_MS`, the proxy publishes anyway (fail-open) and the workers coalesce the duplicate. A queued mark lasts at most `QUEUED_TTL_SECONDS` (24h), so a job lost without being dead-lettered (a NATS restart on `emptyDir`) blocks its repo's webhooks until then.
-
-* **Minimum Server Version:** `releaseLockAndTakeDirty` uses the `GETDEL` command inside Lua, requiring **Valkey 7.2+** (or **Redis 6.2+**).
-* **`maxmemory-policy noeviction` (Required):** You **must** configure `maxmemory-policy noeviction` on the coordination Valkey instance. Because repository locks and dirty flags are TTL-bearing keys, any `volatile-*` eviction policy (`volatile-lru`, `volatile-ttl`, `volatile-random`, `volatile-lfu`) or `allkeys-*` policy under memory pressure would evict active locks or pending dirty flags first, breaking mutual exclusion and coalescing guarantees.
-  * Keep Renovate's package cache (`RENOVATE_REDIS_URL`) on a **separate** instance with `allkeys-lru`: with `noeviction`, a full cache makes Valkey reject every write, lock acquisition included. Both the `minimal` profile and `docker-compose.yml` run a dedicated cache Valkey.
-  * In the **`ha`** deployment profile, Renovate's package cache runs on a dedicated Valkey instance where `allkeys-lru` is safe.
-* **Optional Replica Acknowledgment (`LOCK_REPLICA_ACK_TIMEOUT_MS`):** When set to a positive value (in milliseconds), `ValkeyRepoCoordinationAdapter` issues `WAIT 1 <ms>` after acquiring a repository lock to narrow the replication failover window in primary-replica (`ha`) topologies. Keep this timeout small (e.g., `20`–`100` ms) and **only enable it in the `ha` profile**; on a single-node `minimal` deployment with zero replicas, `WAIT 1 <ms>` blocks the connection for the full timeout on every lock acquisition.
-
----
-
-## Worker Runtime (KSH-7)
-
-* **1 job per pod.** The daemon polls the enabled `PLATFORMS` and runs one `renovate <repository>` at a time. Each run gets `RENOVATE_PLATFORM`, `RENOVATE_ENDPOINT` and `RENOVATE_TOKEN` for the job's platform (`GITHUB_TOKEN`/`GITHUB_API_URL`, `GITLAB_TOKEN`/`GITLAB_ENDPOINT`), plus `LOG_FORMAT=json`, `RENOVATE_BASE_DIR`, `RENOVATE_BINARY_SOURCE`, `RENOVATE_REDIS_URL` and the repository cache settings below. Other `RENOVATE_*` variables on the worker are passed through; worker secrets (`GITHUB_TOKEN`, `GITLAB_TOKEN`, `VALKEY_URL`, …) are not.
-* **Isolation (KSH-21):** Renovate, and any repo code it runs (e.g. Gradle during lockfile updates), runs in the pod's `renovate` container (the upstream Renovate image), not the worker's. The worker hands it each run over a Unix socket (`RUNNER_SOCKET`, in a shared `emptyDir`) with the run's environment, and the runner sends back Renovate's output and exit code. Renovate gets the `renovate` container's own `PATH`, `HOME` and locale plus the run's variables, never the worker container's. The `renovate` container has none of the worker's secrets and no ServiceAccount token, its processes can't see the worker's through `/proc`, and it mounts the runner read-only at `/opt/koshin`. After each run the runner kills every process left in its container. Without `RUNNER_SOCKET`, the worker runs `renovate` in its own container, which the `koshin-worker` image doesn't have.
-* **Timeouts and cancellation** (`CLI_TIMEOUT_MINUTES`, lost lock, shutdown) forcibly kill the whole CLI process tree.
-* **Leftover processes (KSH-23):** after every run, normal exit included, whatever it left behind is killed and reaped, daemonized (`setsid`) processes too: in the `renovate` container everything but the runner (`dumb-init`, from containerbase's entrypoint, reaps them, or the runner when it's PID 1), and without a runner whatever the worker adopted as a child subreaper (Linux). That includes Renovate's gpg-agent, which the next run starts again, and Bazel servers.
-* **Workspaces:** `$RENOVATE_BASE_DIR/repos/<platform>/<repo>` is deleted after every run; everything under `$RENOVATE_BASE_DIR` is purged at startup.
-* **SIGTERM:** stops fetching, kills the CLI, releases the lock (keeping the dirty flag), NAKs the delivery and releases the run slot, without waiting for the run to finish.
-* **Drain-then-exit (KSH-31):** with `WORKER_IDLE_TIMEOUT_SECONDS` > 0 the worker runs jobs back to back while it finds any it can run, and exits 0 once it found none for that long (jobs of a credential scope in cooldown don't count). Past `WORKER_MAX_LIFETIME_SECONDS` it finishes the job in flight and exits 0 instead of fetching another. At `0` (the default) it runs until stopped and keeps a warm-worker lease in Valkey (`koshin:{workers}:warm`, renewed every heartbeat and dropped on SIGTERM), so the proxy's job dispatcher (KSH-32) can tell a worker is ready.
-* **No Kubernetes API access:** workers mount no ServiceAccount token and need no RBAC.
-* **Health:** `GET /healthz` is liveness only; `GET /readyz` checks NATS and Valkey.
-* **Dead-lettering (in the proxy, KSH-30):** a job that uses up its `NATS_MAX_DELIVER` deliveries is moved to `renovate.dlq.<platform>` when NATS announces it (the MaxDeliver advisory), and its repo's queued mark is cleared. That announcement is sent once, so every `NATS_EXHAUSTED_SWEEP_SECONDS` (5 minutes) each proxy replica also moves exhausted jobs whose announcement nobody handled, e.g. during a rolling deployment. The proxy does this, so it works with no worker running. The same pass tidies the per-scope consumers (KSH-24): it creates any missing for queued jobs, and deletes those without a job for `NATS_CONSUMER_IDLE_TTL_DAYS` (7).
-
-## GitHub App (KSH-14)
-
-With `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY_PATH` set on the proxy and the worker, koshin works as a GitHub App instead of with `GITHUB_TOKEN`; [`github-app/`](github-app/README.md) has the manifest and how to register it.
-
-* **Runs** authenticate with installation tokens, cached in memory per installation and handed to a run only while they have at least `CLI_TIMEOUT_MINUTES + 5` minutes left (they last 60), so `CLI_TIMEOUT_MINUTES` must stay below 55. Renovate commits as the App's bot, `<slug>[bot]` (`RENOVATE_USERNAME`, `RENOVATE_GIT_AUTHOR`).
-* **Webhooks:** the proxy ignores the bot's own events. Installing the App on repositories runs each of them once.
-* **Sweeper:** `discover: true` covers every repository of every installation (archived and disabled ones excluded), plus `SWEEP_REPOSITORIES_FILE`.
-* GitHub Enterprise Server works through `GITHUB_API_URL`.
-* **`github.com` lookups (KSH-26):** on github.com runs the worker drops `GITHUB_COM_TOKEN` and `RENOVATE_GITHUB_COM_TOKEN`, so changelog, release-note and datasource lookups on github.com use the installation's own token and rate limit, never an operator's. GitLab and GHES runs still get them.
-* **Allowed accounts (KSH-17):** a public App can be installed by anyone, so `GITHUB_APP_ALLOWED_ACCOUNTS` (numeric account IDs preferred, or logins) lists the users and organizations koshin serves. Other installations get no runs, tokens or sweeps, and `GITHUB_APP_DISALLOWED_ACTION` (`ignore`, `suspend`, `uninstall`) acts on them. Unset, every installation is served.
-
-## Encrypted Registry Credentials (KSH-25)
-
-Installation tokens can't read GitHub Packages (`maven.pkg.github.com`, `nuget.pkg.github.com`, an organization's `npm.pkg.github.com` and `ghcr.io` packages), and koshin keeps no secrets of its own for tenants. Instead, tenants encrypt their private registry credentials against koshin's OpenPGP public key with Renovate's [`encrypted`](https://docs.renovatebot.com/configuration-options/#encrypted) config. Renovate decrypts a secret only for the repositories it's scoped to (`o`: organization, `r`: optionally one of its repositories), so a secret copied into another tenant's config doesn't decrypt. koshin doesn't add `hostRules` from installation tokens, and doesn't set `RENOVATE_X_GITHUB_HOST_RULES`.
-
-**Operators** make a keypair without a passphrase (Renovate can't use one) and store it in a Secret:
-
-```bash
-export GNUPGHOME="$(mktemp -d)"
-gpg --batch --passphrase '' --quick-generate-key 'koshin <renovate@koshin.example.com>' rsa3072 encrypt never
-gpg --armor --export-secret-keys renovate@koshin.example.com > private.asc
-gpg --armor --export renovate@koshin.example.com > public.asc
-kubectl -n koshin create secret generic koshin-renovate-encryption --from-file=private.asc --from-file=public.asc
-```
-
-Then set `renovateEncryption.existingSecret=koshin-renovate-encryption` in the Helm chart, or add the [`k8s/components/renovate-encryption`](k8s/components/renovate-encryption/kustomization.yaml) component to a Kustomize overlay. Either way:
-
-* The private key is mounted into the worker pod's `renovate` container only, and the worker passes `RENOVATE_PRIVATE_KEY_PATH` on to Renovate. A raw `RENOVATE_PRIVATE_KEY` or `RENOVATE_PRIVATE_KEY_OLD` is never passed on, so the key itself isn't in the environment of Renovate or anything it starts.
-* The public key is mounted into the proxy only (`RENOVATE_PUBLIC_KEY_PATH`, checked at startup). The proxy serves it, unauthenticated, at `GET /api/v1/encryption-key` (`application/pgp-keys`; `404` without a key). The chart's ingress and HTTPRoute route that path too.
-* **No repository code next to the key:** the worker pins `RENOVATE_ALLOW_SCRIPTS=false`, `RENOVATE_ALLOWED_UNSAFE_EXECUTIONS=[]`, `RENOVATE_ALLOW_PLUGINS=false` and `RENOVATE_ALLOW_CUSTOM_CRATE_GIT_REGISTRIES=false`, and ignores other values (with a warning). With `RENOVATE_PRIVATE_KEY_PATH` set it also pins `RENOVATE_ALLOWED_COMMANDS=[]` and `RENOVATE_ALLOW_SHELL_EXECUTOR_FOR_POST_UPGRADE_COMMANDS=false`, so `postUpgradeTasks` run nothing: whatever they ran could read the key and decrypt every tenant's secrets.
-
-**Rotating the key** without breaking tenants' configs:
-
-1. Make a new keypair. Put it in the Secret as `private.asc` and `public.asc`, and the current private key as `private-old.asc`. Set `renovateEncryption.privateKeyOldKey=private-old.asc` (Kustomize: mount it too, and set `RENOVATE_PRIVATE_KEY_PATH_OLD` on the worker).
-2. Renovate tries the new key, then the old one. The proxy serves the new public key once the Secret update reaches its pod, without a restart.
-3. Once tenants have encrypted their secrets again, remove the old key.
-
-**Tenants** encrypt a secret with `gpg` and `jq`. `--recipient-file` uses the downloaded key without importing it:
-
-```bash
-curl -fsSo koshin.asc https://koshin.example.com/api/v1/encryption-key
-# For one repository, acme/app:
-jq -cn --arg o acme --arg r app --arg v "$TOKEN" '{o: $o, r: $r, v: $v}' \
-  | gpg --batch --encrypt --recipient-file koshin.asc | base64 | tr -d '\n'
-# For every repository of acme:
-jq -cn --arg o acme --arg v "$TOKEN" '{o: $o, v: $v}' \
-  | gpg --batch --encrypt --recipient-file koshin.asc | base64 | tr -d '\n'
-```
-
-The output goes into an `encrypted` block, in `renovate.json` for one repository:
-
-```json
-{
-  "hostRules": [
-    {
-      "matchHost": "maven.pkg.github.com",
-      "username": "acme-bot",
-      "encrypted": { "password": "<encrypted for acme/app>" }
-    }
-  ]
-}
-```
-
-To cover every repository of an organization, put it in a preset, e.g. `default.json` in `acme/renovate-config`, and have each repository `"extends": ["local>acme/renovate-config"]`. Renovate decrypts a preset's secrets for the repository it's running, so they work in every `acme` repository and in no other organization's, even one that extends the preset:
-
-```json
-{
-  "hostRules": [
-    { "matchHost": "npm.pkg.github.com", "hostType": "npm", "encrypted": { "token": "<encrypted for acme>" } },
-    { "matchHost": "registry.example.com", "encrypted": { "token": "<encrypted for acme>" } }
-  ]
-}
-```
-
-For GitHub Packages the secret is a classic PAT with `read:packages`; for `ghcr.io`, set `"hostType": "docker"` and the PAT's owner as `username`.
-
-## Logging
-
-The proxy and worker print one JSON object per line (logstash-logback-encoder): `message`, `level`, `logger_name`, `thread_name`, `stack_trace`, plus any key-value fields at the top level.
-
-* **Job context:** while the worker handles a job, every line it logs carries `repo`, `deliveryId`, `triggerReason` and `deliveryAttempt`.
-* **Renovate output:** each line Renovate prints (`LOG_FORMAT=json`) is logged at its own level, with Renovate's `msg` as the `message` and the whole line under `renovate` (`renovate.level`, `renovate.repository`, `renovate.err`, ...). Lines that aren't JSON are logged as they are.
-* **Token scrubbing (KSH-26):** the worker replaces the token of the run in progress, and anything shaped like a GitHub or GitLab token (`ghs_…`, `ghp_…`, `github_pat_…`, `glpat-…`, `x-access-token:…`), with `**redacted**` in everything it logs: messages, fields, stack traces and Renovate's output, including what child tools (`git`, `npm`, `gpg`) print past Renovate's own sanitizer.
-* **NATS client:** connection events and errors go through the same log (logger `dev.hononeko.koshin.nats`), not `java.util.logging`.
-* **Levels:** `LOG_LEVEL` sets koshin's level and `ROOT_LOG_LEVEL` the libraries' (both `info` by default), read at startup, so changing them needs only a restart. Renovate's own level is `RENOVATE_LOG_LEVEL`; `LOG_LEVEL` isn't passed on to Renovate.
-
-## Shared Repository Cache (KSH-10)
-
-Renovate's repository cache (`RENOVATE_REPOSITORY_CACHE=enabled`) speeds up runs a lot, but each job lands on a random, short-lived pod. `REPO_CACHE_PROVIDER` picks where the cache lives between runs:
-
-* **`nats` (default):** before a run the worker downloads `<platform>/<scope>/<repo>.json` from the JetStream Object Store bucket `REPO_CACHE_BUCKET` (`koshin-repo-cache`, `NATS_STREAM_REPLICAS` replicas) into Renovate's local cache file (`$RENOVATE_CACHE_DIR/renovate/repository/<platform>/<repo>.json`, `RENOVATE_CACHE_DIR` defaulting to `$RENOVATE_BASE_DIR/cache`). It uploads the file again after a **successful** run only, never after a failure, timeout, rate limit or lost lock. Both happen under the repo lock. A missing object or a NATS error only means a cold run: the local file is dropped first, so a run never starts from what an unpersisted run left behind. `REPO_CACHE_MAX_BYTES` caps the bucket (once it's full, uploads are skipped until old caches expire) and `REPO_CACHE_TTL_DAYS` drops caches of repos without a successful run for that long. The bucket shares JetStream storage with the job streams, so size it well below the server's `max_file_store`. Objects are kept per credential scope, the one whose token the run used (`github/inst-<id>/…`, `github/pat/…`, `gitlab/pat/…`; KSH-26), so a repository name that passes to another account (a rename, a transfer) never gets the previous owner's cache. Objects under the earlier `<platform>/<repo>.json` names aren't read anymore and expire with `REPO_CACHE_TTL_DAYS`.
-* **`s3`:** Renovate reads and writes the cache in S3 itself (e.g. SeaweedFS on the LAN); koshin does no sync. Set `RENOVATE_REPOSITORY_CACHE_TYPE=s3://<bucket>/<prefix>/`, `RENOVATE_S3_ENDPOINT` (or the legacy `RENOVATE_X_S3_ENDPOINT`) and the usual `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION`. `RENOVATE_S3_PATH_STYLE` defaults to `true`. Renovate holds the bucket's credentials, so `s3` is single-tenant: the worker refuses to start with it and the GitHub App.
-* **`local`:** the cache stays in the pod's `emptyDir`, so it only helps when a pod runs the same repo again.
-
-The cache is checked against the repo's commit SHAs on every run, so it never needs invalidating. Restores and uploads are logged with `cache` (`hit` / `miss` / `persisted` / `error`), `bytes` and `durationMs` fields.
-
-**Tenant isolation (KSH-26):** a worker pod runs one tenant's job after another, so after every run (once a successful one's cache is uploaded) the worker empties `RENOVATE_CACHE_DIR`: the repository cache file, cached HTTP bodies of private presets and the file package cache never reach the next run. Renovate's package cache (`RENOVATE_REDIS_URL`) is shared by all runs, so the worker pins `RENOVATE_CACHE_PRIVATE_PACKAGES=false` and `RENOVATE_PRESET_CACHE_PERSISTENCE=false` and prefixes its keys per credential scope (`RENOVATE_REDIS_PREFIX=koshin:<scope>:`, e.g. `koshin:github:inst-42:`). Setting `RENOVATE_REDIS_PREFIX` yourself shares public package lookups across scopes (the worker warns at startup).
-
----
-
-## Rate Limiting & Sizing (KSH-11, KSH-24)
-
-Git provider API limits cap throughput long before NATS or Valkey do (GitHub: 5,000 requests/hour per token, plus secondary limits on concurrency).
-
-* **Credential scopes:** every job runs with one credential, its scope: a GitHub App installation (`github:inst-<id>`, with its own rate-limit bucket) or the platform's token (`github:pat`, `gitlab:pat`). Jobs are queued per scope, on `renovate.jobs.<platform>.<scope>` with the consumer `koshin-workers-<platform>-<scope>`, which the publisher creates. The proxy takes a job's installation from the webhook (`installation.id`), from discovery, or for a triggered repository from a lookup cached per owner; follow-ups and requeues keep it.
-* **Run slots:** at most `MAX_CONCURRENT_RUNS_PER_CREDENTIAL` (default `2`) Renovate runs per scope and `MAX_CONCURRENT_RUNS_GLOBAL` (default `6`) in all, **across all pods**. A worker reserves both before fetching a job, so waiting jobs stay pending in NATS without spending `NATS_MAX_DELIVER` attempts, and takes the scopes with queued jobs round-robin, so one tenant's backlog can't starve another. Leases live in Valkey, are renewed by the job heartbeat, and expire if a worker crashes.
-* **Per-request limits:** `RENOVATE_MAX_REQUESTS_PER_SECOND` / `RENOVATE_CONCURRENT_REQUEST_LIMIT` become a Renovate `hostRules` entry for the platform's API host on every run, appended to any `RENOVATE_HOST_RULES` you set.
-* **Cooldown:** when Renovate aborts a run on the platform's rate limit (it still exits 0; the worker reads its JSON logs, matching `RATE_LIMIT_LOG_PATTERN`), every worker stops fetching that scope's jobs, and only that scope's, for the `Retry-After` / reset time if Renovate logged one, else `min(RATE_LIMIT_BACKOFF_BASE_SECONDS × 2^n, RATE_LIMIT_BACKOFF_MAX_SECONDS) ± 20%`. `n` resets after a successful run in the scope. The job is requeued up to `MAX_RATE_LIMIT_REQUEUES` times, then dead-lettered.
-
-**Sizing:** a scope's API budget ≈ its run slots × requests per second per run. For example, 2 slots × 2 req/s ≈ 14,400 requests/hour, well over a 5,000/hour token, so either lower `RENOVATE_MAX_REQUESTS_PER_SECOND` (2 × 0.6 ≈ 4,300/hour) or accept occasional cooldowns. Keep `WORKER_MAX_REPLICAS` close to `MAX_CONCURRENT_RUNS_GLOBAL` (the default): extra pods only wait for a slot. During a cooldown the proxy starts no worker for that scope's jobs.
-
-**Upgrading from per-platform queues:** the proxy moves jobs queued on `renovate.jobs.<platform>` to their scope's subject and deletes the `koshin-workers-<platform>` consumers, at startup and on every housekeeping pass. A job an older worker is running then may run once more. `MAX_CONCURRENT_RUNS_PER_PLATFORM` is still read, as the per-credential cap.
-
----
-
-## Running Locally (Docker Compose)
-
-`docker compose up --build` starts NATS (JetStream), the coordination and cache Valkeys, the proxy (`localhost:8080`) and a worker (`localhost:8081`) with its Renovate runner (`renovate-init`, then the upstream Renovate image), matching the `minimal` profile. Export `GITHUB_TOKEN` (or `GITLAB_TOKEN`) first so runs can authenticate, then trigger one:
-
-```bash
-curl -X POST localhost:8080/api/v1/trigger -H "Authorization: Bearer dev-trigger-token" \
-  -H "Content-Type: application/json" -d '{"repositories":[{"platform":"github","repository":"org/repo"}]}'
-```
-
----
-
-## Container Images
-
-* **`koshin-proxy`**: `eclipse-temurin:25-jre-noble`, runs as UID `10001`.
-* **`koshin-worker`**: `eclipse-temurin:25-jre-noble` with the worker, running as Renovate's UID `12021` (~140 MB compressed). It holds no Renovate: the same image's `koshin-runner-init` copies the Renovate runner (`/opt/koshin/{jre,lib,bin}`, JVM flags in `KOSHIN_RUNNER_JAVA_OPTS`) into a volume for the pod's `renovate` container.
-* **Renovate** runs from the upstream `ghcr.io/renovatebot/renovate:<version>-full` image (Renovate plus its whole toolchain, `RENOVATE_BINARY_SOURCE=global`), pinned in the chart (`worker.renovate.image`), Kustomize and Compose and upgradable without a koshin release. Renovate (the bot) bumps it in one weekly, automerged PR.
-  * That image is ~10 GB. In-cluster **[Spegel](https://github.com/spegel-org/spegel)** shares image layers between nodes P2P, so a new worker pod usually pulls from a peer instead of the registry; no koshin-specific config is needed.
-* JVM flags come from `KOSHIN_JAVA_OPTS` (not `JAVA_OPTS`/`JAVA_TOOL_OPTIONS`, which Renovate's own Java/Gradle runs would inherit).
-
----
-
-## Kubernetes Deployment (Helm)
-
-The Helm chart in [`charts/koshin`](charts/koshin/README.md) is the primary install path, published as `oci://ghcr.io/hononeko/charts/koshin` with every release. It deploys the proxy, the worker `PodTemplate` the proxy starts burst worker Jobs from (plus one warm worker in `ha`) and the sweeper, plus NATS (official `nats-io` chart) and Valkey (official `valkey-io` chart), or connects to existing ones (`external*` values). Every env contract variable is a value; secrets come from existing Secrets.
-
-* **`minimal`** (default): one NATS and one coordination Valkey on `emptyDir`, a separate package-cache Valkey, and no worker while the queue is empty.
-* **`ha`** (`-f values-ha.yaml`): a 3-node NATS cluster on PVCs with streams at R3, Valkey primary + 2 replicas with AOF and 3 Sentinels, PodDisruptionBudgets, node spread, and one always-warm worker.
-
-The [chart README](charts/koshin/README.md) covers [choosing a profile](charts/koshin/README.md#choosing-a-profile), [workers](charts/koshin/README.md#workers), [sizing](charts/koshin/README.md#sizing), [backups and recovery](charts/koshin/README.md#backups-and-recovery) and [uninstalling](charts/koshin/README.md#uninstall).
+Install the Helm chart (`minimal` profile) after creating the proxy and worker Secrets:
 
 ```bash
 helm install koshin oci://ghcr.io/hononeko/charts/koshin -n koshin --create-namespace \
   --set proxy.existingSecret=koshin-proxy --set worker.existingSecret=koshin-worker
 ```
 
-## Kubernetes Deployment (Kustomize reference)
+The [chart README](charts/koshin/README.md) covers the Secrets, the `ha` profile and every value. To try koshin
+locally, run `docker compose up --build` (see [Development](docs/development.md#running-locally)).
 
-The Kustomize manifests stay as a small, dependency-free reference for the `minimal` profile; `ha` is Helm-only. `k8s/base` holds the proxy (2 replicas, `appProtocol: kubernetes.io/h2c`, and a Role to start worker Jobs), the burst worker `PodTemplate` (no ServiceAccount token or RBAC) and the 6-hourly sweeper `CronJob`. `k8s/overlays/minimal` adds the `koshin` namespace plus a single NATS, a coordination Valkey (`noeviction`) and a package-cache Valkey (`allkeys-lru`), all on `emptyDir`. Requires Kubernetes 1.30+, and nothing else.
+## Documentation
 
-```bash
-kubectl -n koshin create secret generic koshin-proxy-secrets \
-  --from-literal=GITHUB_WEBHOOK_SECRET=... --from-literal=INTERNAL_TRIGGER_TOKEN=...
-kubectl -n koshin create secret generic koshin-worker-secrets --from-literal=GITHUB_TOKEN=...
-kubectl apply -k k8s/overlays/minimal
-```
+| Guide | Covers |
+| :--- | :--- |
+| [Deployment](docs/deployment.md) | Helm and Kustomize, Valkey requirements, container images, HTTP/2 and HTTP/3 |
+| [Configuration](docs/configuration.md) | Every environment variable of the proxy and the worker |
+| [GitHub App](docs/github-app.md) | Registering the App, public Apps and allowed accounts |
+| [Encrypted registry credentials](docs/registry-credentials.md) | koshin's OpenPGP key for operators, encrypting secrets for tenants |
+| [Workers](docs/workers.md) | Worker runtime, isolation and dispatch |
+| [Caching](docs/caching.md) | Repository and package caches, tenant isolation |
+| [Rate limiting](docs/rate-limiting.md) | Credential scopes, run slots, cooldowns and sizing |
+| [Logging](docs/logging.md) | Log format, token scrubbing and levels |
+| [Architecture](docs/architecture.md) | Design, ports, coalescing protocol and failure handling |
+| [Development](docs/development.md) | Modules, building, testing and running locally |
 
-* **Repositories to sweep:** the `koshin-repositories` ConfigMap (`github:org/repo` per line), replaced from your overlay. Empty by default, so the sweeper enqueues nothing.
-* **Workers (KSH-32):** none run while the queue is empty. The proxy (`WORKER_DISPATCHER_ENABLED=true`) starts burst worker Jobs from the `koshin-worker` PodTemplate as jobs it can run queue up, up to `WORKER_MAX_REPLICAS` (run slots × platforms by default); they run jobs back to back and exit once idle for `WORKER_IDLE_TIMEOUT_SECONDS`. Only one proxy replica, holding a Valkey lease, starts them.
-* **`minimal` trade-off:** a NATS or Valkey restart loses pending jobs, locks, dirty flags and the package cache; proxy and worker recreate the streams on reconnect (and publishers the consumers), and the sweeper re-enqueues every repository within 6 hours (after a NATS restart, those still marked queued only once the mark expires: `QUEUED_TTL_SECONDS`). NATS and Valkey are infrastructure, so they're the only stateful pieces; the Helm chart's `ha` profile gives them persistence.
-* **Encrypted registry credentials (KSH-25):** the `k8s/components/renovate-encryption` component mounts koshin's OpenPGP keypair from the `koshin-renovate-encryption` Secret (see [Encrypted Registry Credentials](#encrypted-registry-credentials-ksh-25)).
-* **Edge HTTP/3:** `k8s/examples/gateway-http3.yaml` is an Envoy Gateway example that terminates TLS + HTTP/3 and exposes only `/webhooks/` and `/api/v1/encryption-key`.
+## License
 
----
-
-## HTTP/2 & HTTP/3 Transport Architecture (KSH-6 Spike Outcome)
-
-`koshin-proxy` runs on Ktor 3.6.0 with the Netty engine (`io.ktor:ktor-server-netty`) and enables HTTP/2 and cleartext HTTP/2 (`h2c`) by default when `HTTP2_ENABLED=true`:
-
-```kotlin
-embeddedServer(
-    factory = Netty,
-    configure = {
-        enableHttp2 = config.http2Enabled
-        enableH2c = config.http2Enabled
-        connector { port = config.port }
-    },
-    module = { ... },
-)
-```
-
-* **HTTP/1.1 & Cleartext HTTP/2 (`h2c`):** With `enableHttp2 = true` and `enableH2c = true`, Netty serves standard HTTP/1.1 requests (used by direct GitHub/GitLab webhook deliveries and Kubernetes probe checks) alongside cleartext HTTP/2 via both HTTP/1.1 `Upgrade: h2c` negotiation (`101 Switching Protocols`) and HTTP/2 prior-knowledge connections.
-* **TLS HTTP/2 (`h2`):** When a TLS connector is configured, ALPN negotiates `h2` automatically.
-* **HTTP/3 (QUIC) Spike Finding & Chosen Architecture:**
-  * Ktor 3.6.0's `NettyApplicationEngine.Configuration` natively exposes `enableHttp2` and `enableH2c`, but does **not** expose Netty's incubator QUIC / HTTP/3 codec pipeline (`netty-incubator-codec-http3` over UDP). Wiring raw UDP QUIC channels would bypass Ktor's Netty channel pipeline initializer and engine lifecycle.
-  * **Chosen Option (a) — Edge QUIC Termination + In-Cluster `h2c`:** Terminate HTTP/3 (QUIC) and TLS at the Kubernetes Ingress / Gateway controller (e.g. Traefik or Envoy Gateway) and route in-cluster traffic to the `koshin-proxy` Service over cleartext HTTP/2 (`h2c`, annotated with `appProtocol: kubernetes.io/h2c`).
-
----
-
-## Licensing & Distribution Notice
-
-* **Source Code:** All original source code across `:core`, `:adapters:*`, `:proxy`, and `:worker` is licensed under the [Apache License, Version 2.0](LICENSE).
-* **Container Images:** `koshin-proxy` and `koshin-worker` contain only koshin and a JRE, and are Apache-2.0 too. Renovate runs from the unmodified upstream `ghcr.io/renovatebot/renovate` image, which is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**; koshin doesn't bundle or redistribute it.
+koshin's source code is licensed under the [Apache License, Version 2.0](LICENSE), and so are the `koshin-proxy` and
+`koshin-worker` images, which contain only koshin and a JRE. Renovate runs from the unmodified upstream
+`ghcr.io/renovatebot/renovate` image, licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**; koshin
+doesn't bundle or redistribute it.

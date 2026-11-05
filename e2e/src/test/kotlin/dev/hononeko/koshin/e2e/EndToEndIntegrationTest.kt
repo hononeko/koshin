@@ -22,7 +22,7 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
 
 /**
- * Proxy and workers against real NATS and Valkey, with the short timings from KSH-9:
+ * Proxy and workers against real NATS and Valkey, with short timings:
  * lock TTL 3s, heartbeat 1s, AckWait 5s.
  */
 class EndToEndIntegrationTest {

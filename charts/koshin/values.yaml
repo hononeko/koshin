@@ -31,7 +31,7 @@ github:
   # -- `GITHUB_BOT_LOGIN`: webhooks sent by this login are ignored, so Renovate's own pushes don't re-trigger it. With
   # the GitHub App, its bot (`<slug>[bot]`) is ignored without this.
   botLogin: ""
-  # The GitHub App, preferred over a PAT (`worker.existingSecret`'s `GITHUB_TOKEN`); see `github-app/README.md` in the
+  # The GitHub App, preferred over a PAT (`worker.existingSecret`'s `GITHUB_TOKEN`); see `docs/github-app.md` in the
   # repository.
   app:
     # -- `GITHUB_APP_ID`
@@ -55,9 +55,9 @@ gitlab:
   # -- `GITLAB_BOT_LOGIN`: webhooks sent by this login are ignored
   botLogin: ""
 
-# Renovate's `encrypted` config (KSH-25): tenants encrypt their private registry credentials against koshin's OpenPGP
+# Renovate's `encrypted` config: tenants encrypt their private registry credentials against koshin's OpenPGP
 # public key, served by the proxy at `GET /api/v1/encryption-key`, and Renovate decrypts them for the repositories they
-# are scoped to. See "Encrypted registry credentials" in the repository README.
+# are scoped to. See `docs/registry-credentials.md` in the repository.
 renovateEncryption:
   # -- Existing Secret holding koshin's armored OpenPGP keypair; empty disables encrypted config
   existingSecret: ""
@@ -293,7 +293,7 @@ worker:
   renovateRedisUrl: ""
   autoscaling:
     # -- The proxy starts burst worker `Job`s from the worker `PodTemplate` as jobs queue up, and they exit once the
-    # queue is drained (KSH-32). No KEDA: the proxy gets a namespaced Role on Jobs. Off: `worker.replicas` static workers.
+    # queue is drained. No KEDA: the proxy gets a namespaced Role on Jobs. Off: `worker.replicas` static workers.
     enabled: true
     # -- Always-warm workers: `0` scales to zero (every job waits for a burst `Job` to start), `1` keeps one warm
     # Deployment pod that picks a single job up at once.
@@ -338,7 +338,7 @@ worker:
       digest: ""
       # -- Pull policy of the Renovate image (default: `image.pullPolicy`)
       pullPolicy: ""
-    # -- Resources of the `renovate` container, where Renovate runs (KSH-21)
+    # -- Resources of the `renovate` container, where Renovate runs
     resources:
       requests:
         cpu: 500m

@@ -33,8 +33,7 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * How `processNext` picks among credential scopes (KSH-24), and the scope a job's run slot, follow-ups and repo cache
- * (KSH-26) use.
+ * How `processNext` picks among credential scopes, and the scope a job's run slot, follow-ups and repo cache use.
  */
 class ProcessRenovateJobScopesTest {
     private val github = CredentialScope.Token(Platform.GITHUB)
@@ -82,7 +81,7 @@ class ProcessRenovateJobScopesTest {
     }
 
     @Test
-    fun `the repo cache is the scope of the credential the run used, not the queue's (KSH-26)`() = runTest {
+    fun `the repo cache is the scope of the credential the run used, not the queue's`() = runTest {
         // Queued as github:pat (e.g. by a proxy without App auth), run with installation 42's token
         val repo = testEvent.repo
         val creds = PlatformCredentials("ghs_installation42", installationId = 42)

@@ -27,7 +27,7 @@ import kotlin.io.path.writeText
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 
-/** A run through the job use case leaves nothing in Renovate's cache dir for the next tenant (KSH-26). */
+/** A run through the job use case leaves nothing in Renovate's cache dir for the next tenant. */
 class RunCleanupTest {
 
     @TempDir

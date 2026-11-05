@@ -55,7 +55,7 @@ interface RenovateRun {
 
 /**
  * Kills what's left of a run, waiting until it's gone: dead, and reaped if it became a child of this JVM, so no
- * zombie stays behind (KSH-23). Blocking. Assumes one run at a time, so whatever is left over belongs to that run.
+ * zombie stays behind. Blocking. Assumes one run at a time, so whatever is left over belongs to that run.
  */
 fun interface ProcessKiller {
     fun kill(process: Process)

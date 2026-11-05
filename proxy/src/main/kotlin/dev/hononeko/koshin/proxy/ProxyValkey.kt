@@ -31,7 +31,7 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * The proxy's coordination Valkey, for pre-queue coalescing (KSH-30). It connects in the background, retrying; until
+ * The proxy's coordination Valkey, for pre-queue coalescing. It connects in the background, retrying; until
  * then, and while Lettuce is reconnecting (e.g. during a Sentinel failover), every call fails at once, so ingest fails
  * open instead of waiting.
  */
@@ -49,7 +49,7 @@ class ProxyValkey(
         override fun close() = onClose()
     }
 
-    /** What the worker dispatcher reads from Valkey (KSH-32). */
+    /** What the worker dispatcher reads from Valkey. */
     class DispatchPorts(
         val leader: LeaderLeasePort,
         val throttle: PlatformThrottlePort,

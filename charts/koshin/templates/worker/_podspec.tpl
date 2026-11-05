@@ -1,5 +1,5 @@
 {{/*
-A worker pod (`metadata` and `spec`), shared by the burst worker PodTemplate and the warm or static Deployment (KSH-32).
+A worker pod (`metadata` and `spec`), shared by the burst worker PodTemplate and the warm or static Deployment.
 Pass (dict "ctx" $ "mode" "burst|warm|static" "restartPolicy" "Never|Always" "idleTimeoutSeconds" 10
 "maxLifetimeSeconds" 18000).
 */}}
@@ -21,7 +21,7 @@ metadata:
 spec:
   restartPolicy: {{ .restartPolicy }}
   serviceAccountName: {{ include "koshin.fullname" $ctx }}-worker
-  # Workers never call the Kubernetes API (KSH-31): no container gets a token
+  # Workers never call the Kubernetes API: no container gets a token
   automountServiceAccountToken: false
   terminationGracePeriodSeconds: {{ $ctx.Values.worker.terminationGracePeriodSeconds }}
   {{- with $ctx.Values.imagePullSecrets }}
@@ -96,7 +96,7 @@ spec:
           mountPath: /opt/koshin
           readOnly: true
         {{- if include "koshin.encryptionEnabled" $ctx }}
-        # The OpenPGP private keys for Renovate's encrypted config (KSH-25); the worker container doesn't get them
+        # The OpenPGP private keys for Renovate's encrypted config; the worker container doesn't get them
         {{- include "koshin.encryptionVolumeMount" $ctx | nindent 8 }}
         {{- end }}
   containers:
@@ -130,7 +130,7 @@ spec:
         - name: WORKER_MAX_LIFETIME_SECONDS
           value: {{ .maxLifetimeSeconds | quote }}
         {{- if include "koshin.encryptionEnabled" $ctx }}
-        # Passed on to Renovate, which reads the keys in the `renovate` container (KSH-25)
+        # Passed on to Renovate, which reads the keys in the `renovate` container
         - name: RENOVATE_PRIVATE_KEY_PATH
           value: {{ include "koshin.encryptionKeyDir" $ctx }}/private.asc
         {{- if $ctx.Values.renovateEncryption.privateKeyOldKey }}

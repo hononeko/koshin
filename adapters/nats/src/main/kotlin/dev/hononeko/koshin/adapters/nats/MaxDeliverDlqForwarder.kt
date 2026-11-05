@@ -24,7 +24,7 @@ class MaxDeliverDlqForwarder(
     private val js: JetStream = connection.jetStream(),
     private val json: Json = Json { ignoreUnknownKeys = true },
     autoStart: Boolean = true,
-    /** Called with each job moved to the DLQ, e.g. to clear its repo's queued mark (KSH-30). */
+    /** Called with each job moved to the DLQ, e.g. to clear its repo's queued mark. */
     private val onDeadLettered: (RenovateJobEvent) -> Unit = {},
 ) : AutoCloseable {
     private val logger = LoggerFactory.getLogger(MaxDeliverDlqForwarder::class.java)
@@ -178,7 +178,7 @@ class MaxDeliverDlqForwarder(
         }
     }
 
-    /** From `renovate.jobs.<platform>.<scope>` (KSH-24), or the legacy `renovate.jobs.<platform>`. */
+    /** From `renovate.jobs.<platform>.<scope>`, or the legacy `renovate.jobs.<platform>`. */
     private fun extractPlatform(msgInfo: MessageInfo): String {
         val subject = msgInfo.subject.orEmpty()
         val prefix = "${config.jobsSubjectPrefix}."

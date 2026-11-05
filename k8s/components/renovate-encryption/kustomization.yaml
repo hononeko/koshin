@@ -1,8 +1,8 @@
-# Renovate's encrypted config (KSH-25): tenants encrypt their private registry credentials against koshin's OpenPGP
+# Renovate's encrypted config: tenants encrypt their private registry credentials against koshin's OpenPGP
 # public key, served by the proxy at GET /api/v1/encryption-key. Add to an overlay with
 #   components:
 #     - ../../components/renovate-encryption
-# after creating the keypair Secret (see "Encrypted registry credentials" in the repository README):
+# after creating the keypair Secret (see docs/registry-credentials.md):
 #   kubectl -n koshin create secret generic koshin-renovate-encryption \
 #     --from-file=private.asc --from-file=public.asc
 # While rotating keys, add `private-old.asc` to the Secret and RENOVATE_PRIVATE_KEY_PATH_OLD to the worker.

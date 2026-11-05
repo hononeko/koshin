@@ -21,7 +21,7 @@ class StaticCredentialsProvider(private val credentials: Map<Platform, PlatformC
         checkNotNull(credentials[repo.platform]) { "No token configured for platform ${repo.platform}" }
 }
 
-/** GitHub runs use the GitHub App when it's configured (KSH-14); everything else, and GitHub without it, the tokens. */
+/** GitHub runs use the GitHub App when it's configured; everything else, and GitHub without it, the tokens. */
 class WorkerCredentials(
     private val tokens: StaticCredentialsProvider,
     private val gitHubApp: PlatformCredentialsPort?,

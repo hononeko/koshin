@@ -1,7 +1,7 @@
 package dev.hononeko.koshin.core.model
 
 /**
- * The credential a job runs with, and so the API rate-limit bucket it spends (KSH-24): a GitHub App installation
+ * The credential a job runs with, and so the API rate-limit bucket it spends: a GitHub App installation
  * (`github:inst-<id>`) or the platform's token (`github:pat`, `gitlab:pat`). Run slots, rate-limit cooldowns and the
  * job queue are partitioned by it, so one installation's rate limit never holds up another's jobs.
  */
