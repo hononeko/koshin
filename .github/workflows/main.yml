@@ -1,0 +1,38 @@
+name: Main Validation
+
+# On every push to main:
+# 1. Runs full verification (Detekt + Kover gates, unit tests)
+# 2. Uploads Detekt SARIF to GitHub Code Scanning to track the default branch
+# 3. Runs integration tests
+on:
+  push:
+    branches: ["main"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build & Code Verification
+    uses: ./.github/workflows/validate.yml
+    permissions:
+      contents: read
+      security-events: write
+
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Gradle & JDK
+        uses: hononeko/actions/gradle-setup@v1
+
+      - name: Run Integration Tests
+        run: ./gradlew integrationTest --no-daemon
