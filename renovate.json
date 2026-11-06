@@ -23,8 +23,8 @@
     {
       "customType": "regex",
       "description": "Keep worker.renovate.image.tag in charts/koshin/README.md in sync with values.yaml",
-      "managerFilePatterns": [
-        "/^charts/koshin/README\\.md$/"
+      "fileMatch": [
+        "^charts/koshin/README\\.md$"
       ],
       "matchStrings": [
         "\\| worker\\.renovate\\.image\\.tag \\| string \\| `\"(?<currentValue>[^\"]+)\"` \\|"
