@@ -76,4 +76,25 @@ class GitHubAppConfigTest {
         assertEquals(listOf("org-a", "42"), config.allowedAccounts)
         assertEquals(DisallowedAction.SUSPEND, config.disallowedAction)
     }
+
+    @Test
+    fun `fromEnv handles blank values and fallbacks`() {
+        assertNull(GitHubAppConfig.fromEnv(mapOf("GITHUB_APP_ID" to "   ", "GITHUB_APP_PRIVATE_KEY_PATH" to "   ")))
+        assertThrows<IllegalArgumentException> {
+            GitHubAppConfig.fromEnv(mapOf("GITHUB_APP_ID" to "123", "GITHUB_APP_PRIVATE_KEY_PATH" to "   "))
+        }
+
+        val config = GitHubAppConfig.fromEnv(
+            mapOf(
+                "GITHUB_APP_ID" to "123",
+                "GITHUB_APP_PRIVATE_KEY_PATH" to "/tmp/key.pem",
+                "GITHUB_API_URL" to "   ",
+                "GITHUB_APP_DISALLOWED_ACTION" to "   ",
+            ),
+        )
+        checkNotNull(config)
+        assertEquals(GitHubAppConfig.DEFAULT_API_URL, config.apiUrl)
+        assertEquals(DisallowedAction.IGNORE, config.disallowedAction)
+        assertEquals(emptyList<String>(), config.allowedAccounts)
+    }
 }

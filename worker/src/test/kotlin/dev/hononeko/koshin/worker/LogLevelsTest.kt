@@ -28,4 +28,17 @@ class LogLevelsTest {
         assertEquals(Level.DEBUG, context.getLogger("dev.hononeko.koshin").level)
         assertEquals(Level.DEBUG, context.getLogger(Logger.ROOT_LOGGER_NAME).level)
     }
+
+    @Test
+    fun `blank or whitespace levels are ignored`() {
+        checkLogLevels(mapOf("LOG_LEVEL" to "   ", "ROOT_LOG_LEVEL" to ""), context)
+
+        assertEquals(Level.DEBUG, context.getLogger("dev.hononeko.koshin").level)
+        assertEquals(Level.DEBUG, context.getLogger(Logger.ROOT_LOGGER_NAME).level)
+    }
+
+    @Test
+    fun `default arguments execute without exception`() {
+        checkLogLevels()
+    }
 }

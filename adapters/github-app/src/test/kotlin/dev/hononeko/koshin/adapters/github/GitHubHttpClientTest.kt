@@ -176,4 +176,15 @@ class GitHubHttpClientTest {
         assertThrows<IllegalArgumentException> { HttpRetryConfig(baseDelay = Duration.ZERO) }
         assertThrows<IllegalArgumentException> { HttpRetryConfig(baseDelay = 2.seconds, maxDelay = 1.seconds) }
     }
+
+    @Test
+    fun `rate limit retry policy handles null response in delayFor`() {
+        val policy = RateLimitRetryPolicy(
+            HttpRetryConfig(baseDelay = 2.seconds, maxDelay = 10.seconds),
+            clock,
+            noJitter,
+        )
+        assertEquals(2.seconds, policy.delayFor(null, 1))
+        assertEquals(4.seconds, policy.delayFor(null, 2))
+    }
 }

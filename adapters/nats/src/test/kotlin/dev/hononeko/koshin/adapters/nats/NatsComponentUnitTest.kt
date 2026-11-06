@@ -275,4 +275,44 @@ class NatsComponentUnitTest {
 
         consumer.close()
     }
+
+    @Test
+    fun `consumer returns null immediately on non-positive timeout`() = runBlocking(testDispatcher) {
+        val mockJs = mockk<JetStream>()
+        val consumer = NatsJobQueueConsumer(mockJs, ioDispatcher = testDispatcher)
+        assertNull(consumer.fetchNext(CredentialScope.Token(Platform.GITHUB), 0.seconds))
+        assertNull(consumer.fetchNext(CredentialScope.Token(Platform.GITHUB), (-1).seconds))
+        verify(exactly = 0) { mockJs.subscribe(any<String>(), any<PullSubscribeOptions>()) }
+        consumer.close()
+    }
+
+    @Test
+    fun `consumer poison pill handles missing metadata and duplicate ack`() = runBlocking(testDispatcher) {
+        val mockJs = mockk<JetStream>()
+        val mockSub = mockk<io.nats.client.JetStreamSubscription>()
+        val mockMsg = mockk<Message>(relaxed = true)
+        val mockAck = mockk<PublishAck>(relaxed = true) { every { isDuplicate } returns true }
+
+        every { mockMsg.metaData() } throws IllegalStateException("no metadata")
+        every { mockMsg.headers } returns null
+        every { mockMsg.data } returns "invalid json".toByteArray()
+        every { mockSub.fetch(1, any<Duration>()) } returns listOf(mockMsg)
+        every { mockJs.subscribe(any<String>(), any<PullSubscribeOptions>()) } returns mockSub
+
+        val capturedHeaders = slot<Headers>()
+        every {
+            mockJs.publish("renovate.dlq.gitlab", capture(capturedHeaders), any(), any())
+        } returns mockAck
+
+        val consumer = NatsJobQueueConsumer(mockJs, ioDispatcher = testDispatcher)
+        val result = consumer.fetchNext(CredentialScope.Token(Platform.GITLAB), 1.seconds)
+        assertNull(result)
+
+        assertEquals("true", capturedHeaders.captured.getFirst("Koshin-Poison-Pill"))
+        assertNull(capturedHeaders.captured.getFirst("Koshin-Stream-Seq"))
+        assertNull(capturedHeaders.captured.getFirst("Koshin-Original-Msg-Id"))
+
+        every { mockSub.isActive } returns false
+        consumer.close()
+    }
 }

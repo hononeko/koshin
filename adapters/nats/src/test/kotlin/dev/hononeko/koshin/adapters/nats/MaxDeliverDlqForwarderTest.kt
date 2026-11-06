@@ -156,4 +156,46 @@ class MaxDeliverDlqForwarderTest {
         assertEquals(listOf("gitlab:group/project"), reported)
         verify { jsm.deleteMessage(config.jobsStreamName, 9) }
     }
+
+    @Test
+    fun `moveToDeadLetter with zero deliveries omits deliveries header`() {
+        stored(20)
+
+        assertTrue(forwarder.moveToDeadLetter(20, 0, MaxDeliverDlqForwarder.SOURCE_SWEEP))
+
+        assertEquals("sweep", headers.captured.getFirst("Koshin-Dlq-Source"))
+        org.junit.jupiter.api.Assertions.assertNull(headers.captured.getFirst("Koshin-Deliveries"))
+        assertEquals("20", headers.captured.getFirst("Koshin-Stream-Seq"))
+    }
+
+    @Test
+    fun `fetch message throws non-404 JetStreamApiException`() {
+        every { jsm.getMessage(config.jobsStreamName, 21) } throws ApiError(10050)
+
+        assertThrows<JetStreamApiException> {
+            forwarder.moveToDeadLetter(21, 1, MaxDeliverDlqForwarder.SOURCE_SWEEP)
+        }
+    }
+
+    @Test
+    fun `delete retry handles already deleted code and exhausts retries`() {
+        stored(22)
+        every { jsm.deleteMessage(config.jobsStreamName, 22) } throws ApiError(10019)
+        assertTrue(forwarder.moveToDeadLetter(22, 1, MaxDeliverDlqForwarder.SOURCE_SWEEP))
+
+        stored(23)
+        every { jsm.deleteMessage(config.jobsStreamName, 23) } throws ApiError(10001)
+        assertTrue(forwarder.moveToDeadLetter(23, 1, MaxDeliverDlqForwarder.SOURCE_SWEEP, maxRetries = 1))
+
+        stored(24)
+        every { jsm.deleteMessage(config.jobsStreamName, 24) } throws RuntimeException("generic failure")
+        assertTrue(forwarder.moveToDeadLetter(24, 1, MaxDeliverDlqForwarder.SOURCE_SWEEP, maxRetries = 1))
+    }
+
+    @Test
+    fun `forwarder lifecycle and running status`() {
+        assertFalse(forwarder.isRunning)
+        forwarder.close()
+        assertFalse(forwarder.isRunning)
+    }
 }

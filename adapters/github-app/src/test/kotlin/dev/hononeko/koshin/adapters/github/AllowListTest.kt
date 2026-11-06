@@ -32,7 +32,7 @@ class AllowListTest {
     @TempDir
     lateinit var dir: Path
 
-    private val now = Instant.parse("2026-11-02T12:00:00Z")
+    private var now = Instant.parse("2026-11-02T12:00:00Z")
     private val clock = object : Clock {
         override fun now(): Instant = now
     }
@@ -255,5 +255,31 @@ class AllowListTest {
         assertEquals(DisallowedAction.SUSPEND, config.disallowedAction)
         assertEquals(DisallowedAction.IGNORE, GitHubAppConfig("1", Path("/k")).disallowedAction)
         assertThrows<IllegalArgumentException> { DisallowedAction.fromString("delete") }
+    }
+
+    @Test
+    fun `allows handles account info with neither login nor slug`() = runTest {
+        val list = allowList("99")
+        assertFalse(list.allows(AccountInfo(77, login = null, slug = null)))
+        assertTrue(list.allows(AccountInfo(99, login = null, slug = null)))
+    }
+
+    @Test
+    fun `applyDisallowedAction with ignore does nothing`() = runTest {
+        val app = app(emptyList(), DisallowedAction.IGNORE)
+        app.applyDisallowedAction(123, AccountInfo(123, "test"))
+        assertTrue(requests.isEmpty())
+    }
+
+    @Test
+    fun `resolve looks up again when cache entry expires`() = runTest {
+        val app = app(emptyList())
+        val target = listOf(RepoTarget(RepoRef(Platform.GITHUB, "hononeko/koshin")))
+        assertEquals(listOf(1L), app.resolve(target).map { it.installationId })
+        assertEquals(1, requests.size)
+
+        now += 61.minutes
+        assertEquals(listOf(1L), app.resolve(target).map { it.installationId })
+        assertEquals(2, requests.size)
     }
 }

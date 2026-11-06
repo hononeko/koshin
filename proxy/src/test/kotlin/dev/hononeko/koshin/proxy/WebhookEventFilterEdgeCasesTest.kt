@@ -2,6 +2,7 @@ package dev.hononeko.koshin.proxy
 
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -239,5 +240,148 @@ class WebhookEventFilterEdgeCasesTest {
         assertFalse(WebhookEventFilter.hasCheckboxToggled("- [ ] Task A", "- [ ] Task B\n- [ ] Task C"))
 
         assertFalse(WebhookEventFilter.hasCheckboxToggled("- [x] Task A", "- [x] Task A\n- [ ] Task B"))
+    }
+
+    @Test
+    fun `GitHub header null and non-positive installation id handling`() {
+        assertEquals(WebhookDecision.Ignore("missing X-GitHub-Event header"), filter.evaluateGitHub(null, "{}"))
+
+        val pushZeroInstall = """
+            {
+              "ref": "refs/heads/main",
+              "repository": { "full_name": "hononeko/koshin", "owner": { "id": 10, "login": "hononeko" } },
+              "installation": { "id": 0 }
+            }
+        """.trimIndent()
+        val decisionZero = filter.evaluateGitHub("push", pushZeroInstall)
+        assertTrue(decisionZero is WebhookDecision.Enqueue)
+        assertNull((decisionZero as WebhookDecision.Enqueue).installationId)
+        assertEquals(WebhookAccount(10, "hononeko"), decisionZero.account)
+
+        val pushNegativeInstall = """
+            {
+              "ref": "refs/heads/main",
+              "repository": { "full_name": "hononeko/koshin" },
+              "installation": { "id": -5 }
+            }
+        """.trimIndent()
+        val decisionNegative = filter.evaluateGitHub("push", pushNegativeInstall)
+        assertTrue(decisionNegative is WebhookDecision.Enqueue)
+        assertNull((decisionNegative as WebhookDecision.Enqueue).installationId)
+        assertNull(decisionNegative.account)
+
+        val prEditedNoObj = """
+            {
+              "action": "edited",
+              "repository": { "full_name": "hononeko/koshin" }
+            }
+        """.trimIndent()
+        assertEquals(
+            WebhookDecision.Ignore("pull_request edited without checkbox toggle"),
+            filter.evaluateGitHub("pull_request", prEditedNoObj),
+        )
+    }
+
+    @Test
+    fun `GitLab description change fallback to object attributes`() {
+        val mrUpdateWithFallback = """
+            {
+              "object_kind": "merge_request",
+              "project": { "path_with_namespace": "a/b" },
+              "object_attributes": { "action": "update", "description": "- [x] Task" },
+              "changes": {
+                "description": { "previous": "- [ ] Task" }
+              }
+            }
+        """.trimIndent()
+        assertEquals(WebhookDecision.Enqueue("a/b"), filter.evaluateGitLab(null, mrUpdateWithFallback))
+
+        val issueUpdateWithFallback = """
+            {
+              "object_kind": "issue",
+              "project": { "path_with_namespace": "a/b" },
+              "object_attributes": {
+                "action": "update",
+                "title": "Dependency Dashboard",
+                "description": "* [x] Item"
+              },
+              "changes": {
+                "description": { "previous": "* [ ] Item" }
+              }
+            }
+        """.trimIndent()
+        assertEquals(WebhookDecision.Enqueue("a/b"), filter.evaluateGitLab(null, issueUpdateWithFallback))
+
+        val mrUpdateNoToggle = """
+            {
+              "object_kind": "merge_request",
+              "project": { "path_with_namespace": "a/b" },
+              "object_attributes": { "action": "update", "description": "same" },
+              "changes": { "description": { "previous": "same" } }
+            }
+        """.trimIndent()
+        assertEquals(
+            WebhookDecision.Ignore("GitLab merge_request updated without checkbox toggle"),
+            filter.evaluateGitLab(null, mrUpdateNoToggle),
+        )
+    }
+
+    @Test
+    fun `bot actor detection with extra bots and type heuristics`() {
+        val filterWithExtra = WebhookEventFilter(
+            botLogins = setOf("default-bot"),
+            extraBotLogins = { listOf("dynamic-bot") },
+        )
+        val pushDynamicBot = """
+            {
+              "ref": "refs/heads/main",
+              "repository": { "full_name": "hononeko/koshin" },
+              "sender": { "login": "DYNAMIC-BOT", "type": "User" }
+            }
+        """.trimIndent()
+        assertEquals(
+            WebhookDecision.Ignore("self-triggered push by bot (DYNAMIC-BOT)"),
+            filterWithExtra.evaluateGitHub("push", pushDynamicBot),
+        )
+
+        val pushBlankSender = """
+            {
+              "ref": "refs/heads/main",
+              "repository": { "full_name": "hononeko/koshin" },
+              "sender": { "login": "   ", "type": "Bot" }
+            }
+        """.trimIndent()
+        assertEquals(WebhookDecision.Enqueue("hononeko/koshin"), filter.evaluateGitHub("push", pushBlankSender))
+
+        val pushBotOther = """
+            {
+              "ref": "refs/heads/main",
+              "repository": { "full_name": "hononeko/koshin" },
+              "sender": { "login": "dependabot[bot]", "type": "Bot" }
+            }
+        """.trimIndent()
+        assertEquals(WebhookDecision.Enqueue("hononeko/koshin"), filter.evaluateGitHub("push", pushBotOther))
+
+        val pushRenovateSubstringUser = """
+            {
+              "ref": "refs/heads/main",
+              "repository": { "full_name": "hononeko/koshin" },
+              "sender": { "login": "renovate-fan", "type": "User" }
+            }
+        """.trimIndent()
+        assertEquals(
+            WebhookDecision.Enqueue("hononeko/koshin"),
+            filter.evaluateGitHub("push", pushRenovateSubstringUser),
+        )
+    }
+
+    @Test
+    fun `checkbox toggle with nulls or empty transitions`() {
+        assertFalse(WebhookEventFilter.hasCheckboxToggled(null, "- [x] A"))
+        assertFalse(WebhookEventFilter.hasCheckboxToggled("- [ ] A", null))
+        assertFalse(WebhookEventFilter.hasCheckboxToggled("same", "same"))
+        assertFalse(WebhookEventFilter.hasCheckboxToggled("no checkboxes", "still none"))
+        assertFalse(WebhookEventFilter.hasCheckboxToggled("- [ ] Task", "plain text without checkbox"))
+        assertFalse(WebhookEventFilter.hasCheckboxToggled("plain text", "- [ ] Task"))
     }
 }

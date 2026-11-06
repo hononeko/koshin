@@ -147,5 +147,25 @@ class RateLimitDetectorTest {
 
         val hostNoResponse = entry("Host error", extra = """"hostType":"gitlab","err":{"message":"network error"},""")
         assertNull(detect(Platform.GITLAB, hostNoResponse))
+
+        val hostNoStatusCode = entry("Host error", extra = """"hostType":"gitlab","err":{"response":{}},""")
+        assertNull(detect(Platform.GITLAB, hostNoStatusCode))
+
+        val hostWrongType = entry("Host error", extra = """"hostType":"bitbucket",${httpError(429, "")}""")
+        assertNull(detect(Platform.GITLAB, hostWrongType))
+
+        val shorterAfterLonger = arrayOf(
+            entry("GitHub failure: secondary rate limit", extra = httpError(403, """"retry-after":"100"""")),
+            entry("GitHub failure: secondary rate limit", extra = httpError(403, """"retry-after":"50"""")),
+            aborted,
+        )
+        assertEquals(JobExecutionResult.RateLimited(100.seconds), detect(lines = shorterAfterLonger))
+
+        val longerAfterShorter = arrayOf(
+            entry("GitHub failure: secondary rate limit", extra = httpError(403, """"retry-after":"50"""")),
+            entry("GitHub failure: secondary rate limit", extra = httpError(403, """"retry-after":"100"""")),
+            aborted,
+        )
+        assertEquals(JobExecutionResult.RateLimited(100.seconds), detect(lines = longerAfterShorter))
     }
 }

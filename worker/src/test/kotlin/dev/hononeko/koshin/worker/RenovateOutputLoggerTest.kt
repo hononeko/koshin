@@ -158,4 +158,32 @@ class RenovateOutputLoggerTest {
 
         assertTrue(encodeRaw(appender.list.single()).contains(""""renovate":$spaced"""))
     }
+
+    @Test
+    fun `json lines with missing or non-string msg fall back to safeLine`() {
+        val noMsg = """{"level":30}"""
+        output.log(noMsg, "stdout")
+        assertEquals(noMsg, appender.list.last().formattedMessage)
+
+        val objMsg = """{"level":30,"msg":{"nested":true}}"""
+        output.log(objMsg, "stdout")
+        assertEquals(objMsg, appender.list.last().formattedMessage)
+
+        val noLevel = """{"msg":"hello"}"""
+        output.log(noLevel, "stdout")
+        assertEquals(Level.INFO, appender.list.last().level)
+        assertEquals("hello", appender.list.last().formattedMessage)
+    }
+
+    @Test
+    fun `redaction handles secret in key and non-string primitive values`() {
+        val line = """{"ghs_token_key":"value","count":42,"active":true}"""
+        redactor.track("token_key").use { output.log(line, "stdout") }
+        val event = appender.list.last()
+        val renovate = encode(event)["renovate"]!!.jsonObject
+        assertEquals(
+            """{"ghs_**redacted**":"value","count":42,"active":true}""",
+            renovate.toString(),
+        )
+    }
 }
