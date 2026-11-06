@@ -52,6 +52,8 @@ object Containers {
 class E2eCluster(
     maxRateLimitRequeues: Int = WorkerConfig().maxRateLimitRequeues,
     val throttle: PlatformThrottleConfig = PlatformThrottleConfig(),
+    maxDeliver: Long = 5L,
+    exhaustedSweepInterval: Duration = 60.seconds,
 ) : AutoCloseable {
     private val id = nextId.incrementAndGet()
 
@@ -74,6 +76,8 @@ class E2eCluster(
         ackWait = jobConfig.natsAckWait,
         dlqForwarderQueueGroup = "e2e-$id-dlq-forwarders",
         storageType = StorageType.Memory,
+        maxDeliver = maxDeliver,
+        exhaustedSweepInterval = exhaustedSweepInterval,
     )
 
     val valkeyConfig = ValkeyConfig(valkeyUrl = Containers.valkeyUrl, keyPrefix = "e2e-$id")
@@ -108,11 +112,13 @@ class E2eCluster(
     }
 
     /** With [coalescing] off, the proxy publishes every webhook, as when Valkey is down and it fails open. */
-    fun startProxy(coalescing: Boolean = true): TestProxy =
-        TestProxy(Containers.natsUrl, natsConfig, valkeyConfig.takeIf { coalescing }).also {
-            proxy = it
-            it.start()
-        }
+    fun startProxy(
+        coalescing: Boolean = true,
+        platforms: Set<Platform> = setOf(Platform.GITHUB, Platform.GITLAB),
+    ): TestProxy = TestProxy(Containers.natsUrl, natsConfig, valkeyConfig.takeIf { coalescing }, platforms).also {
+        proxy = it
+        it.start()
+    }
 
     /** With a positive [idleTimeout], a burst worker that drains and exits. */
     fun startWorker(
