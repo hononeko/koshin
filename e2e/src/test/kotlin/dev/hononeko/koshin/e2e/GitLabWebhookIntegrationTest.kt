@@ -69,6 +69,7 @@ class GitLabWebhookIntegrationTest {
         assertEquals(403, noTokenRes.statusCode())
 
         assertEquals(0, cluster.publishedCount())
+        assertFalse(cluster.isQueued(repo))
     }
 
     @Test

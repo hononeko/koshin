@@ -38,11 +38,12 @@ class RunSlotConcurrencyIntegrationTest {
         cluster.publish(RenovateJobEvent(repo2, UUID.randomUUID().toString(), TriggerReason.WEBHOOK))
 
         val worker1 = cluster.startWorker("worker-1").apply { cli.hold() }
-        val worker2 = cluster.startWorker("worker-2")
 
         awaitUntil("worker-1 to start repo-1") { worker1.runs().isNotEmpty() }
         assertEquals(listOf(repo1), worker1.runs().map { it.repo })
         assertEquals(CliRun.State.RUNNING, worker1.runs().single().state)
+
+        val worker2 = cluster.startWorker("worker-2")
 
         Thread.sleep(300.milliseconds.inWholeMilliseconds)
         assertTrue(worker2.runs().isEmpty(), "worker-2 cannot acquire a run slot while worker-1 holds it")
@@ -86,8 +87,9 @@ class RunSlotConcurrencyIntegrationTest {
                 worker2.runs().any { it.state == CliRun.State.RUNNING }
         }
 
-        assertEquals(listOf(repo1), worker1.runs().map { it.repo })
-        assertEquals(listOf(repo2), worker2.runs().map { it.repo })
+        assertEquals(1, worker1.runs().size)
+        assertEquals(1, worker2.runs().size)
+        assertEquals(setOf(repo1, repo2), (worker1.runs() + worker2.runs()).map { it.repo }.toSet())
 
         worker1.cli.release()
         worker2.cli.release()

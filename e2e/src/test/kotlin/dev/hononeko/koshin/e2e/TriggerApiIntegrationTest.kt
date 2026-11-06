@@ -38,12 +38,13 @@ class TriggerApiIntegrationTest {
     }
 
     @Test
-    fun `batch trigger enqueues repositories, coalesces duplicate queued requests and workers execute jobs`() {
+    fun `batch trigger deduplicates within payload, coalesces queued requests and workers execute jobs`() {
         val proxy = cluster.startProxy()
         val repoA = RepoRef(Platform.GITHUB, "hononeko/repo-a")
         val repoB = RepoRef(Platform.GITHUB, "hononeko/repo-b")
 
-        val res = proxy.trigger(listOf(repoA, repoB))
+        // Submitting duplicate repos in the same payload deduplicates in-memory before enqueueing
+        val res = proxy.trigger(listOf(repoA, repoB, repoA))
         assertEquals("accepted", res.status)
         assertEquals(2, res.enqueuedCount)
         assertEquals(0, res.coalescedCount)

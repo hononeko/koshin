@@ -26,8 +26,8 @@ import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * The real proxy (Ktor, NATS, Valkey), receiving signed GitHub webhooks over HTTP. Without [valkeyConfig] it
- * publishes every webhook, as when it fails open.
+ * The real proxy (Ktor, NATS, Valkey), receiving signed GitHub and GitLab webhooks as well as authenticated
+ * `/api/v1/trigger` requests over HTTP. Without [valkeyConfig] it publishes every webhook, as when it fails open.
  */
 class TestProxy(
     natsUrl: String,
