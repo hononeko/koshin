@@ -46,19 +46,21 @@ class RunSlotConcurrencyIntegrationTest {
 
         Thread.sleep(300.milliseconds.inWholeMilliseconds)
         assertTrue(worker2.runs().isEmpty(), "worker-2 cannot acquire a run slot while worker-1 holds it")
+        assertEquals(1, cluster.runs.size, "only repo-1 has started")
 
         worker1.cli.release()
-        awaitUntil("worker-1 to finish") { worker1.runs().single().state == CliRun.State.COMPLETED }
+        awaitUntil("worker-1 to finish repo-1") { worker1.runs().single().state == CliRun.State.COMPLETED }
         val worker1FinishedAt = TimeSource.Monotonic.markNow()
+        worker1.sigterm()
 
-        awaitUntil("worker-2 to pick up repo-2") { worker2.runs().isNotEmpty() }
+        val repo2Run = awaitValue("repo-2 to start on worker-2") { worker2.runs().firstOrNull() }
         cluster.awaitQuiescent(repo1, scope)
         cluster.awaitQuiescent(repo2, scope)
 
-        assertEquals(listOf(repo2), worker2.runs().map { it.repo })
-        assertEquals(CliRun.State.COMPLETED, worker2.runs().single().state)
+        assertEquals(repo2, repo2Run.repo)
+        assertEquals(CliRun.State.COMPLETED, repo2Run.state)
         assertTrue(
-            worker2.runs().single().startedAt >= worker1FinishedAt - 50.milliseconds,
+            repo2Run.startedAt >= worker1FinishedAt - 50.milliseconds,
             "worker-2 started after worker-1 released the slot",
         )
     }
