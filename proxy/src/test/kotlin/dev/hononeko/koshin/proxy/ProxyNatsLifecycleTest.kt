@@ -69,6 +69,9 @@ class ProxyNatsLifecycleTest {
         assertThrows<IOException> {
             lifecycle.publish(sampleEvent)
         }
+        assertThrows<IOException> {
+            lifecycle.publishToDeadLetter(sampleEvent)
+        }
 
         lifecycle.startAsync()
         testScheduler.advanceUntilIdle()
@@ -90,5 +93,34 @@ class ProxyNatsLifecycleTest {
         verify(exactly = 1) { mockConn.close() }
         assertTrue(housekeepingClosed)
         assertFalse(lifecycle.isReady())
+    }
+
+    @Test
+    fun `queueDepth fails before connect and delegates after connect`() = runTest {
+        val mockConn = mockk<Connection>(relaxed = true)
+        every { mockConn.status } returns Connection.Status.CONNECTED
+        val lifecycle = ProxyNatsLifecycle(
+            natsUrl = "nats://localhost:4222",
+            natsConfig = NatsConfig(),
+            ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+            connectionFactory = { _, _ -> mockConn },
+            bootstrap = { _, _ -> },
+            startHousekeeping = { _, _ -> AutoCloseable { } },
+        )
+
+        assertThrows<IOException> { lifecycle.queueDepth.depths(listOf(Platform.GITHUB)) }
+
+        lifecycle.startAsync()
+        testScheduler.advanceUntilIdle()
+
+        val mockJsm = mockk<io.nats.client.JetStreamManagement>(relaxed = true)
+        every { mockConn.jetStreamManagement() } returns mockJsm
+        val streamNotFound = mockk<io.nats.client.JetStreamApiException> {
+            every { errorCode } returns 10059
+            every { apiErrorCode } returns 10059
+        }
+        every { mockJsm.getStreamInfo(any(), any()) } throws streamNotFound
+        assertEquals(emptyMap<Any, Any>(), lifecycle.queueDepth.depths(listOf(Platform.GITHUB)))
+        lifecycle.close()
     }
 }

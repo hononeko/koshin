@@ -250,7 +250,28 @@ class WorkerSettingsTest {
         assertThrows<IllegalArgumentException> { WorkerSettings.fromEnv(mapOf("WORKER_IDLE_TIMEOUT_SECONDS" to "-1")) }
         assertThrows<IllegalArgumentException> { WorkerSettings.fromEnv(mapOf("WORKER_MAX_LIFETIME_SECONDS" to "-1")) }
         assertThrows<IllegalArgumentException> { WorkerSettings(port = 70000) }
+        assertThrows<IllegalArgumentException> { WorkerSettings(port = -1) }
+        assertThrows<IllegalArgumentException> { WorkerSettings(natsUrl = "   ") }
+        assertThrows<IllegalArgumentException> { WorkerSettings(renovateBinarySource = "   ") }
         assertThrows<IllegalArgumentException> { WorkerSettings(platforms = emptySet()) }
+    }
+
+    @Test
+    fun `rediss VALKEY_URL is accepted as Renovate package cache and non-redis is rejected`() {
+        val secure = WorkerSettings.fromEnv(mapOf("VALKEY_URL" to "rediss://secure:6380"))
+        assertEquals("rediss://secure:6380", secure.renovateRedisUrl)
+
+        val nonRedis = WorkerSettings.fromEnv(mapOf("VALKEY_URL" to "http://host:6379"))
+        assertNull(nonRedis.renovateRedisUrl)
+    }
+
+    @Test
+    fun `s3 repo cache without endpoint omits endpoint environment variable`() {
+        val settings = RepoCacheSettings(provider = RepoCacheProvider.S3, s3Url = "s3://b/k")
+        val env = settings.renovateEnv(Path("/tmp/cache"))
+        assertEquals("s3://b/k", env["RENOVATE_REPOSITORY_CACHE_TYPE"])
+        assertFalse(env.containsKey("RENOVATE_S3_ENDPOINT"))
+        assertEquals("true", env["RENOVATE_S3_PATH_STYLE"])
     }
 
     @Test

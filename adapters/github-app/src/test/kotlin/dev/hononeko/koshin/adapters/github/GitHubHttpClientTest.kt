@@ -151,9 +151,40 @@ class GitHubHttpClientTest {
     }
 
     @Test
+    fun `rate limit headers with invalid date or non-zero remaining are handled gracefully`() = runTest {
+        val badDate = status(503, "", "Retry-After" to "not-a-valid-date-or-number")
+        val client1 = client(responses = arrayOf(badDate, ok))
+        assertEquals(200, get(client1))
+        assertEquals(listOf(1.seconds), sleeps)
+
+        sleeps.clear()
+
+        val nonZeroRemaining = status(
+            403,
+            """{"message":"rate limited"}""",
+            "x-ratelimit-remaining" to "5",
+            "x-ratelimit-reset" to (now.epochSeconds + 60).toString(),
+        )
+        val client2 = client(responses = arrayOf(nonZeroRemaining, ok))
+        assertEquals(403, get(client2))
+        assertTrue(sleeps.isEmpty())
+    }
+
+    @Test
     fun `retry config is validated`() {
         assertThrows<IllegalArgumentException> { HttpRetryConfig(maxRetries = -1) }
         assertThrows<IllegalArgumentException> { HttpRetryConfig(baseDelay = Duration.ZERO) }
         assertThrows<IllegalArgumentException> { HttpRetryConfig(baseDelay = 2.seconds, maxDelay = 1.seconds) }
+    }
+
+    @Test
+    fun `rate limit retry policy handles null response in delayFor`() {
+        val policy = RateLimitRetryPolicy(
+            HttpRetryConfig(baseDelay = 2.seconds, maxDelay = 10.seconds),
+            clock,
+            noJitter,
+        )
+        assertEquals(2.seconds, policy.delayFor(null, 1))
+        assertEquals(4.seconds, policy.delayFor(null, 2))
     }
 }

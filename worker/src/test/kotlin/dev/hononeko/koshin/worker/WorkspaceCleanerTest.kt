@@ -229,4 +229,21 @@ class WorkspaceCleanerTest {
         assertThrows<IllegalArgumentException> { WorkspaceCleaner(baseDir.resolve("renovate"), baseDir) }
         WorkspaceCleaner(baseDir, baseDir)
     }
+
+    @Test
+    fun `workspaceFor rejects relative traversal escaping repos dir`() {
+        val cleaner = WorkspaceCleaner(baseDir)
+        assertThrows<IllegalArgumentException> {
+            cleaner.workspaceFor(RepoRef(Platform.GITHUB, "../../../escaped"))
+        }
+        assertThrows<IllegalArgumentException> {
+            cleaner.workspaceFor(RepoRef(Platform.GITHUB, ".."))
+        }
+    }
+
+    @Test
+    fun `cleanup handles missing cache dir gracefully`() = runTest {
+        val cleaner = WorkspaceCleaner(baseDir, baseDir.resolve("does-not-exist"))
+        cleaner.cleanup(githubRepo)
+    }
 }

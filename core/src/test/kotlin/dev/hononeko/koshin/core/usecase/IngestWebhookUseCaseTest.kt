@@ -223,8 +223,12 @@ class IngestWebhookUseCaseTest {
     @Test
     fun `ingest config rejects TTLs under a second and a non-positive timeout`() {
         assertThrows(IllegalArgumentException::class.java) { IngestConfig(queuedTtl = 500.milliseconds) }
+        assertThrows(IllegalArgumentException::class.java) { IngestConfig(queuedTtl = Duration.INFINITE) }
         assertThrows(IllegalArgumentException::class.java) { IngestConfig(dirtyTtl = Duration.ZERO) }
+        assertThrows(IllegalArgumentException::class.java) { IngestConfig(dirtyTtl = Duration.INFINITE) }
         assertThrows(IllegalArgumentException::class.java) { IngestConfig(coalesceTimeout = Duration.ZERO) }
+        assertThrows(IllegalArgumentException::class.java) { IngestConfig(coalesceTimeout = Duration.INFINITE) }
+        assertThrows(IllegalArgumentException::class.java) { IngestConfig(coalesceTimeout = (-1).seconds) }
     }
 
     @Test

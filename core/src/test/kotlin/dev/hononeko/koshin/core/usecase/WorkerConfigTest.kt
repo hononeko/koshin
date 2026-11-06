@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Assertions.assertDoesNotThrow
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
@@ -33,6 +34,11 @@ class WorkerConfigTest {
                 infraErrorBackoffMax = 5.seconds,
             )
         }
+        assertThrows(IllegalArgumentException::class.java) {
+            WorkerConfig(queuedTtl = 500.milliseconds)
+        }
+        assertThrows(IllegalArgumentException::class.java) { WorkerConfig(queuedTtl = Duration.INFINITE) }
+        assertThrows(IllegalArgumentException::class.java) { WorkerConfig(maxRateLimitRequeues = -1) }
     }
 
     @Test

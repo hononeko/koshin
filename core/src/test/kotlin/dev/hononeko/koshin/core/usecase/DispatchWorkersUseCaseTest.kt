@@ -230,6 +230,7 @@ class DispatchWorkersUseCaseTest {
         assertThrows(IllegalArgumentException::class.java) { DispatchConfig(github, 0, 1) }
         assertThrows(IllegalArgumentException::class.java) { DispatchConfig(github, 1, 0) }
         assertThrows(IllegalArgumentException::class.java) { DispatchConfig(github, 1, 1, minWarmWorkers = 2) }
+        assertThrows(IllegalArgumentException::class.java) { DispatchConfig(github, 1, 1, minWarmWorkers = -1) }
         assertThrows(IllegalArgumentException::class.java) { DispatchConfig(github, 1, 1, maxRunsGlobal = 0) }
         assertThrows(IllegalArgumentException::class.java) { QueueDepth(-1, 0) }
     }

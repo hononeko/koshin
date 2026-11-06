@@ -107,4 +107,65 @@ class RateLimitDetectorTest {
         detector.inspect(entry("API quota exhausted"))
         assertEquals(JobExecutionResult.RateLimited(null), detector.result())
     }
+
+    @Test
+    fun `rate limit reset and retry-after header parsing edge cases`() {
+        val resetFuture = now.epochSeconds + 500
+        val remainingPositive = entry(
+            "GitHub failure: secondary rate limit",
+            extra = httpError(403, """"x-ratelimit-remaining":"10","x-ratelimit-reset":"$resetFuture""""),
+        )
+        assertEquals(JobExecutionResult.RateLimited(null), detect(lines = arrayOf(remainingPositive, aborted)))
+
+        val resetPast = now.epochSeconds - 300
+        val pastReset = entry(
+            "GitHub failure: secondary rate limit",
+            extra = httpError(403, """"x-ratelimit-remaining":"0","x-ratelimit-reset":"$resetPast""""),
+        )
+        assertEquals(JobExecutionResult.RateLimited(null), detect(lines = arrayOf(pastReset, aborted)))
+
+        val invalidReset = entry(
+            "GitHub failure: secondary rate limit",
+            extra = httpError(403, """"x-ratelimit-remaining":"0","x-ratelimit-reset":"invalid""""),
+        )
+        assertEquals(JobExecutionResult.RateLimited(null), detect(lines = arrayOf(invalidReset, aborted)))
+
+        val invalidDate = entry(
+            "GitHub failure: secondary rate limit",
+            extra = httpError(403, """"retry-after":"not-a-valid-date-or-seconds""""),
+        )
+        assertEquals(JobExecutionResult.RateLimited(null), detect(lines = arrayOf(invalidDate, aborted)))
+
+        val pastDate = entry(
+            "GitHub failure: secondary rate limit",
+            extra = httpError(403, """"retry-after":"Fri, 30 Oct 2026 11:50:00 GMT""""),
+        )
+        assertEquals(JobExecutionResult.RateLimited(null), detect(lines = arrayOf(pastDate, aborted)))
+
+        val host500 = entry("Host error", extra = """"hostType":"gitlab",${httpError(500, "")}""")
+        assertNull(detect(Platform.GITLAB, host500))
+
+        val hostNoResponse = entry("Host error", extra = """"hostType":"gitlab","err":{"message":"network error"},""")
+        assertNull(detect(Platform.GITLAB, hostNoResponse))
+
+        val hostNoStatusCode = entry("Host error", extra = """"hostType":"gitlab","err":{"response":{}},""")
+        assertNull(detect(Platform.GITLAB, hostNoStatusCode))
+
+        val hostWrongType = entry("Host error", extra = """"hostType":"bitbucket",${httpError(429, "")}""")
+        assertNull(detect(Platform.GITLAB, hostWrongType))
+
+        val shorterAfterLonger = arrayOf(
+            entry("GitHub failure: secondary rate limit", extra = httpError(403, """"retry-after":"100"""")),
+            entry("GitHub failure: secondary rate limit", extra = httpError(403, """"retry-after":"50"""")),
+            aborted,
+        )
+        assertEquals(JobExecutionResult.RateLimited(100.seconds), detect(lines = shorterAfterLonger))
+
+        val longerAfterShorter = arrayOf(
+            entry("GitHub failure: secondary rate limit", extra = httpError(403, """"retry-after":"50"""")),
+            entry("GitHub failure: secondary rate limit", extra = httpError(403, """"retry-after":"100"""")),
+            aborted,
+        )
+        assertEquals(JobExecutionResult.RateLimited(100.seconds), detect(lines = longerAfterShorter))
+    }
 }

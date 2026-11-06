@@ -171,4 +171,39 @@ class NatsScopeConsumersTest {
         every { jsm.getNextMessage(any(), any(), any()) } throws ApiError(10071)
         assertThrows<JetStreamApiException> { consumers.migrateLegacy(listOf(Platform.GITHUB)) }
     }
+
+    @Test
+    fun `nextStored skips non-messages and deleteMessage ignores sequence not found`() {
+        val nonMsg = mockk<MessageInfo> {
+            every { isMessage } returns false
+            every { data } returns "{}".toByteArray()
+        }
+        every { jsm.deleteConsumer(any(), any()) } returns false
+        every { jsm.getNextMessage(config.jobsStreamName, any(), any()) } returns nonMsg
+        assertEquals(0, consumers.migrateLegacy(listOf(Platform.GITHUB)))
+
+        every { jsm.getNextMessage(config.jobsStreamName, any(), any()) } returns
+            message(1, "{}") andThenThrows ApiError(10037)
+        every { jsm.deleteMessage(config.jobsStreamName, 1) } throws ApiError(10037)
+        assertEquals(1, consumers.migrateLegacy(listOf(Platform.GITHUB)))
+    }
+
+    @Test
+    fun `isIdle falls back across sequence info timestamps`() {
+        val consumerWithAckFloorActive = mockk<ConsumerInfo> {
+            every { name } returns "koshin-workers-github-inst-99"
+            every { consumerConfiguration } returns mockk<ConsumerConfiguration> {
+                every { filterSubject } returns config.jobsSubjectFor(CredentialScope.Installation(99))
+            }
+            every { creationTime } returns ago(60.days)
+            every { delivered } returns mockk<SequenceInfo> { every { lastActive } returns null }
+            every { ackFloor } returns mockk<SequenceInfo> { every { lastActive } returns ago(30.days) }
+            every { numPending } returns 0L
+            every { numAckPending } returns 0L
+            every { numWaiting } returns 0L
+        }
+        every { jsm.getConsumers(config.jobsStreamName) } returns listOf(consumerWithAckFloorActive)
+        every { jsm.deleteConsumer(any(), any()) } returns true
+        assertEquals(1, consumers.collectIdle(7.days))
+    }
 }

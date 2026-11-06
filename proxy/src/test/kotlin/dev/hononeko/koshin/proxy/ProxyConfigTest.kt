@@ -186,4 +186,31 @@ class ProxyConfigTest {
         )
         assertThrows<IllegalArgumentException> { ProxyConfig.fromEnv(mapOf("WORKER_DISPATCHER_ENABLED" to "yes")) }
     }
+
+    @Test
+    fun `fromEnv platform and numeric parsing edge cases`() {
+        assertThrows<IllegalArgumentException> {
+            ProxyConfig.fromEnv(mapOf("PLATFORMS" to " , "))
+        }
+        assertThrows<IllegalArgumentException> {
+            ProxyConfig.fromEnv(mapOf("PLATFORMS" to "unknown_platform"))
+        }
+        assertThrows<IllegalArgumentException> {
+            ProxyConfig.fromEnv(mapOf("QUEUED_TTL_SECONDS" to "not-a-number"))
+        }
+        assertThrows<IllegalArgumentException> {
+            ProxyConfig.fromEnv(mapOf("PORT" to "invalid-port"))
+        }
+
+        val config = ProxyConfig.fromEnv(
+            mapOf(
+                "RENOVATE_PUBLIC_KEY_PATH" to "/etc/koshin/public.key",
+                "RENOVATE_BOT_LOGINS" to " , bot1 , ",
+                "GITHUB_BOT_LOGIN" to " ",
+                "GITLAB_BOT_LOGIN" to " ",
+            ),
+        )
+        assertEquals("/etc/koshin/public.key", config.publicKeyPath)
+        assertTrue(config.botLogins.contains("bot1"))
+    }
 }

@@ -64,7 +64,16 @@ class DomainModelTest {
             RenovateJobEvent(repo, "id-1", TriggerReason.WEBHOOK, installationId = 0)
         }
         assertThrows(IllegalArgumentException::class.java) {
+            RenovateJobEvent(repo, "id-1", TriggerReason.WEBHOOK, installationId = -1)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
             RenovateJobEvent(RepoRef(Platform.GITLAB, "g/p"), "id-1", TriggerReason.WEBHOOK, installationId = 1)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            dev.hononeko.koshin.core.ports.QueueDepth(-1, 0)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            dev.hononeko.koshin.core.ports.QueueDepth(0, -1)
         }
     }
 
