@@ -41,6 +41,8 @@ class DlqRecoveryIntegrationTest {
                 assertEquals(repo, delivery.event.repo)
                 runBlocking { delivery.nack(Duration.ZERO) }
             }
+            // Fetching once more triggers NATS to evaluate maxDeliver and publish the MAX_DELIVERIES advisory
+            runBlocking { consumer.fetchNext(scope, 100.milliseconds) }
         }
 
         // Proxy housekeeping forwards the exhausted job to the DLQ and clears the queued mark
