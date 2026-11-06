@@ -94,10 +94,41 @@ class MaxDeliverDlqForwarderTest {
 
         forwarder.handleAdvisory(advisory("""{"stream":"RENOVATE_JOBS","stream_seq":9,"deliveries":5}"""))
         forwarder.handleAdvisory(advisory("""{"stream":"OTHER","stream_seq":9}"""))
+        forwarder.handleAdvisory(advisory("""{"stream":"RENOVATE_JOBS","stream_seq":0}"""))
         forwarder.handleAdvisory(advisory("not json"))
 
         assertEquals("advisory", headers.captured.getFirst("Koshin-Dlq-Source"))
         assertEquals(1, forwarder.handledAdvisoriesCount.get())
+    }
+
+    @Test
+    fun `a message with null data or non-message is ignored`() {
+        every { jsm.getMessage(config.jobsStreamName, 12) } returns mockk<MessageInfo> {
+            every { isMessage } returns false
+            every { data } returns null
+        }
+        assertFalse(forwarder.moveToDeadLetter(12, 5, MaxDeliverDlqForwarder.SOURCE_SWEEP))
+
+        every { jsm.getMessage(config.jobsStreamName, 13) } returns mockk<MessageInfo> {
+            every { isMessage } returns true
+            every { data } returns null
+        }
+        assertFalse(forwarder.moveToDeadLetter(13, 5, MaxDeliverDlqForwarder.SOURCE_SWEEP))
+    }
+
+    @Test
+    fun `a message from non-standard subject and invalid json falls back to unknown platform`() {
+        every { jsm.getMessage(config.jobsStreamName, 15) } returns mockk<MessageInfo> {
+            every { isMessage } returns true
+            every { subject } returns "custom.unprefixed.subject"
+            every { data } returns "not-json-payload".toByteArray()
+            every { this@mockk.headers } returns null
+        }
+        every { js.publish("renovate.dlq.unknown", capture(headers), any<ByteArray>(), any<PublishOptions>()) } returns
+            mockk<PublishAck> { every { isDuplicate } returns false }
+        every { jsm.deleteMessage(config.jobsStreamName, 15) } returns true
+
+        assertTrue(forwarder.moveToDeadLetter(15, 5, MaxDeliverDlqForwarder.SOURCE_SWEEP))
     }
 
     @Test

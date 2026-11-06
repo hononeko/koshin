@@ -1,6 +1,9 @@
 package dev.hononeko.koshin.adapters.nats
 
+import dev.hononeko.koshin.core.model.CredentialScope
+import dev.hononeko.koshin.core.model.Platform
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import kotlin.time.Duration.Companion.days
@@ -90,6 +93,61 @@ class NatsConfigTest {
         }
         assertThrows<IllegalArgumentException> {
             NatsConfig(consumerPrefix = " ")
+        }
+        assertThrows<IllegalArgumentException> {
+            NatsConfig(jobsSubjectPrefix = " ")
+        }
+        assertThrows<IllegalArgumentException> {
+            NatsConfig(dlqSubjectPrefix = " ")
+        }
+        assertThrows<IllegalArgumentException> {
+            NatsConfig(consumerIdleTtl = (-1).seconds)
+        }
+    }
+
+    @Test
+    fun `scopeOf resolves credential scope from valid subjects and returns null on invalid`() {
+        val config = NatsConfig()
+        assertEquals(
+            CredentialScope.Token(Platform.GITHUB),
+            config.scopeOf("${config.jobsSubjectPrefix}.github.pat"),
+        )
+        assertEquals(
+            CredentialScope.Installation(42),
+            config.scopeOf("${config.jobsSubjectPrefix}.github.inst-42"),
+        )
+        assertEquals(
+            CredentialScope.Token(Platform.GITLAB),
+            config.scopeOf("${config.jobsSubjectPrefix}.gitlab.pat"),
+        )
+
+        assertNull(config.scopeOf("other.jobs.github.pat"))
+        assertNull(config.scopeOf("${config.jobsSubjectPrefix}.github"))
+        assertNull(config.scopeOf("${config.jobsSubjectPrefix}.github.pat.extra"))
+        assertNull(config.scopeOf("${config.jobsSubjectPrefix}.bitbucket.pat"))
+    }
+
+    @Test
+    fun `NatsRepoCacheConfig validates bucket, replicas, maxBytes, and ttl`() {
+        val valid = NatsRepoCacheConfig(
+            bucket = "valid-bucket-name",
+            maxBytes = 1024,
+            ttl = 60.seconds,
+            replicas = 1,
+        )
+        assertEquals("valid-bucket-name", valid.bucket)
+
+        assertThrows<IllegalArgumentException> {
+            NatsRepoCacheConfig(bucket = "invalid bucket name")
+        }
+        assertThrows<IllegalArgumentException> {
+            NatsRepoCacheConfig(replicas = 0)
+        }
+        assertThrows<IllegalArgumentException> {
+            NatsRepoCacheConfig(maxBytes = 0)
+        }
+        assertThrows<IllegalArgumentException> {
+            NatsRepoCacheConfig(ttl = 0.seconds)
         }
     }
 }
