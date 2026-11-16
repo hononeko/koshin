@@ -320,8 +320,8 @@ Kubernetes: `>=1.30.0-0`
 | Repository | Name | Version |
 |------------|------|---------|
 | https://nats-io.github.io/k8s/helm/charts/ | nats | 2.15.2 |
-| https://valkey.io/valkey-helm/ | valkey | 1.0.0-rc.1 |
-| https://valkey.io/valkey-helm/ | valkey-cache(valkey) | 1.0.0-rc.1 |
+| https://valkey.io/valkey-helm/ | valkey | 1.0.0 |
+| https://valkey.io/valkey-helm/ | valkey-cache(valkey) | 1.0.0 |
 
 ## Values
 
