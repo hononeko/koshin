@@ -26,12 +26,12 @@ dependencies:
     condition: nats.enabled
   # Coordination (locks, dirty flags, run slots): standalone in `minimal`, primary + replicas + Sentinel in `ha`
   - name: valkey
-    version: 1.0.0-rc.1
+    version: 1.0.0
     repository: https://valkey.io/valkey-helm/
     condition: valkey.enabled
   # Renovate's package cache, kept apart from coordination so a full cache can't block lock writes
   - name: valkey
     alias: valkey-cache
-    version: 1.0.0-rc.1
+    version: 1.0.0
     repository: https://valkey.io/valkey-helm/
     condition: valkey-cache.enabled
