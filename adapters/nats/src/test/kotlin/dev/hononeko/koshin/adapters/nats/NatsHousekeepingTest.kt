@@ -20,7 +20,6 @@ import org.junit.jupiter.api.Test
 import java.io.IOException
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
-import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class NatsHousekeepingTest {
@@ -51,7 +50,9 @@ class NatsHousekeepingTest {
             calls++
             if (calls == 1) throw IllegalStateException(CancellationException("not a real cancellation"))
         }
-        advanceTimeBy(3.minutes + 2.seconds)
+        // The first pass starts at a random point in [0, 1m), so passes land at r, r+1m, r+2m, r+3m, ...
+        // Exactly 3m always holds three of them: advanceTimeBy doesn't run tasks due at its end boundary.
+        advanceTimeBy(3.minutes)
         job.cancel()
 
         assertEquals(3, calls, "the first pass failed, the loop kept going")
