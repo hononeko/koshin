@@ -73,9 +73,17 @@ object NatsHousekeeping {
         }
     }
 
-    /** Runs [pass] every [interval], starting after a random part of it so proxy replicas don't all run at once. */
-    internal fun periodically(scope: CoroutineScope, interval: Duration, pass: suspend () -> Unit): Job = scope.launch {
-        delay(interval * Random.nextDouble())
+    /**
+     * Runs [pass] every [interval], first after [firstDelay]: by default a random part of the interval, so proxy
+     * replicas don't all run at once.
+     */
+    internal fun periodically(
+        scope: CoroutineScope,
+        interval: Duration,
+        firstDelay: Duration = firstDelay(interval),
+        pass: suspend () -> Unit,
+    ): Job = scope.launch {
+        delay(firstDelay)
         while (isActive) {
             try {
                 pass()
@@ -87,4 +95,7 @@ object NatsHousekeeping {
             delay(interval)
         }
     }
+
+    /** A random point in the first [interval], where [periodically] starts by default. */
+    internal fun firstDelay(interval: Duration, random: Random = Random): Duration = interval * random.nextDouble()
 }

@@ -13,13 +13,16 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.job
 import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.io.IOException
+import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class NatsHousekeepingTest {
@@ -45,17 +48,25 @@ class NatsHousekeepingTest {
 
     @Test
     fun `the periodic pass runs on an interval and survives a failed pass`() = runTest {
-        var calls = 0
-        val job = NatsHousekeeping.periodically(this, 1.minutes) {
-            calls++
-            if (calls == 1) throw IllegalStateException(CancellationException("not a real cancellation"))
+        val passes = mutableListOf<Long>()
+        val job = NatsHousekeeping.periodically(this, 1.minutes, firstDelay = 10.seconds) {
+            passes += currentTime
+            if (passes.size == 1) throw IllegalStateException(CancellationException("not a real cancellation"))
         }
-        // The first pass starts at a random point in [0, 1m), so passes land at r, r+1m, r+2m, r+3m, ...
-        // Exactly 3m always holds three of them: advanceTimeBy doesn't run tasks due at its end boundary.
-        advanceTimeBy(3.minutes)
+        // Halfway between passes, so when exactly advanceTimeBy stops doesn't matter
+        advanceTimeBy(2.minutes + 40.seconds)
         job.cancel()
 
-        assertEquals(3, calls, "the first pass failed, the loop kept going")
+        assertEquals(listOf(10_000L, 70_000L, 130_000L), passes, "the first pass failed, the loop kept going")
+    }
+
+    @Test
+    fun `the first pass starts at a random point in the first interval`() {
+        val random = Random(seed = 2026)
+        val delays = List(1_000) { NatsHousekeeping.firstDelay(1.minutes, random) }
+
+        assertTrue(delays.all { it >= Duration.ZERO && it < 1.minutes }, "within the first interval")
+        assertTrue(delays.toSet().size > 1, "not one fixed point, so replicas spread out")
     }
 
     @Test
