@@ -113,6 +113,7 @@ subprojects {
 
     detekt {
         buildUponDefaultConfig = true
+        parallel = true
         config.setFrom(files(rootProject.layout.projectDirectory.file("config/detekt/detekt.yml")))
     }
 
@@ -123,6 +124,10 @@ subprojects {
             checkstyle.required.set(false)
             markdown.required.set(false)
         }
+    }
+
+    tasks.named("detekt") {
+        enabled = false
     }
 
     tasks.named("check") {

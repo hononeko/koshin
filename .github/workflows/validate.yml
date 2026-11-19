@@ -1,9 +1,8 @@
 name: Validate
 
 # Reusable workflow for building, linting, and verifying the codebase.
-# Lints the workflows and Dockerfiles, runs check (unit tests, Detekt static analysis, Kover verification),
-# merges and uploads Detekt SARIF to CodeQL code scanning, reports Kover coverage (overall, and a pull request's
-# changed lines, which must be 80% covered), and uploads coverage artifacts.
+# Runs static repo linters (actions, Dockerfiles), type-resolved Detekt (with SARIF upload to CodeQL
+# code scanning), and unit tests + Kover verification & changed-line coverage (80% minimum) in parallel jobs.
 on:
   workflow_call:
     inputs:
@@ -13,8 +12,26 @@ on:
         default: ""
 
 jobs:
-  validate:
-    name: Build & Code Verification
+  lint:
+    name: Lint
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || '' }}
+
+      - name: Lint workflows and actions
+        uses: hononeko/actions/lint-actions@v1
+
+      - name: Lint Dockerfiles
+        uses: hononeko/actions/lint-docker@v1
+
+  detekt:
+    name: Detekt
     runs-on: ubuntu-26.04
     permissions:
       contents: read
@@ -24,21 +41,15 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-          # Full history: coverage finds a pull request's changed lines from where its head left the base.
-          fetch-depth: 0
           ref: ${{ inputs.ref || '' }}
 
       - name: Set up Gradle & JDK
         uses: hononeko/actions/gradle-setup@v1
+        with:
+          cache-read-only: "true"
 
-      - name: Lint workflows and actions
-        uses: hononeko/actions/lint-actions@v1
-
-      - name: Lint Dockerfiles
-        uses: hononeko/actions/lint-docker@v1
-
-      - name: Run build and verification
-        run: ./gradlew check --no-daemon
+      - name: Run Detekt
+        run: ./gradlew detektMain detektTest --no-daemon
 
       - name: Merge Detekt SARIF reports
         if: always()
@@ -84,6 +95,26 @@ jobs:
         with:
           sarif_file: build/reports/detekt-merged.sarif
           checkout_path: ${{ github.workspace }}
+
+  validate:
+    name: Build & Code Verification
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          # Full history: coverage finds a pull request's changed lines from where its head left the base.
+          fetch-depth: 0
+          ref: ${{ inputs.ref || '' }}
+
+      - name: Set up Gradle & JDK
+        uses: hononeko/actions/gradle-setup@v1
+
+      - name: Run build and verification
+        run: ./gradlew check -x detekt -x detektMain -x detektTest --no-daemon
 
       - name: Kover coverage
         uses: hononeko/actions/coverage@v1
