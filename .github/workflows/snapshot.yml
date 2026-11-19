@@ -36,8 +36,6 @@ jobs:
     name: "Snapshot: Build & Code Verification"
     needs: plan
     uses: ./.github/workflows/validate.yml
-    with:
-      ref: ${{ github.event.pull_request.head.sha }}
     permissions:
       contents: read
       security-events: write

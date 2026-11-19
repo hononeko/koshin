@@ -5,11 +5,6 @@ name: Validate
 # code scanning), and unit tests + Kover verification & changed-line coverage (80% minimum) in parallel jobs.
 on:
   workflow_call:
-    inputs:
-      ref:
-        description: Commit ref to check out (empty for default)
-        type: string
-        default: ""
 
 jobs:
   lint:
@@ -22,7 +17,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-          ref: ${{ inputs.ref || '' }}
 
       - name: Lint workflows and actions
         uses: hononeko/actions/lint-actions@v1
@@ -41,7 +35,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-          ref: ${{ inputs.ref || '' }}
 
       - name: Set up Gradle & JDK
         uses: hononeko/actions/gradle-setup@v1
@@ -108,7 +101,6 @@ jobs:
           persist-credentials: false
           # Full history: coverage finds a pull request's changed lines from where its head left the base.
           fetch-depth: 0
-          ref: ${{ inputs.ref || '' }}
 
       - name: Set up Gradle & JDK
         uses: hononeko/actions/gradle-setup@v1
