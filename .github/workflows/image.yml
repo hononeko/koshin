@@ -1,7 +1,7 @@
 name: Image
 
-# Builds proxy and worker images natively on amd64 and arm64 runners, smoke tests each on /healthz,
-# and with `push`, pushes each image to GHCR by digest and uploads the digests as artifacts.
+# Builds the proxy and worker images natively on amd64 and arm64 runners, one job each in parallel, smoke tests each
+# on /healthz, and with `push`, pushes each image to GHCR by digest and uploads the digests as artifacts.
 on:
   workflow_call:
     inputs:
@@ -20,7 +20,7 @@ on:
 
 jobs:
   build:
-    name: Image (${{ matrix.arch }})
+    name: Image (${{ matrix.app }}, ${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -28,11 +28,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        app: [proxy, worker]
+        arch: [amd64, arm64]
         include:
           - arch: amd64
             runner: ubuntu-24.04
           - arch: arm64
             runner: ubuntu-24.04-arm
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/koshin-${{ matrix.app }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -44,73 +48,37 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Log in to GitHub Container Registry (GHCR)
-        if: inputs.push && (hashFiles('docker/Dockerfile.proxy') != '' || hashFiles('docker/Dockerfile.worker') != '')
+        if: inputs.push
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Proxy image: build once, push by digest if push is true, and smoke-test that exact digest
-      - name: Build proxy image
-        id: build-proxy
-        if: hashFiles('docker/Dockerfile.proxy') != ''
+      # Build once, push by digest if push is true, and smoke-test that exact digest
+      - name: Build image
+        id: build
         uses: hononeko/actions/build-image@v1
         with:
-          image: ghcr.io/${{ github.repository_owner }}/koshin-proxy
-          file: docker/Dockerfile.proxy
+          image: ${{ env.IMAGE }}
+          file: docker/Dockerfile.${{ matrix.app }}
           platforms: linux/${{ matrix.arch }}
           push: ${{ inputs.push }}
-          tags: smoke-proxy:${{ matrix.arch }}
+          tags: smoke-${{ matrix.app }}:${{ matrix.arch }}
           build-args: VERSION=${{ inputs.version || 'dev' }}
-          cache-from: type=gha,scope=proxy-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=proxy-${{ matrix.arch }}
-          digest-artifact: digests-proxy-${{ matrix.arch }}
+          cache-scope: ${{ matrix.app }}-${{ matrix.arch }}
+          digest-artifact: digests-${{ matrix.app }}-${{ matrix.arch }}
 
-      - name: Smoke test proxy
-        if: hashFiles('docker/Dockerfile.proxy') != ''
+      - name: Smoke test
         uses: hononeko/actions/smoke-test@v1
         with:
-          image: ${{ inputs.push && format('ghcr.io/{0}/koshin-proxy@{1}', github.repository_owner, steps.build-proxy.outputs.digest) || format('smoke-proxy:{0}', matrix.arch) }}
+          image: ${{ inputs.push && format('{0}@{1}', env.IMAGE, steps.build.outputs.digest) || format('smoke-{0}:{1}', matrix.app, matrix.arch) }}
           port: "8080"
           path: /healthz
           status: "200"
           max-memory-mib: "384"
 
-      - name: Check proxy logs are JSON
-        if: hashFiles('docker/Dockerfile.proxy') != ''
+      - name: Check logs are JSON
         env:
-          IMAGE: ${{ inputs.push && format('ghcr.io/{0}/koshin-proxy@{1}', github.repository_owner, steps.build-proxy.outputs.digest) || format('smoke-proxy:{0}', matrix.arch) }}
-        run: .github/scripts/check-json-logs.sh "$IMAGE"
-
-      # Worker image: build once, push by digest if push is true, and smoke-test that exact digest
-      - name: Build worker image
-        id: build-worker
-        if: hashFiles('docker/Dockerfile.worker') != ''
-        uses: hononeko/actions/build-image@v1
-        with:
-          image: ghcr.io/${{ github.repository_owner }}/koshin-worker
-          file: docker/Dockerfile.worker
-          platforms: linux/${{ matrix.arch }}
-          push: ${{ inputs.push }}
-          tags: smoke-worker:${{ matrix.arch }}
-          build-args: VERSION=${{ inputs.version || 'dev' }}
-          cache-from: type=gha,scope=worker-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=worker-${{ matrix.arch }}
-          digest-artifact: digests-worker-${{ matrix.arch }}
-
-      - name: Smoke test worker
-        if: hashFiles('docker/Dockerfile.worker') != ''
-        uses: hononeko/actions/smoke-test@v1
-        with:
-          image: ${{ inputs.push && format('ghcr.io/{0}/koshin-worker@{1}', github.repository_owner, steps.build-worker.outputs.digest) || format('smoke-worker:{0}', matrix.arch) }}
-          port: "8080"
-          path: /healthz
-          status: "200"
-          max-memory-mib: "384"
-
-      - name: Check worker logs are JSON
-        if: hashFiles('docker/Dockerfile.worker') != ''
-        env:
-          IMAGE: ${{ inputs.push && format('ghcr.io/{0}/koshin-worker@{1}', github.repository_owner, steps.build-worker.outputs.digest) || format('smoke-worker:{0}', matrix.arch) }}
-        run: .github/scripts/check-json-logs.sh "$IMAGE"
+          SMOKE_IMAGE: ${{ inputs.push && format('{0}@{1}', env.IMAGE, steps.build.outputs.digest) || format('smoke-{0}:{1}', matrix.app, matrix.arch) }}
+        run: .github/scripts/check-json-logs.sh "$SMOKE_IMAGE"
