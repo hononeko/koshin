@@ -14,8 +14,13 @@ COPY proxy/build.gradle.kts proxy/
 COPY worker/build.gradle.kts worker/
 COPY e2e/build.gradle.kts e2e/
 RUN ./gradlew --no-daemon --quiet :worker:dependencies --configuration runtimeClasspath > /dev/null
+# Main sources only: .dockerignore leaves out tests and detekt config, so changes to them keep the build cached
 COPY . .
-RUN ./gradlew --no-daemon :worker:installDist
+# Keep only the libraries: deleting the sources, build output and the Gradle caches the build filled in the same
+# RUN keeps them out of the layer, which the GitHub Actions layer cache exports on every source change
+RUN ./gradlew --no-daemon :worker:installDist \
+    && mv worker/build/install/worker/lib /koshin-lib \
+    && rm -rf /src /root/.gradle
 
 FROM eclipse-temurin:25.0.5_8-jre-noble
 ARG VERSION=dev
@@ -26,7 +31,7 @@ LABEL org.opencontainers.image.title="koshin-worker" \
 
 # No Renovate here: the pod's `renovate` container runs the upstream image, with the runner koshin-runner-init copies
 # from this one.
-COPY --from=build /src/worker/build/install/worker/lib/ /opt/koshin/lib/
+COPY --from=build /koshin-lib/ /opt/koshin/lib/
 COPY --chmod=755 docker/koshin-runner docker/koshin-runner-init /opt/koshin/bin/
 # koshin-runner-init's default destination, owned by the runtime user so a new Compose volume mounted there is too
 RUN install -d -o 12021 -g 0 /opt/koshin-dist

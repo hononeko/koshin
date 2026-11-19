@@ -12,3 +12,6 @@ docker/
 !docker/koshin-runner
 !docker/koshin-runner-init
 *.md
+# Image builds compile main sources only
+**/src/test/
+config/
