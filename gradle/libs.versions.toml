@@ -1,6 +1,6 @@
 [versions]
 kotlin = "2.4.21"
-ktor = "3.6.1"
+ktor = "3.6.2"
 coroutines = "1.11.0"
 serialization = "1.13.0"
 nats = "2.27.0"
