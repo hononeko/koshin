@@ -21,7 +21,7 @@ annotations:
   artifacthub.io/license: Apache-2.0
 dependencies:
   - name: nats
-    version: 2.15.2
+    version: 2.15.3
     repository: https://nats-io.github.io/k8s/helm/charts/
     condition: nats.enabled
   # Coordination (locks, dirty flags, run slots): standalone in `minimal`, primary + replicas + Sentinel in `ha`
